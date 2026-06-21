@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="order-api-base" content="/api">
+    <title>Order Processor Console</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <header class="app-header">
+      <div>
+        <h1>Order Processor Console</h1>
+        <p id="sessionLine">Microsoft sign-in required</p>
+      </div>
+      <div class="header-actions">
+        <select id="customerFilter" aria-label="Customer filter">
+          <option value="">All customers</option>
+        </select>
+        <button id="refreshButton" type="button" title="Refresh dashboard">Refresh</button>
+      </div>
+    </header>
+
+    <main class="shell">
+      <nav class="tabs" aria-label="Console views">
+        <button class="tab active" data-view="monitor" type="button">Monitor</button>
+        <button class="tab" data-view="exceptions" type="button">Exceptions</button>
+        <button class="tab" data-view="customers" type="button">Customers</button>
+        <button class="tab" data-view="routing" type="button">Routing</button>
+        <button class="tab" data-view="outputs" type="button">Outputs</button>
+        <button class="tab" data-view="users" type="button">Users</button>
+      </nav>
+
+      <section id="monitor" class="view active" aria-labelledby="monitor-title">
+        <div class="metrics" id="metrics"></div>
+        <section class="band">
+          <div class="section-title">
+            <h2 id="monitor-title">Active Runs</h2>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Run</th>
+                  <th>Customer</th>
+                  <th>Status</th>
+                  <th>PO</th>
+                  <th>Lines</th>
+                  <th>Updated</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="activeRunsBody"></tbody>
+            </table>
+          </div>
+        </section>
+        <section class="band">
+          <div class="section-title">
+            <h2>Processed Orders</h2>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Run</th>
+                  <th>Customer</th>
+                  <th>Status</th>
+                  <th>Artifacts</th>
+                  <th>Updated</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="processedOrdersBody"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section id="exceptions" class="view" aria-labelledby="exceptions-title">
+        <section class="band">
+          <div class="section-title">
+            <h2 id="exceptions-title">Exception Queue</h2>
+          </div>
+          <div id="exceptionList" class="task-list"></div>
+        </section>
+      </section>
+
+      <section id="customers" class="view" aria-labelledby="customers-title">
+        <section class="band split">
+          <form id="customerForm" class="editor">
+            <h2 id="customers-title">Customer Config</h2>
+            <input name="id" placeholder="Customer id">
+            <input name="customerCode" placeholder="Customer code">
+            <input name="name" placeholder="Name">
+            <input name="senderDomains" placeholder="Sender domains, comma-separated">
+            <input name="csrEmail" placeholder="CSR email">
+            <button type="submit">Save Customer</button>
+          </form>
+          <form id="mailboxForm" class="editor">
+            <h2>Mailbox</h2>
+            <input name="customerId" placeholder="Customer id">
+            <input name="mailboxAddress" placeholder="Mailbox address">
+            <input name="displayName" placeholder="Display name">
+            <input name="connectionId" placeholder="Microsoft connection id">
+            <label><input name="enabled" type="checkbox" checked> Enabled</label>
+            <button type="submit">Save Mailbox</button>
+          </form>
+        </section>
+        <section class="band">
+          <div class="section-title">
+            <h2>Data Status</h2>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Customer</th>
+                  <th>Code</th>
+                  <th>Customer Import</th>
+                  <th>Items</th>
+                  <th>Item Import</th>
+                </tr>
+              </thead>
+              <tbody id="dataStatusBody"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section id="routing" class="view" aria-labelledby="routing-title">
+        <section class="band split">
+          <form id="routingForm" class="editor">
+            <h2 id="routing-title">Routing Rule</h2>
+            <input name="id" placeholder="Rule id">
+            <input name="customerId" placeholder="Customer id">
+            <input name="name" placeholder="Rule name">
+            <select name="outcome">
+              <option value="knownOrder">knownOrder</option>
+              <option value="knownCustomerNonOrder">knownCustomerNonOrder</option>
+              <option value="needsCustomerIdentification">needsCustomerIdentification</option>
+              <option value="needsHumanReview">needsHumanReview</option>
+              <option value="ignored">ignored</option>
+            </select>
+            <input name="senderDomains" placeholder="Sender domains">
+            <input name="subjectRegex" placeholder="Subject regex">
+            <input name="attachmentExtensions" placeholder="Attachment extensions">
+            <button type="submit">Save Rule</button>
+          </form>
+          <form id="profileForm" class="editor">
+            <h2>Profiles</h2>
+            <input name="customerId" placeholder="Customer id">
+            <input name="name" placeholder="Profile name">
+            <select name="kind">
+              <option value="processor">Processor</option>
+              <option value="output">Output</option>
+            </select>
+            <input name="type" placeholder="Type">
+            <textarea name="settings" placeholder='{"fieldMap":{}}'></textarea>
+            <button type="submit">Save Profile</button>
+          </form>
+        </section>
+        <section class="band">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Priority</th>
+                  <th>Rule</th>
+                  <th>Customer</th>
+                  <th>Outcome</th>
+                  <th>Enabled</th>
+                </tr>
+              </thead>
+              <tbody id="routingRulesBody"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section id="outputs" class="view" aria-labelledby="outputs-title">
+        <section class="band">
+          <div class="section-title">
+            <h2 id="outputs-title">Output Artifacts</h2>
+          </div>
+          <div id="artifactList" class="artifact-grid"></div>
+        </section>
+      </section>
+
+      <section id="users" class="view" aria-labelledby="users-title">
+        <section class="band split">
+          <form id="userForm" class="editor">
+            <h2 id="users-title">Console User</h2>
+            <input name="email" placeholder="Microsoft email">
+            <input name="displayName" placeholder="Display name">
+            <input name="roles" placeholder="Roles">
+            <label><input name="enabled" type="checkbox" checked> Enabled</label>
+            <button type="submit">Save User</button>
+          </form>
+          <form id="assignmentForm" class="editor">
+            <h2>Customer Assignment</h2>
+            <input name="customerId" placeholder="Customer id">
+            <input name="email" placeholder="Microsoft email">
+            <input name="roles" placeholder="Roles">
+            <label><input name="enabled" type="checkbox" checked> Enabled</label>
+            <button type="submit">Assign User</button>
+          </form>
+        </section>
+      </section>
+    </main>
+
+    <aside id="detailsPane" class="details" aria-live="polite"></aside>
+    <script src="./app.js" type="module"></script>
+  </body>
+</html>

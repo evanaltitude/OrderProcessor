@@ -1,0 +1,16 @@
+{
+    "name":  "OrderProcessor - Mailbox Trigger Template",
+    "slug":  "orderprocessor-mailbox-trigger-template",
+    "workflowId":  "7f52d9d6-8eb1-4ad7-b2f6-89dd55dc4e01",
+    "trigger":  "Office 365 Outlook shared mailbox new-email trigger",
+    "endpoint":  "POST /emails/ingest",
+    "status":  "disabled template",
+    "connectionReferences":  [
+                                 "shared_office365"
+                             ],
+    "notes":  [
+                  "Instantiate one copy per monitored customer mailbox when Power Automate must own the mailbox trigger.",
+                  "Mailbox address, mailboxAccountId, and customerId are parameters/configuration values, not branches.",
+                  "Flow sends metadata and attachment references to APIM only; Azure performs routing and processing."
+              ]
+}

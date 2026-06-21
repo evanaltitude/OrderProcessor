@@ -1,0 +1,63 @@
+{
+  "environment": {
+    "name": "Focus Automate",
+    "id": "abbd708f-4eaf-e875-a282-e1207f4e370c",
+    "url": "https://org2ccebd74.crm.dynamics.com/"
+  },
+  "connectedUser": "evanb@altitudelogistics.com",
+  "solution": {
+    "uniqueName": "OrderProcessor",
+    "solutionId": "660bea3d-196c-f111-a826-7c1e5281c285",
+    "displayName": "Order Processor",
+    "version": "1.0.0.0",
+    "managed": false
+  },
+  "package": {
+    "path": "power-automate/solutions/OrderProcessor/exports/OrderProcessor_1.0.0.0_unmanaged.zip",
+    "packageType": "Unmanaged"
+  },
+  "import": {
+    "imported": true,
+    "mode": "async",
+    "importId": "74e34f63-cb6c-f111-ab0d-7c1e5281c285",
+    "status": "Solution Imported successfully.",
+    "recordedAt": "2026-06-20T13:17:16.9409559-04:00"
+  },
+  "components": {
+    "workflows": [
+      {
+        "name": "OrderProcessor - Mailbox Trigger Template",
+        "workflowId": "7f52d9d6-8eb1-4ad7-b2f6-89dd55dc4e01",
+        "status": "disabled template",
+        "endpoint": "POST /emails/ingest"
+      },
+      {
+        "name": "OrderProcessor - Customer Import Adapter Template",
+        "workflowId": "06b7f4fc-5f13-4a6f-8742-03f19c301902",
+        "status": "disabled template",
+        "endpoint": "POST /imports/customers"
+      },
+      {
+        "name": "OrderProcessor - Item Import Adapter Template",
+        "workflowId": "7aa4ab3f-d509-4866-98a0-fcce8dc79b03",
+        "status": "disabled template",
+        "endpoint": "POST /imports/items"
+      },
+      {
+        "name": "OrderProcessor - Output Delivery Adapter Template",
+        "workflowId": "92df442b-2360-42dd-b787-ce339813d877",
+        "status": "disabled optional template",
+        "endpoint": "customer-specific M365 delivery"
+      }
+    ],
+    "connectionReferences": [
+      {
+        "logicalName": "alt_sharedoffice365_orderprocessor",
+        "displayName": "Office 365 Outlook OrderProcessor",
+        "connectorId": "/providers/Microsoft.PowerApps/apis/shared_office365",
+        "connectionReferenceId": "cbfe0a69-28e2-4b44-94eb-eeecba52a48f",
+        "connectionBindingStatus": "requires concrete connection before dependent flows can be started"
+      }
+    ]
+  }
+}

@@ -1,0 +1,9 @@
+azure-functions
+azure-functions-durable
+azure-identity
+azure-cosmos
+azure-storage-blob
+azure-keyvault-secrets
+azure-monitor-opentelemetry
+azure-ai-documentintelligence
+openai

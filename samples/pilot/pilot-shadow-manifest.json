@@ -1,0 +1,94 @@
+{
+  "pilotId": "pilot-csv-parse",
+  "phase": 14,
+  "mode": "shadow",
+  "tenantId": "altitude",
+  "description": "Synthetic shadow-run package for the active orderProcess CSV Parse migration path.",
+  "selectedCustomer": {
+    "customerId": "pilot-customer",
+    "customerCode": "PILOT",
+    "name": "Pilot Customer",
+    "selectionReason": "The active CSV Parse flow is the narrowest end-to-end pilot path and replaces the Plumsail CSV-to-XLSX connector with backend code."
+  },
+  "sourceFile": "sample-order.csv",
+  "seedFiles": [
+    {
+      "container": "customers",
+      "path": "customers.json"
+    },
+    {
+      "container": "items",
+      "path": "items.json"
+    },
+    {
+      "container": "mailboxAccounts",
+      "path": "mailboxes.json"
+    },
+    {
+      "container": "processorProfiles",
+      "path": "processor-profiles.json"
+    },
+    {
+      "container": "outputProfiles",
+      "path": "output-profiles.json"
+    },
+    {
+      "container": "routingRules",
+      "path": "routing-rules.json"
+    }
+  ],
+  "headers": {
+    "x-ms-client-request-id": "pilot-csv-parse-shadow-001",
+    "x-ms-workflow-run-id": "pilot-shadow-flow-run-001",
+    "x-ms-workflow-name": "OrderProcessor Pilot Shadow",
+    "x-order-processor-ingress": "pilot-shadow"
+  },
+  "email": {
+    "id": "pilot-shadow-email-001",
+    "mailbox": "pilot-csv-orders@focuseautomate.test",
+    "mailboxAccountId": "pilot-csv-mailbox",
+    "messageId": "pilot-shadow-message-001",
+    "sender": "Buyer <buyer@pilot.example>",
+    "subject": "PO PO-PILOT-001 pilot CSV order",
+    "receivedAt": "2026-06-21T10:00:00+00:00",
+    "bodyText": "Synthetic Phase 14 shadow fixture for orderProcess CSV Parse.",
+    "attachments": [
+      {
+        "name": "sample-order.csv",
+        "contentType": "text/csv",
+        "blobUrl": "shadow://samples/pilot/sample-order.csv"
+      }
+    ]
+  },
+  "processPayload": {
+    "processorProfileId": "pilot-csv-parse-profile",
+    "poNumber": "PO-PILOT-001",
+    "sourceFileName": "sample-order.csv"
+  },
+  "expected": {
+    "routingOutcome": "knownOrder",
+    "customerId": "pilot-customer",
+    "orderStatus": "completed",
+    "csrFolder": "CSR/Pilot CSV Parse",
+    "routingTags": [
+      "pilot",
+      "csv",
+      "active-flow:orderProcess CSV Parse",
+      "shadow-mode"
+    ],
+    "matchedInternalItemNumbers": [
+      "10001",
+      "10002"
+    ],
+    "unresolvedLineCount": 0,
+    "exceptionCount": 0,
+    "outputArtifactTypes": [
+      "universalOrderJson",
+      "lineCsv"
+    ],
+    "lineOutputFile": "expected-line-output.csv",
+    "shadowDeliveryMode": "shadowOnly",
+    "productionDeliveryEnabled": false,
+    "plumsailUsed": false
+  }
+}

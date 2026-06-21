@@ -1,0 +1,27 @@
+[
+  {
+    "id": "pilot-customer",
+    "tenantId": "altitude",
+    "customerCode": "PILOT",
+    "name": "Pilot Customer",
+    "storeNumber": "101",
+    "routeNumber": "R1",
+    "csrEmail": "pilot-csr@example.com",
+    "csrFolder": "CSR/Pilot CSV Parse",
+    "senderDomains": [
+      "pilot.example"
+    ],
+    "aliases": [
+      "Pilot"
+    ],
+    "knownSubjectPatterns": [
+      "\\bPO[- ]?PILOT\\b",
+      "\\bpilot csv order\\b"
+    ],
+    "rawSource": {
+      "phase": "14",
+      "source": "samples/pilot/pilot-shadow-manifest.json",
+      "note": "Synthetic pilot customer selected for the active orderProcess CSV Parse migration path."
+    }
+  }
+]

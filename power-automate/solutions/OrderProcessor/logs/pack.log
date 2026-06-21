@@ -1,0 +1,24 @@
+2026-06-20 13:19:45.296 - Warning	Read-only files will be over-written or deleted.
+2026-06-20 13:19:45.301 - Info	
+Packing C:\Users\bedel\OneDrive - Altitude Logistics, Inc\Documents\Work\Focus Automate\Order Processor\power-automate\solutions\OrderProcessor\DataverseProject\src to C:\Users\bedel\OneDrive - Altitude Logistics, Inc\Documents\Work\Focus Automate\Order Processor\power-automate\solutions\OrderProcessor\exports\OrderProcessor_1.0.0.0_unmanaged.zip
+
+2026-06-20 13:19:45.323 - Info	Processing Component: Entities
+2026-06-20 13:19:45.327 - Info	Processing Component: Roles
+2026-06-20 13:19:45.331 - Info	Processing Component: Workflows
+2026-06-20 13:19:45.343 - Info	 - OrderProcessor - Customer Import Adapter Template
+2026-06-20 13:19:45.347 - Info	 - OrderProcessor - Item Import Adapter Template
+2026-06-20 13:19:45.348 - Info	 - OrderProcessor - Mailbox Trigger Template
+2026-06-20 13:19:45.348 - Info	 - OrderProcessor - Output Delivery Adapter Template
+2026-06-20 13:19:45.348 - Info	Processing Component: FieldSecurityProfiles
+2026-06-20 13:19:45.349 - Info	Processing Component: Templates
+2026-06-20 13:19:45.351 - Info	Processing Component: EntityMaps
+2026-06-20 13:19:45.352 - Info	Processing Component: EntityRelationships
+2026-06-20 13:19:45.356 - Info	Processing Component: OrganizationSettings
+2026-06-20 13:19:45.357 - Info	Processing Component: optionsets
+2026-06-20 13:19:45.358 - Info	Processing Component: CustomControls
+2026-06-20 13:19:45.362 - Info	Processing Component: SolutionPluginAssemblies
+2026-06-20 13:19:45.364 - Info	Processing Component: EntityDataProviders
+2026-06-20 13:19:45.366 - Info	Processing Sharded Component Files
+2026-06-20 13:19:45.476 - Info	
+Unmanaged Pack complete.
+

@@ -1,0 +1,15 @@
+{
+    "name":  "OrderProcessor - Item Import Adapter Template",
+    "slug":  "orderprocessor-item-import-adapter-template",
+    "workflowId":  "7aa4ab3f-d509-4866-98a0-fcce8dc79b03",
+    "trigger":  "HTTP request from customer-specific file/source adapter",
+    "endpoint":  "POST /imports/items",
+    "status":  "disabled template",
+    "connectionReferences":  [
+
+                             ],
+    "notes":  [
+                  "Use only when item refresh input must originate in Power Automate.",
+                  "Flow forwards normalized rows/source metadata to APIM; Azure owns parsing, item normalization, embeddings, and Cosmos writes."
+              ]
+}

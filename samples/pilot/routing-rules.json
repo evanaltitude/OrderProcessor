@@ -1,0 +1,33 @@
+[
+  {
+    "id": "pilot-csv-orders",
+    "tenantId": "altitude",
+    "name": "Pilot CSV order emails",
+    "outcome": "knownOrder",
+    "priority": 10,
+    "customerId": "pilot-customer",
+    "processorProfileId": "pilot-csv-parse-profile",
+    "mailboxAccountIds": [
+      "pilot-csv-mailbox"
+    ],
+    "mailboxAddresses": [
+      "pilot-csv-orders@focuseautomate.test"
+    ],
+    "senderDomains": [
+      "pilot.example"
+    ],
+    "subjectRegex": [
+      "\\b(order|po|PO-PILOT)\\b"
+    ],
+    "attachmentExtensions": [
+      "csv"
+    ],
+    "requiredAttachment": true,
+    "tags": [
+      "pilot",
+      "csv",
+      "active-flow:orderProcess CSV Parse",
+      "shadow-mode"
+    ]
+  }
+]

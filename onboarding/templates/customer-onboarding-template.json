@@ -1,0 +1,279 @@
+{
+  "packageVersion": "1.0",
+  "onboardingPackageId": "replace-with-customer-id",
+  "tenantId": "altitude",
+  "templateMode": true,
+  "customerProfile": {
+    "document": {
+      "id": "replace-with-customer-id",
+      "tenantId": "altitude",
+      "customerCode": "REPLACE",
+      "name": "Replace Customer Name",
+      "storeNumber": "",
+      "routeNumber": "",
+      "csrEmail": "csr@example.com",
+      "csrFolder": "CSR/Replace Customer",
+      "senderDomains": [
+        "customer-domain.example"
+      ],
+      "aliases": [
+        "Replace Customer"
+      ],
+      "knownSubjectPatterns": [
+        "\\bPO\\b",
+        "\\border\\b"
+      ]
+    }
+  },
+  "microsoftAuthConnections": {
+    "items": [
+      {
+        "id": "replace-m365-connection",
+        "tenantId": "altitude",
+        "customerId": "replace-with-customer-id",
+        "provider": "microsoft365",
+        "displayName": "Replace Customer Microsoft 365 Connection",
+        "ownerEmail": "connect@focuseautomate.com",
+        "connectionType": "delegated",
+        "status": "needsConsent",
+        "scopes": [
+          "Mail.Read",
+          "Mail.ReadWrite"
+        ],
+        "keyVaultSecretNames": {
+          "clientId": "replace-customer-client-id",
+          "clientSecret": "replace-customer-client-secret"
+        }
+      }
+    ]
+  },
+  "monitoredMailboxes": {
+    "items": [
+      {
+        "id": "replace-orders-mailbox",
+        "tenantId": "altitude",
+        "customerId": "replace-with-customer-id",
+        "mailboxAddress": "orders@customer-domain.example",
+        "displayName": "Replace Customer Orders",
+        "provider": "microsoft365",
+        "connectionId": "replace-m365-connection",
+        "enabled": true,
+        "ingestStatus": "configured",
+        "permissionStatus": "notTested",
+        "requiredPermissions": [
+          "Mail.Read",
+          "Mail.ReadWrite"
+        ],
+        "folderIds": {
+          "inbox": "",
+          "processed": "",
+          "needsReview": ""
+        },
+        "settings": {
+          "shadowMode": true,
+          "productionActionsEnabled": false
+        }
+      }
+    ]
+  },
+  "consoleUsers": {
+    "items": [
+      {
+        "id": "connect-admin",
+        "tenantId": "altitude",
+        "email": "connect@focuseautomate.com",
+        "displayName": "Focus Automate Admin",
+        "roles": [
+          "platformAdmin"
+        ],
+        "enabled": true
+      },
+      {
+        "id": "replace-customer-user",
+        "tenantId": "altitude",
+        "email": "customer.user@example.com",
+        "displayName": "Replace Customer User",
+        "roles": [
+          "customerOperator"
+        ],
+        "enabled": true
+      }
+    ]
+  },
+  "customerUserAssignments": {
+    "items": [
+      {
+        "id": "replace-customer-user-assignment",
+        "tenantId": "altitude",
+        "customerId": "replace-with-customer-id",
+        "email": "customer.user@example.com",
+        "roles": [
+          "customerOperator"
+        ],
+        "enabled": true
+      }
+    ]
+  },
+  "routingRules": {
+    "items": [
+      {
+        "id": "replace-csv-orders",
+        "tenantId": "altitude",
+        "customerId": "replace-with-customer-id",
+        "name": "Replace Customer CSV order emails",
+        "outcome": "knownOrder",
+        "priority": 10,
+        "enabled": true,
+        "processorProfileId": "replace-csv-processor",
+        "mailboxAccountIds": [
+          "replace-orders-mailbox"
+        ],
+        "mailboxAddresses": [
+          "orders@customer-domain.example"
+        ],
+        "senderDomains": [
+          "customer-domain.example"
+        ],
+        "subjectRegex": [
+          "\\b(order|po)\\b"
+        ],
+        "attachmentExtensions": [
+          "csv"
+        ],
+        "requiredAttachment": true,
+        "tags": [
+          "customer-onboarding",
+          "shadow-mode"
+        ]
+      }
+    ]
+  },
+  "processorProfiles": {
+    "items": [
+      {
+        "id": "replace-csv-processor",
+        "tenantId": "altitude",
+        "customerId": "replace-with-customer-id",
+        "name": "Replace Customer CSV Processor",
+        "processorType": "csv",
+        "outputProfileId": "replace-csv-output",
+        "settings": {
+          "hasHeader": true,
+          "delimiter": ",",
+          "usesPlumsail": false,
+          "fieldMap": {
+            "po_number": "po_number",
+            "provided_item_number": "item_number",
+            "quantity": "quantity",
+            "description": "description",
+            "provided_upc": "upc"
+          }
+        }
+      }
+    ]
+  },
+  "outputProfiles": {
+    "items": [
+      {
+        "id": "replace-csv-output",
+        "tenantId": "altitude",
+        "customerId": "replace-with-customer-id",
+        "name": "Replace Customer CSV Output",
+        "outputType": "csv",
+        "destination": {
+          "adapter": "shadowBlob",
+          "folder": "customers/replace/shadow-output",
+          "deliveryMode": "shadowOnly",
+          "productionDeliveryEnabled": false
+        },
+        "settings": {
+          "includeHeader": true,
+          "fields": [
+            "po_number",
+            "line_number",
+            "quantity",
+            "provided_item_number",
+            "provided_upc",
+            "description",
+            "matched_internal_item_number",
+            "validation_status",
+            "validation_confidence"
+          ]
+        }
+      }
+    ]
+  },
+  "importSources": {
+    "customerList": {
+      "sourceType": "sharePointListExport",
+      "sourcePath": "replace-with-customer-list-source",
+      "owner": "connect@focuseautomate.com",
+      "refreshCadence": "daily",
+      "fieldMap": {
+        "customer_code": "Customer Code",
+        "name": "Customer Name",
+        "store_number": "Store Number",
+        "route_number": "Route Number",
+        "sender_domains": "Sender Domains"
+      }
+    },
+    "itemList": {
+      "sourceType": "sharePointListExport",
+      "sourcePath": "replace-with-item-list-source",
+      "owner": "connect@focuseautomate.com",
+      "refreshCadence": "weekly",
+      "fieldMap": {
+        "internal_item_number": "Internal Item Number",
+        "description": "Description",
+        "upc": "UPC",
+        "customer_item_numbers": "Customer Item Numbers",
+        "aliases": "Aliases"
+      }
+    }
+  },
+  "csrRouting": {
+    "customerId": "replace-with-customer-id",
+    "routingMode": "folderAndExceptionQueue",
+    "csrFolder": "CSR/Replace Customer",
+    "csrEmail": "csr@example.com",
+    "failureFolder": "CSR/Replace Customer/Needs Review"
+  },
+  "testFixtures": [
+    {
+      "type": "pilotShadowManifest",
+      "path": "replace-with-fixture-manifest.json",
+      "required": true
+    }
+  ],
+  "migrationPlan": {
+    "currentStage": "shadow",
+    "remainingCustomersStrategy": "Migrate customers in batches by processor family, output format, and mailbox/auth readiness.",
+    "migrationBatches": [
+      {
+        "batchId": "batch-001-pilot",
+        "sequence": 1,
+        "customerIds": [
+          "replace-with-customer-id"
+        ],
+        "entryCriteria": [
+          "Customer config complete",
+          "Approved sample emails/files available",
+          "Microsoft mailbox access consented"
+        ],
+        "exitCriteria": [
+          "Shadow run passes",
+          "Operations approves outputs",
+          "Cutover gates signed off"
+        ]
+      }
+    ]
+  },
+  "cutoverGates": [
+    "Package validator passes",
+    "Shadow fixtures pass",
+    "Real pilot samples pass",
+    "Microsoft Graph mailbox connection tested",
+    "Production output destination approved",
+    "Rollback path documented"
+  ]
+}

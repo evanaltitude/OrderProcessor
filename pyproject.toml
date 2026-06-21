@@ -1,0 +1,14 @@
+[project]
+name = "order-processor"
+version = "0.1.0"
+description = "Azure-first order mailbox automation platform scaffold."
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

@@ -1,0 +1,9 @@
+﻿From: buyer@example.com
+To: customer-orders@example.com
+Subject: PO EB-1001
+
+Please process this order:
+
+Item Number | UPC | Quantity
+188010145 | 860003377529 | 1
+188010146 | 860003377530 | 3

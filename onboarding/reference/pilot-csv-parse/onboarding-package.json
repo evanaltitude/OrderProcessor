@@ -1,0 +1,188 @@
+{
+  "packageVersion": "1.0",
+  "onboardingPackageId": "pilot-csv-parse",
+  "tenantId": "altitude",
+  "description": "Reference onboarding package for the Phase 14 active orderProcess CSV Parse pilot.",
+  "customerProfile": {
+    "id": "pilot-customer",
+    "path": "../../../samples/pilot/customers.json"
+  },
+  "microsoftAuthConnections": {
+    "items": [
+      {
+        "id": "pilot-m365-shadow-connection",
+        "tenantId": "altitude",
+        "customerId": "pilot-customer",
+        "provider": "microsoft365",
+        "displayName": "Pilot Microsoft 365 Shadow Connection",
+        "ownerEmail": "connect@focuseautomate.com",
+        "connectionType": "delegated",
+        "status": "configured",
+        "scopes": [
+          "Mail.Read",
+          "Mail.ReadWrite"
+        ],
+        "keyVaultSecretNames": {
+          "clientId": "pilot-m365-client-id",
+          "clientSecret": "pilot-m365-client-secret"
+        },
+        "metadata": {
+          "shadowOnly": true,
+          "liveGraphValidationRequired": true
+        }
+      }
+    ]
+  },
+  "monitoredMailboxes": {
+    "path": "../../../samples/pilot/mailboxes.json"
+  },
+  "consoleUsers": {
+    "items": [
+      {
+        "id": "connect-admin",
+        "tenantId": "altitude",
+        "email": "connect@focuseautomate.com",
+        "displayName": "Focus Automate Admin",
+        "roles": [
+          "platformAdmin"
+        ],
+        "enabled": true
+      },
+      {
+        "id": "pilot-operator",
+        "tenantId": "altitude",
+        "email": "pilot.operator@example.com",
+        "displayName": "Pilot Customer Operator",
+        "roles": [
+          "customerOperator"
+        ],
+        "enabled": true
+      }
+    ]
+  },
+  "customerUserAssignments": {
+    "items": [
+      {
+        "id": "pilot-operator-assignment",
+        "tenantId": "altitude",
+        "customerId": "pilot-customer",
+        "email": "pilot.operator@example.com",
+        "roles": [
+          "customerOperator"
+        ],
+        "enabled": true
+      }
+    ]
+  },
+  "routingRules": {
+    "path": "../../../samples/pilot/routing-rules.json"
+  },
+  "processorProfiles": {
+    "path": "../../../samples/pilot/processor-profiles.json"
+  },
+  "outputProfiles": {
+    "path": "../../../samples/pilot/output-profiles.json"
+  },
+  "importSources": {
+    "customerList": {
+      "sourceType": "syntheticFixture",
+      "sourcePath": "../../../samples/pilot/customers.json",
+      "owner": "connect@focuseautomate.com",
+      "refreshCadence": "daily",
+      "fieldMap": {
+        "customer_code": "customerCode",
+        "name": "name",
+        "store_number": "storeNumber",
+        "route_number": "routeNumber",
+        "sender_domains": "senderDomains"
+      },
+      "replacementTarget": "Cosmos customers and customerAliases containers"
+    },
+    "itemList": {
+      "sourceType": "syntheticFixture",
+      "sourcePath": "../../../samples/pilot/items.json",
+      "owner": "connect@focuseautomate.com",
+      "refreshCadence": "weekly",
+      "fieldMap": {
+        "internal_item_number": "internalItemNumber",
+        "description": "description",
+        "upc": "upc",
+        "customer_item_numbers": "customerItemNumbers",
+        "aliases": "aliases"
+      },
+      "replacementTarget": "Cosmos items container with vector and keyword matching"
+    }
+  },
+  "csrRouting": {
+    "customerId": "pilot-customer",
+    "routingMode": "folderAndExceptionQueue",
+    "csrFolder": "CSR/Pilot CSV Parse",
+    "csrEmail": "pilot-csr@example.com",
+    "failureFolder": "CSR/Pilot CSV Parse/Needs Review",
+    "notes": "No production folder move occurs during shadow mode; this records the parity target."
+  },
+  "testFixtures": [
+    {
+      "type": "pilotShadowManifest",
+      "path": "../../../samples/pilot/pilot-shadow-manifest.json",
+      "required": true
+    }
+  ],
+  "migrationPlan": {
+    "currentStage": "shadow",
+    "remainingCustomersStrategy": "After the pilot passes with approved real samples, migrate remaining customers in small batches grouped by processor family, output adapter, mailbox/auth readiness, and exception volume.",
+    "migrationBatches": [
+      {
+        "batchId": "batch-001-pilot-csv-parse",
+        "sequence": 1,
+        "customerIds": [
+          "pilot-customer"
+        ],
+        "entryCriteria": [
+          "Synthetic pilot package validates",
+          "Approved real pilot samples are available",
+          "Microsoft mailbox consent is complete"
+        ],
+        "exitCriteria": [
+          "Shadow-run parity is accepted",
+          "Operations approves output artifacts",
+          "Graph mailbox connection is live-tested",
+          "Rollback path is documented"
+        ]
+      },
+      {
+        "batchId": "batch-002-similar-csv-customers",
+        "sequence": 2,
+        "customerIds": [],
+        "entryCriteria": [
+          "Pilot CSV Parse customer is live or accepted for cutover",
+          "Customers use comparable CSV inputs and line CSV outputs"
+        ],
+        "exitCriteria": [
+          "Every customer package validates",
+          "Every customer has approved fixtures and shadow results"
+        ]
+      },
+      {
+        "batchId": "batch-003-workbook-and-pdf-customers",
+        "sequence": 3,
+        "customerIds": [],
+        "entryCriteria": [
+          "Workbook and PDF processor fixtures exist",
+          "Document Intelligence and workbook conversion gaps are closed"
+        ],
+        "exitCriteria": [
+          "Parser parity and exception workflows are accepted"
+        ]
+      }
+    ]
+  },
+  "cutoverGates": [
+    "Onboarding package validator passes with fixtures enabled",
+    "Real pilot sample emails/files pass shadow comparison",
+    "Microsoft Graph mailbox test succeeds",
+    "Operations approves output files and CSR routing",
+    "Exception handling is better than current flow behavior",
+    "Rollback plan and customer communication plan are documented"
+  ]
+}

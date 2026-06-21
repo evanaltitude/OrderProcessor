@@ -1,0 +1,31 @@
+[
+  {
+    "id": "pilot-csv-line-output",
+    "tenantId": "altitude",
+    "customerId": "pilot-customer",
+    "name": "Pilot CSV Parse Line Output",
+    "outputType": "csv",
+    "destination": {
+      "adapter": "shadowBlob",
+      "folder": "samples/pilot/shadow-output",
+      "deliveryMode": "shadowOnly",
+      "productionDeliveryEnabled": false
+    },
+    "settings": {
+      "includeHeader": true,
+      "fileNameTemplate": "pilot-csv-parse-{poNumber}-order-lines.csv",
+      "fields": [
+        "po_number",
+        "order_number",
+        "line_number",
+        "quantity",
+        "provided_item_number",
+        "provided_upc",
+        "description",
+        "matched_internal_item_number",
+        "validation_status",
+        "validation_confidence"
+      ]
+    }
+  }
+]

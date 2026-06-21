@@ -1,0 +1,15 @@
+{
+    "name":  "OrderProcessor - Customer Import Adapter Template",
+    "slug":  "orderprocessor-customer-import-adapter-template",
+    "workflowId":  "06b7f4fc-5f13-4a6f-8742-03f19c301902",
+    "trigger":  "HTTP request from customer-specific file/source adapter",
+    "endpoint":  "POST /imports/customers",
+    "status":  "disabled template",
+    "connectionReferences":  [
+
+                             ],
+    "notes":  [
+                  "Use only when a customer source file must be received through M365 or another Power Automate-owned source.",
+                  "Flow forwards normalized rows/source metadata to APIM; Azure owns parsing, validation, and Cosmos writes."
+              ]
+}

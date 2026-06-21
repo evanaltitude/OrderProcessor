@@ -1,0 +1,60 @@
+﻿{
+    "generatedAtUtc":  "2026-06-20T13:49:32.7241912Z",
+    "purpose":  "Synthetic Phase 2 fixtures for reverse engineering and future golden-file tests.",
+    "fixtures":  [
+                     {
+                         "path":  "csv/order-csv-parse.csv",
+                         "targetFlow":  "orderProcess - CSV Parse",
+                         "sourceType":  "CSV",
+                         "notes":  "Headerless CSV exercises generic Column 1..N behavior."
+                     },
+                     {
+                         "path":  "csv/order-csv-parse-with-header.csv",
+                         "targetFlow":  "orderProcess - CSV Parse",
+                         "sourceType":  "CSV",
+                         "notes":  "Headered CSV exercises future robust parser behavior."
+                     },
+                     {
+                         "path":  "xlsx/generic-ai-header-order.xlsx",
+                         "targetFlow":  "orderProcess - XLSX - AI Header - moduleID",
+                         "sourceType":  "XLSX",
+                         "notes":  "Generic workbook with SupplierCode, Barcode, QtyOrdered."
+                     },
+                     {
+                         "path":  "xls-xlt/legacy-order.xls",
+                         "targetFlow":  "orderProcess - XLS or XLT - AI Header - moduleID",
+                         "sourceType":  "XLS/XLT",
+                         "notes":  "HTML-backed legacy Excel file placeholder."
+                     },
+                     {
+                         "path":  "xls-xlt/legacy-template.xlt",
+                         "targetFlow":  "orderProcess - XLS or XLT - AI Header - moduleID",
+                         "sourceType":  "XLS/XLT",
+                         "notes":  "Template-style legacy Excel placeholder."
+                     },
+                     {
+                         "path":  "pdf/order-document.pdf",
+                         "targetFlow":  "orderProcess - Google Document AI -  PDF",
+                         "sourceType":  "PDF",
+                         "notes":  "Simple PDF text fixture for Document Intelligence replacement tests."
+                     },
+                     {
+                         "path":  "email-body/generic-email-body.eml",
+                         "targetFlow":  "orderProcess - Email Body - moduleID",
+                         "sourceType":  "Email body",
+                         "notes":  "Generic table-like email body."
+                     },
+                     {
+                         "path":  "customer-specific/market-place-pet-supplies.eml",
+                         "targetFlow":  "orderProcess - Email Body - Market Place Pet Supplies w Item Validation",
+                         "sourceType":  "Customer-specific",
+                         "notes":  "Subject PO and itemNumber-quantity body lines."
+                     },
+                     {
+                         "path":  "customer-specific/petland-branch-order.xlsx",
+                         "targetFlow":  "orderProcess - XLSX - AI Header ID - Petland",
+                         "sourceType":  "Customer-specific",
+                         "notes":  "Petland branch workbook pattern."
+                     }
+                 ]
+}

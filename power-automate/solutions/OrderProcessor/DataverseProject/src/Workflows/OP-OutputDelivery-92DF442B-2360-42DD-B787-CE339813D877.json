@@ -1,0 +1,116 @@
+{
+    "properties":  {
+                       "connectionReferences":  {
+
+                                                },
+                       "definition":  {
+                                          "$schema":  "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+                                          "contentVersion":  "1.0.0.0",
+                                          "parameters":  {
+                                                             "$connections":  {
+                                                                                  "defaultValue":  {
+
+                                                                                                   },
+                                                                                  "type":  "Object"
+                                                                              },
+                                                             "$authentication":  {
+                                                                                     "defaultValue":  {
+
+                                                                                                      },
+                                                                                     "type":  "SecureObject"
+                                                                                 },
+                                                             "OrderProcessorApiBaseUrl":  {
+                                                                                              "defaultValue":  "https://replace-with-apim-name.azure-api.net/order-processor",
+                                                                                              "type":  "String"
+                                                                                          },
+                                                             "OrderProcessorApimSubscriptionKey":  {
+                                                                                                       "defaultValue":  "",
+                                                                                                       "type":  "SecureString"
+                                                                                                   },
+                                                             "OrderProcessorTenantId":  {
+                                                                                            "defaultValue":  "altitude",
+                                                                                            "type":  "String"
+                                                                                        }
+                                                         },
+                                          "triggers":  {
+                                                           "manual":  {
+                                                                          "type":  "Request",
+                                                                          "kind":  "Http",
+                                                                          "inputs":  {
+                                                                                         "schema":  {
+                                                                                                        "type":  "object",
+                                                                                                        "required":  [
+                                                                                                                         "tenantId",
+                                                                                                                         "customerId",
+                                                                                                                         "orderRunId"
+                                                                                                                     ],
+                                                                                                        "properties":  {
+                                                                                                                           "tenantId":  {
+                                                                                                                                            "type":  "string"
+                                                                                                                                        },
+                                                                                                                           "customerId":  {
+                                                                                                                                              "type":  "string"
+                                                                                                                                          },
+                                                                                                                           "orderRunId":  {
+                                                                                                                                              "type":  "string"
+                                                                                                                                          },
+                                                                                                                           "deliveryMode":  {
+                                                                                                                                                "type":  "string"
+                                                                                                                                            },
+                                                                                                                           "destination":  {
+                                                                                                                                               "type":  "object"
+                                                                                                                                           },
+                                                                                                                           "outputArtifacts":  {
+                                                                                                                                                   "type":  "array",
+                                                                                                                                                   "items":  {
+                                                                                                                                                                 "type":  "object"
+                                                                                                                                                             }
+                                                                                                                                               }
+                                                                                                                       }
+                                                                                                    },
+                                                                                         "triggerAuthenticationType":  "All"
+                                                                                     }
+                                                                      }
+                                                       },
+                                          "actions":  {
+                                                          "Customer_Specific_M365_Delivery_Placeholder":  {
+                                                                                                              "runAfter":  {
+
+                                                                                                                           },
+                                                                                                              "type":  "Compose",
+                                                                                                              "inputs":  {
+                                                                                                                             "note":  "Add customer-specific M365 delivery actions here only when delivery must stay in Power Automate.",
+                                                                                                                             "tenantId":  "@{triggerBody()?[\u0027tenantId\u0027]}",
+                                                                                                                             "customerId":  "@{triggerBody()?[\u0027customerId\u0027]}",
+                                                                                                                             "orderRunId":  "@{triggerBody()?[\u0027orderRunId\u0027]}",
+                                                                                                                             "deliveryMode":  "@{triggerBody()?[\u0027deliveryMode\u0027]}",
+                                                                                                                             "destination":  "@{triggerBody()?[\u0027destination\u0027]}",
+                                                                                                                             "outputArtifacts":  "@{triggerBody()?[\u0027outputArtifacts\u0027]}"
+                                                                                                                         }
+                                                                                                          },
+                                                          "Respond_Delivery_Template_Accepted":  {
+                                                                                                     "runAfter":  {
+                                                                                                                      "Customer_Specific_M365_Delivery_Placeholder":  [
+                                                                                                                                                                          "Succeeded"
+                                                                                                                                                                      ]
+                                                                                                                  },
+                                                                                                     "type":  "Response",
+                                                                                                     "kind":  "Http",
+                                                                                                     "inputs":  {
+                                                                                                                    "statusCode":  202,
+                                                                                                                    "body":  {
+                                                                                                                                 "accepted":  true,
+                                                                                                                                 "orderRunId":  "@{triggerBody()?[\u0027orderRunId\u0027]}",
+                                                                                                                                 "note":  "Template invoked. Configure actual M365 delivery actions per customer output profile."
+                                                                                                                             }
+                                                                                                                }
+                                                                                                 }
+                                                      },
+                                          "outputs":  {
+
+                                                      },
+                                          "templateName":  null
+                                      }
+                   },
+    "schemaVersion":  "1.0.0.0"
+}

@@ -1,0 +1,132 @@
+{
+    "properties":  {
+                       "connectionReferences":  {
+
+                                                },
+                       "definition":  {
+                                          "$schema":  "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+                                          "contentVersion":  "1.0.0.0",
+                                          "parameters":  {
+                                                             "$connections":  {
+                                                                                  "defaultValue":  {
+
+                                                                                                   },
+                                                                                  "type":  "Object"
+                                                                              },
+                                                             "$authentication":  {
+                                                                                     "defaultValue":  {
+
+                                                                                                      },
+                                                                                     "type":  "SecureObject"
+                                                                                 },
+                                                             "OrderProcessorApiBaseUrl":  {
+                                                                                              "defaultValue":  "https://replace-with-apim-name.azure-api.net/order-processor",
+                                                                                              "type":  "String"
+                                                                                          },
+                                                             "OrderProcessorApimSubscriptionKey":  {
+                                                                                                       "defaultValue":  "",
+                                                                                                       "type":  "SecureString"
+                                                                                                   },
+                                                             "OrderProcessorTenantId":  {
+                                                                                            "defaultValue":  "altitude",
+                                                                                            "type":  "String"
+                                                                                        }
+                                                         },
+                                          "triggers":  {
+                                                           "manual":  {
+                                                                          "type":  "Request",
+                                                                          "kind":  "Http",
+                                                                          "inputs":  {
+                                                                                         "schema":  {
+                                                                                                        "properties":  {
+                                                                                                                           "tenantId":  {
+                                                                                                                                            "type":  "string"
+                                                                                                                                        },
+                                                                                                                           "customerId":  {
+                                                                                                                                              "type":  "string"
+                                                                                                                                          },
+                                                                                                                           "sourceName":  {
+                                                                                                                                              "type":  "string"
+                                                                                                                                          },
+                                                                                                                           "fieldMap":  {
+                                                                                                                                            "type":  "object"
+                                                                                                                                        },
+                                                                                                                           "rows":  {
+                                                                                                                                        "type":  "array",
+                                                                                                                                        "items":  {
+                                                                                                                                                      "type":  "object"
+                                                                                                                                                  }
+                                                                                                                                    },
+                                                                                                                           "sourceMetadata":  {
+                                                                                                                                                  "type":  "object"
+                                                                                                                                              }
+                                                                                                                       },
+                                                                                                        "type":  "object",
+                                                                                                        "required":  [
+                                                                                                                         "tenantId",
+                                                                                                                         "customerId",
+                                                                                                                         "rows"
+                                                                                                                     ]
+                                                                                                    },
+                                                                                         "triggerAuthenticationType":  "All"
+                                                                                     }
+                                                                      }
+                                                       },
+                                          "actions":  {
+                                                          "Post_To_Order_Processor_Item_Import":  {
+                                                                                                      "runAfter":  {
+
+                                                                                                                   },
+                                                                                                      "type":  "Http",
+                                                                                                      "inputs":  {
+                                                                                                                     "method":  "POST",
+                                                                                                                     "uri":  "@{concat(parameters(\u0027OrderProcessorApiBaseUrl\u0027), \u0027/imports/items\u0027)}",
+                                                                                                                     "headers":  {
+                                                                                                                                     "Content-Type":  "application/json",
+                                                                                                                                     "Ocp-Apim-Subscription-Key":  "@parameters(\u0027OrderProcessorApimSubscriptionKey\u0027)"
+                                                                                                                                 },
+                                                                                                                     "body":  "@triggerBody()"
+                                                                                                                 }
+                                                                                                  },
+                                                          "Respond_Accepted":  {
+                                                                                   "runAfter":  {
+                                                                                                    "Post_To_Order_Processor_Item_Import":  [
+                                                                                                                                                "Succeeded"
+                                                                                                                                            ]
+                                                                                                },
+                                                                                   "type":  "Response",
+                                                                                   "kind":  "Http",
+                                                                                   "inputs":  {
+                                                                                                  "statusCode":  202,
+                                                                                                  "body":  {
+                                                                                                               "accepted":  true,
+                                                                                                               "endpoint":  "/imports/items",
+                                                                                                               "backendResponse":  "@{body(\u0027Post_To_Order_Processor_Item_Import\u0027)}"
+                                                                                                           }
+                                                                                              }
+                                                                               },
+                                                          "Stop_On_Backend_Failure":  {
+                                                                                          "runAfter":  {
+                                                                                                           "Post_To_Order_Processor_Item_Import":  [
+                                                                                                                                                       "Failed",
+                                                                                                                                                       "TimedOut"
+                                                                                                                                                   ]
+                                                                                                       },
+                                                                                          "type":  "Terminate",
+                                                                                          "inputs":  {
+                                                                                                         "runStatus":  "Failed",
+                                                                                                         "runError":  {
+                                                                                                                          "code":  "orderProcessorAdapterFailed",
+                                                                                                                          "message":  "APIM /imports/items call failed."
+                                                                                                                      }
+                                                                                                     }
+                                                                                      }
+                                                      },
+                                          "outputs":  {
+
+                                                      },
+                                          "templateName":  null
+                                      }
+                   },
+    "schemaVersion":  "1.0.0.0"
+}

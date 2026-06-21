@@ -1,0 +1,134 @@
+{
+    "properties":  {
+                       "connectionReferences":  {
+                                                    "shared_office365":  {
+                                                                             "runtimeSource":  "embedded",
+                                                                             "connection":  {
+                                                                                                "connectionReferenceLogicalName":  "alt_sharedoffice365_orderprocessor"
+                                                                                            },
+                                                                             "api":  {
+                                                                                         "name":  "shared_office365"
+                                                                                     }
+                                                                         }
+                                                },
+                       "definition":  {
+                                          "$schema":  "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+                                          "contentVersion":  "1.0.0.0",
+                                          "parameters":  {
+                                                             "$connections":  {
+                                                                                  "defaultValue":  {
+
+                                                                                                   },
+                                                                                  "type":  "Object"
+                                                                              },
+                                                             "$authentication":  {
+                                                                                     "defaultValue":  {
+
+                                                                                                      },
+                                                                                     "type":  "SecureObject"
+                                                                                 },
+                                                             "OrderProcessorApiBaseUrl":  {
+                                                                                              "defaultValue":  "https://replace-with-apim-name.azure-api.net/order-processor",
+                                                                                              "type":  "String"
+                                                                                          },
+                                                             "OrderProcessorApimSubscriptionKey":  {
+                                                                                                       "defaultValue":  "",
+                                                                                                       "type":  "SecureString"
+                                                                                                   },
+                                                             "OrderProcessorTenantId":  {
+                                                                                            "defaultValue":  "altitude",
+                                                                                            "type":  "String"
+                                                                                        },
+                                                             "OrderProcessorMailboxAddress":  {
+                                                                                                  "defaultValue":  "customer-orders@example.com",
+                                                                                                  "type":  "String"
+                                                                                              },
+                                                             "OrderProcessorMailboxAccountId":  {
+                                                                                                    "defaultValue":  "",
+                                                                                                    "type":  "String"
+                                                                                                },
+                                                             "OrderProcessorCustomerId":  {
+                                                                                              "defaultValue":  "",
+                                                                                              "type":  "String"
+                                                                                          }
+                                                         },
+                                          "triggers":  {
+                                                           "When_a_new_email_arrives_in_configured_shared_mailbox":  {
+                                                                                                                         "recurrence":  {
+                                                                                                                                            "frequency":  "Minute",
+                                                                                                                                            "interval":  1
+                                                                                                                                        },
+                                                                                                                         "metadata":  {
+                                                                                                                                          "operationMetadataId":  "10000000-0000-4000-8000-000000000001"
+                                                                                                                                      },
+                                                                                                                         "type":  "OpenApiConnection",
+                                                                                                                         "inputs":  {
+                                                                                                                                        "host":  {
+                                                                                                                                                     "apiId":  "/providers/Microsoft.PowerApps/apis/shared_office365",
+                                                                                                                                                     "connectionName":  "shared_office365",
+                                                                                                                                                     "operationId":  "SharedMailboxOnNewEmailV2"
+                                                                                                                                                 },
+                                                                                                                                        "parameters":  {
+                                                                                                                                                           "mailboxAddress":  "@parameters(\u0027OrderProcessorMailboxAddress\u0027)",
+                                                                                                                                                           "folderId":  "Inbox",
+                                                                                                                                                           "includeAttachments":  true,
+                                                                                                                                                           "importance":  "Any",
+                                                                                                                                                           "fetchOnlyWithAttachment":  false
+                                                                                                                                                       },
+                                                                                                                                        "authentication":  "@parameters(\u0027\u0027)"
+                                                                                                                                    }
+                                                                                                                     }
+                                                       },
+                                          "actions":  {
+                                                          "Post_Email_Metadata_To_Order_Processor":  {
+                                                                                                         "runAfter":  {
+
+                                                                                                                      },
+                                                                                                         "type":  "Http",
+                                                                                                         "inputs":  {
+                                                                                                                        "method":  "POST",
+                                                                                                                        "uri":  "@{concat(parameters(\u0027OrderProcessorApiBaseUrl\u0027), \u0027/emails/ingest\u0027)}",
+                                                                                                                        "headers":  {
+                                                                                                                                        "Content-Type":  "application/json",
+                                                                                                                                        "Ocp-Apim-Subscription-Key":  "@parameters(\u0027OrderProcessorApimSubscriptionKey\u0027)"
+                                                                                                                                    },
+                                                                                                                        "body":  {
+                                                                                                                                     "tenantId":  "@{parameters(\u0027OrderProcessorTenantId\u0027)}",
+                                                                                                                                     "mailbox":  "@{parameters(\u0027OrderProcessorMailboxAddress\u0027)}",
+                                                                                                                                     "mailboxAccountId":  "@{parameters(\u0027OrderProcessorMailboxAccountId\u0027)}",
+                                                                                                                                     "customerId":  "@{parameters(\u0027OrderProcessorCustomerId\u0027)}",
+                                                                                                                                     "messageId":  "@{triggerOutputs()?[\u0027body/id\u0027]}",
+                                                                                                                                     "sender":  "@{coalesce(triggerOutputs()?[\u0027body/from/emailAddress/address\u0027], triggerOutputs()?[\u0027body/from\u0027])}",
+                                                                                                                                     "subject":  "@{triggerOutputs()?[\u0027body/subject\u0027]}",
+                                                                                                                                     "receivedAt":  "@{triggerOutputs()?[\u0027body/receivedDateTime\u0027]}",
+                                                                                                                                     "bodyText":  "@{triggerOutputs()?[\u0027body/bodyPreview\u0027]}",
+                                                                                                                                     "bodyHtml":  "@{triggerOutputs()?[\u0027body/body\u0027]}",
+                                                                                                                                     "attachments":  "@{triggerOutputs()?[\u0027body/attachments\u0027]}"
+                                                                                                                                 }
+                                                                                                                    }
+                                                                                                     },
+                                                          "Stop_On_Ingest_Failure":  {
+                                                                                         "runAfter":  {
+                                                                                                          "Post_Email_Metadata_To_Order_Processor":  [
+                                                                                                                                                         "Failed",
+                                                                                                                                                         "TimedOut"
+                                                                                                                                                     ]
+                                                                                                      },
+                                                                                         "type":  "Terminate",
+                                                                                         "inputs":  {
+                                                                                                        "runStatus":  "Failed",
+                                                                                                        "runError":  {
+                                                                                                                         "code":  "orderProcessorIngestFailed",
+                                                                                                                         "message":  "APIM /emails/ingest call failed. Check APIM, Function, and mailbox configuration."
+                                                                                                                     }
+                                                                                                    }
+                                                                                     }
+                                                      },
+                                          "outputs":  {
+
+                                                      },
+                                          "templateName":  null
+                                      }
+                   },
+    "schemaVersion":  "1.0.0.0"
+}

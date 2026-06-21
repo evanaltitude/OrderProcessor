@@ -1,0 +1,63 @@
+{
+    "solution":  {
+                     "uniqueName":  "OrderProcessor",
+                     "displayName":  "Order Processor",
+                     "targetEnvironmentId":  "abbd708f-4eaf-e875-a282-e1207f4e370c",
+                     "targetEnvironmentName":  "Focus Automate",
+                     "owner":  "evanb@altitudelogistics.com",
+                     "version":  "1.0.0.0"
+                 },
+    "principles":  [
+                       "Power Automate is a thin adapter layer.",
+                       "All backend calls go through API Management.",
+                       "Complex parsing, customer identification, item validation, output generation, and persistence belong in Azure.",
+                       "Mailbox/customer configuration is backend/console data, not flow branching."
+                   ],
+    "flows":  [
+                  {
+                      "name":  "OrderProcessor - Mailbox Trigger Template",
+                      "slug":  "orderprocessor-mailbox-trigger-template",
+                      "workflowId":  "7f52d9d6-8eb1-4ad7-b2f6-89dd55dc4e01",
+                      "trigger":  "Office 365 Outlook shared mailbox new-email trigger",
+                      "endpoint":  "POST /emails/ingest",
+                      "status":  "disabled template",
+                      "connectionReferences":  [
+                                                   "shared_office365"
+                                               ]
+                  },
+                  {
+                      "name":  "OrderProcessor - Customer Import Adapter Template",
+                      "slug":  "orderprocessor-customer-import-adapter-template",
+                      "workflowId":  "06b7f4fc-5f13-4a6f-8742-03f19c301902",
+                      "trigger":  "HTTP request from customer-specific file/source adapter",
+                      "endpoint":  "POST /imports/customers",
+                      "status":  "disabled template",
+                      "connectionReferences":  [
+
+                                               ]
+                  },
+                  {
+                      "name":  "OrderProcessor - Item Import Adapter Template",
+                      "slug":  "orderprocessor-item-import-adapter-template",
+                      "workflowId":  "7aa4ab3f-d509-4866-98a0-fcce8dc79b03",
+                      "trigger":  "HTTP request from customer-specific file/source adapter",
+                      "endpoint":  "POST /imports/items",
+                      "status":  "disabled template",
+                      "connectionReferences":  [
+
+                                               ]
+                  },
+                  {
+                      "name":  "OrderProcessor - Output Delivery Adapter Template",
+                      "slug":  "orderprocessor-output-delivery-adapter-template",
+                      "workflowId":  "92df442b-2360-42dd-b787-ce339813d877",
+                      "trigger":  "HTTP request from Azure completion callback or scheduled adapter poll",
+                      "endpoint":  "customer-specific M365 delivery",
+                      "status":  "disabled optional template",
+                      "connectionReferences":  [
+
+                                               ]
+                  }
+              ],
+    "generatedAt":  "2026-06-20T13:19:42.2706901-04:00"
+}

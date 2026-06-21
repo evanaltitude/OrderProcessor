@@ -1,0 +1,800 @@
+﻿[
+    {
+        "displayName":  "orders@ - Master - Email Processor",
+        "slug":  "orders-master-email-processor",
+        "state":  "Activated",
+        "group":  "01-master-email",
+        "capability":  "mailbox routing",
+        "primaryBehavior":  "Monitors or processes the shared orders mailbox and dispatches work to downstream processing modules.",
+        "migrationTarget":  "Power Automate shell plus Azure /emails/ingest and data-driven routing rules.",
+        "triggers":  [
+                         "manual"
+                     ],
+        "connectors":  [
+                           "shared_office365",
+                           "shared_sharepointonline"
+                       ],
+        "operationIds":  [
+                             "DeleteItem",
+                             "GetEmailV2",
+                             "GetItem",
+                             "GetItems",
+                             "HttpRequest",
+                             "MoveV2"
+                         ],
+        "sourceDefinition":  "unpacked/Workflows/orders-Master-EmailProcessor-3B866FBB-F76B-F111-A826-70A8A54245EB.json",
+        "libraryDefinition":  "flow-library/01-master-email/orders-master-email-processor/definition.json"
+    },
+    {
+        "displayName":  "orders@ - Master - Email Router",
+        "slug":  "orders-master-email-router",
+        "state":  "Activated",
+        "group":  "01-master-email",
+        "capability":  "mailbox routing",
+        "primaryBehavior":  "Monitors or processes the shared orders mailbox and dispatches work to downstream processing modules.",
+        "migrationTarget":  "Power Automate shell plus Azure /emails/ingest and data-driven routing rules.",
+        "triggers":  [
+                         "When_a_new_email_arrives_in_a_shared_mailbox_(V2)"
+                     ],
+        "connectors":  [
+                           "shared_office365"
+                       ],
+        "operationIds":  [
+
+                         ],
+        "sourceDefinition":  "unpacked/Workflows/orders-Master-EmailRouter-39866FBB-F76B-F111-A826-70A8A54245EB.json",
+        "libraryDefinition":  "flow-library/01-master-email/orders-master-email-router/definition.json"
+    },
+    {
+        "displayName":  "Macro - Claim - Customer Identification - AI",
+        "slug":  "macro-claim-customer-identification-ai",
+        "state":  "Activated",
+        "group":  "02-customer-identification",
+        "capability":  "customer ID",
+        "primaryBehavior":  "Identifies or updates customer metadata for an email/order and records the result for routing or processing.",
+        "migrationTarget":  "Azure /customers/identify, deterministic rules, Azure OpenAI embeddings, and Cosmos vector search.",
+        "triggers":  [
+                         "manual"
+                     ],
+        "connectors":  [
+                           "shared_office365"
+                       ],
+        "operationIds":  [
+                             "HttpRequest"
+                         ],
+        "sourceDefinition":  "unpacked/Workflows/Macro-Claim-CustomerIdentification-AI-260C6194-F86B-F111-A826-70A8A54248F2.json",
+        "libraryDefinition":  "flow-library/02-customer-identification/macro-claim-customer-identification-ai/definition.json"
+    },
+    {
+        "displayName":  "Macro - Completed - Customer Identification - AI",
+        "slug":  "macro-completed-customer-identification-ai",
+        "state":  "Activated",
+        "group":  "02-customer-identification",
+        "capability":  "customer ID",
+        "primaryBehavior":  "Identifies or updates customer metadata for an email/order and records the result for routing or processing.",
+        "migrationTarget":  "Azure /customers/identify, deterministic rules, Azure OpenAI embeddings, and Cosmos vector search.",
+        "triggers":  [
+                         "manual"
+                     ],
+        "connectors":  [
+                           "shared_office365"
+                       ],
+        "operationIds":  [
+                             "GetEmailsV3",
+                             "HttpRequest"
+                         ],
+        "sourceDefinition":  "unpacked/Workflows/Macro-Completed-CustomerIdentification-AI-241DAA91-F86B-F111-A826-70A8A54245EB.json",
+        "libraryDefinition":  "flow-library/02-customer-identification/macro-completed-customer-identification-ai/definition.json"
+    },
+    {
+        "displayName":  "Macro - Reroute Email - Customer Identification - AI",
+        "slug":  "macro-reroute-email-customer-identification-ai",
+        "state":  "Activated",
+        "group":  "02-customer-identification",
+        "capability":  "customer ID",
+        "primaryBehavior":  "Identifies or updates customer metadata for an email/order and records the result for routing or processing.",
+        "migrationTarget":  "Azure /customers/identify, deterministic rules, Azure OpenAI embeddings, and Cosmos vector search.",
+        "triggers":  [
+                         "manual"
+                     ],
+        "connectors":  [
+                           "shared_office365",
+                           "shared_sharepointonline"
+                       ],
+        "operationIds":  [
+                             "GetEmailsV3",
+                             "GetItems",
+                             "HttpRequest",
+                             "PostItem"
+                         ],
+        "sourceDefinition":  "unpacked/Workflows/Macro-RerouteEmail-CustomerIdentification-AI-351DAA91-F86B-F111-A826-70A8A54245EB.json",
+        "libraryDefinition":  "flow-library/02-customer-identification/macro-reroute-email-customer-identification-ai/definition.json"
+    },
+    {
+        "displayName":  "orders@ - Module - Customer ID - Order Lines - Responses",
+        "slug":  "orders-module-customer-id-order-lines-responses",
+        "state":  "Activated",
+        "group":  "02-customer-identification",
+        "capability":  "customer ID",
+        "primaryBehavior":  "Identifies or updates customer metadata for an email/order and records the result for routing or processing.",
+        "migrationTarget":  "Azure /customers/identify, deterministic rules, Azure OpenAI embeddings, and Cosmos vector search.",
+        "triggers":  [
+                         "manual"
+                     ],
+        "connectors":  [
+                           "shared_office365",
+                           "shared_sharepointonline"
+                       ],
+        "operationIds":  [
+                             "GetEmailV2",
+                             "GetFileContent",
+                             "GetItems",
+                             "PatchItem",
+                             "PostItem"
+                         ],
+        "sourceDefinition":  "unpacked/Workflows/orders-Module-CustomerID-OrderLines-Responses-F7EFB4C0-F76B-F111-A826-70A8A54248F2.json",
+        "libraryDefinition":  "flow-library/02-customer-identification/orders-module-customer-id-order-lines-responses/definition.json"
+    },
+    {
+        "displayName":  "orders@ - Module - Customer ID - PDF - Responses",
+        "slug":  "orders-module-customer-id-pdf-responses",
+        "state":  "Activated",
+        "group":  "02-customer-identification",
+        "capability":  "customer ID",
+        "primaryBehavior":  "Identifies or updates customer metadata for an email/order and records the result for routing or processing.",
+        "migrationTarget":  "Azure /customers/identify, deterministic rules, Azure OpenAI embeddings, and Cosmos vector search.",
+        "triggers":  [
+                         "manual"
+                     ],
+        "connectors":  [
+                           "shared_office365",
+                           "shared_sharepointonline"
+                       ],
+        "operationIds":  [
+                             "GetEmailV2",
+                             "GetFileContent",
+                             "GetItems",
+                             "PatchItem",
+                             "PostItem"
+                         ],
+        "sourceDefinition":  "unpacked/Workflows/orders-Module-CustomerID-PDF-Responses-F3EFB4C0-F76B-F111-A826-70A8A54248F2.json",
+        "libraryDefinition":  "flow-library/02-customer-identification/orders-module-customer-id-pdf-responses/definition.json"
+    },
+    {
+        "displayName":  "orders@ - Module - Customer ID - Prompt Override - Responses",
+        "slug":  "orders-module-customer-id-prompt-override-responses",
+        "state":  "Activated",
+        "group":  "02-customer-identification",
+        "capability":  "customer ID",
+        "primaryBehavior":  "Identifies or updates customer metadata for an email/order and records the result for routing or processing.",
+        "migrationTarget":  "Azure /customers/identify, deterministic rules, Azure OpenAI embeddings, and Cosmos vector search.",
+        "triggers":  [
+                         "manual"
+                     ],
+        "connectors":  [
+                           "shared_sharepointonline"
+                       ],
+        "operationIds":  [
+                             "GetFileContent",
+                             "GetItems",
+                             "PatchItem",
+                             "PostItem"
+                         ],
+        "sourceDefinition":  "unpacked/Workflows/orders-Module-CustomerID-PromptOverride-Responses-3A866FBB-F76B-F111-A826-70A8A54245EB.json",
+        "libraryDefinition":  "flow-library/02-customer-identification/orders-module-customer-id-prompt-override-responses/definition.json"
+    },
+    {
+        "displayName":  "orders@ - Module - Customer ID - Responses",
+        "slug":  "orders-module-customer-id-responses",
+        "state":  "Activated",
+        "group":  "02-customer-identification",
+        "capability":  "customer ID",
+        "primaryBehavior":  "Identifies or updates customer metadata for an email/order and records the result for routing or processing.",
+        "migrationTarget":  "Azure /customers/identify, deterministic rules, Azure OpenAI embeddings, and Cosmos vector search.",
+        "triggers":  [
+                         "manual"
+                     ],
+        "connectors":  [
+                           "shared_office365",
+                           "shared_sharepointonline"
+                       ],
+        "operationIds":  [
+                             "GetEmailV2",
+                             "GetFileContent",
+                             "GetItems",
+                             "PatchItem",
+                             "PostItem"
+                         ],
+        "sourceDefinition":  "unpacked/Workflows/orders-Module-CustomerID-Responses-F2EFB4C0-F76B-F111-A826-70A8A54248F2.json",
+        "libraryDefinition":  "flow-library/02-customer-identification/orders-module-customer-id-responses/definition.json"
+    },
+    {
+        "displayName":  "orders@ - Module - Customer Identification",
+        "slug":  "orders-module-customer-identification",
+        "state":  "Draft",
+        "group":  "02-customer-identification",
+        "capability":  "customer ID",
+        "primaryBehavior":  "Identifies or updates customer metadata for an email/order and records the result for routing or processing.",
+        "migrationTarget":  "Azure /customers/identify, deterministic rules, Azure OpenAI embeddings, and Cosmos vector search.",
+        "triggers":  [
+                         "manual"
+                     ],
+        "connectors":  [
+                           "shared_office365",
+                           "shared_sharepointonline"
+                       ],
+        "operationIds":  [
+                             "GetEmailV2",
+                             "GetItems",
+                             "PatchItem",
+                             "PostItem"
+                         ],
+        "sourceDefinition":  "unpacked/Workflows/orders-Module-CustomerIdentification-38866FBB-F76B-F111-A826-70A8A54245EB.json",
+        "libraryDefinition":  "flow-library/02-customer-identification/orders-module-customer-identification/definition.json"
+    },
+    {
+        "displayName":  "orders@ - Module - Customer Identification - Order Lines",
+        "slug":  "orders-module-customer-identification-order-lines",
+        "state":  "Draft",
+        "group":  "02-customer-identification",
+        "capability":  "customer ID",
+        "primaryBehavior":  "Identifies or updates customer metadata for an email/order and records the result for routing or processing.",
+        "migrationTarget":  "Azure /customers/identify, deterministic rules, Azure OpenAI embeddings, and Cosmos vector search.",
+        "triggers":  [
+                         "manual"
+                     ],
+        "connectors":  [
+                           "shared_office365",
+                           "shared_sharepointonline"
+                       ],
+        "operationIds":  [
+                             "GetEmailV2",
+                             "GetItems",
+                             "PatchItem",
+                             "PostItem"
+                         ],
+        "sourceDefinition":  "unpacked/Workflows/orders-Module-CustomerIdentification-OrderLines-F4EFB4C0-F76B-F111-A826-70A8A54248F2.json",
+        "libraryDefinition":  "flow-library/02-customer-identification/orders-module-customer-identification-order-lines/definition.json"
+    },
+    {
+        "displayName":  "Backup - orderProcess - Google Document AI -  PDF",
+        "slug":  "backup-orderprocess-google-document-ai-pdf",
+        "state":  "Draft",
+        "group":  "03-order-process",
+        "capability":  "order processing",
+        "primaryBehavior":  "Transforms an email, attachment, PDF, workbook, CSV, or email body into order output and mailbox status updates.",
+        "migrationTarget":  "Azure Durable Functions order-processing engine and per-source parser modules.",
+        "triggers":  [
+                         "manual"
+                     ],
+        "connectors":  [
+                           "shared_office365",
+                           "shared_sharepointonline"
+                       ],
+        "operationIds":  [
+                             "CreateFile",
+                             "DeleteFile",
+                             "DeleteItem",
+                             "GetEmailV2",
+                             "GetFileContent",
+                             "GetItem",
+                             "GetItems",
+                             "HttpRequest",
+                             "SendEmailV2"
+                         ],
+        "sourceDefinition":  "unpacked/Workflows/Backup-orderProcess-GoogleDocumentAI-PDF-DB41FBA0-326B-F111-A826-70A8A54248F2.json",
+        "libraryDefinition":  "flow-library/03-order-process/backup-orderprocess-google-document-ai-pdf/definition.json"
+    },
+    {
+        "displayName":  "Manual - orderProcess - Google Document AI -  PDF",
+        "slug":  "manual-orderprocess-google-document-ai-pdf",
+        "state":  "Draft",
+        "group":  "03-order-process",
+        "capability":  "order processing",
+        "primaryBehavior":  "Transforms an email, attachment, PDF, workbook, CSV, or email body into order output and mailbox status updates.",
+        "migrationTarget":  "Azure Durable Functions order-processing engine and per-source parser modules.",
+        "triggers":  [
+                         "manual"
+                     ],
+        "connectors":  [
+                           "shared_office365",
+                           "shared_sharepointonline"
+                       ],
+        "operationIds":  [
+                             "CreateFile",
+                             "DeleteFile",
+                             "GetEmailV2",
+                             "GetFileContent",
+                             "GetItems",
+                             "HttpRequest",
+                             "PostItem",
+                             "SendEmailV2"
+                         ],
+        "sourceDefinition":  "unpacked/Workflows/Manual-orderProcess-GoogleDocumentAI-PDF-8870F6A6-326B-F111-A826-70A8A54248F2.json",
+        "libraryDefinition":  "flow-library/03-order-process/manual-orderprocess-google-document-ai-pdf/definition.json"
+    },
+    {
+        "displayName":  "Manual Control - Starter - orderProcess",
+        "slug":  "manual-control-starter-orderprocess",
+        "state":  "Activated",
+        "group":  "03-order-process",
+        "capability":  "order processing",
+        "primaryBehavior":  "Transforms an email, attachment, PDF, workbook, CSV, or email body into order output and mailbox status updates.",
+        "migrationTarget":  "Azure Durable Functions order-processing engine and per-source parser modules.",
+        "triggers":  [
+                         "manual"
+                     ],
+        "connectors":  [
+
+                       ],
+        "operationIds":  [
+
+                         ],
+        "sourceDefinition":  "unpacked/Workflows/ManualControl-Starter-orderProcess-9170F6A6-326B-F111-A826-70A8A54248F2.json",
+        "libraryDefinition":  "flow-library/03-order-process/manual-control-starter-orderprocess/definition.json"
+    },
+    {
+        "displayName":  "orderProcess - CSV Parse",
+        "slug":  "orderprocess-csv-parse",
+        "state":  "Activated",
+        "group":  "03-order-process",
+        "capability":  "order processing",
+        "primaryBehavior":  "Transforms an email, attachment, PDF, workbook, CSV, or email body into order output and mailbox status updates.",
+        "migrationTarget":  "Azure Durable Functions order-processing engine and per-source parser modules.",
+        "triggers":  [
+                         "manual"
+                     ],
+        "connectors":  [
+                           "shared_office365",
+                           "shared_plumsail",
+                           "shared_sharepointonline"
+                       ],
+        "operationIds":  [
+                             "CreateFile",
+                             "DeleteItem",
+                             "FlowV1DocumentsJobsParseCsvPost",
+                             "GetEmailV2",
+                             "GetItem",
+                             "GetItems",
+                             "HttpRequest",
+                             "PostItem",
+                             "SendEmailV2"
+                         ],
+        "sourceDefinition":  "unpacked/Workflows/orderProcess-CSVParse-4DE98DA4-326B-F111-A826-70A8A54245EB.json",
+        "libraryDefinition":  "flow-library/03-order-process/orderprocess-csv-parse/definition.json"
+    },
+    {
+        "displayName":  "orderProcess - Dorothy Lane XLSX",
+        "slug":  "orderprocess-dorothy-lane-xlsx",
+        "state":  "Activated",
+        "group":  "03-order-process",
+        "capability":  "order processing",
+        "primaryBehavior":  "Transforms an email, attachment, PDF, workbook, CSV, or email body into order output and mailbox status updates.",
+        "migrationTarget":  "Azure Durable Functions order-processing engine and per-source parser modules.",
+        "triggers":  [
+                         "manual"
+                     ],
+        "connectors":  [
+                           "shared_excelonlinebusiness",
+                           "shared_office365",
+                           "shared_sharepointonline"
+                       ],
+        "operationIds":  [
+                             "CreateFile",
+                             "DeleteItem",
+                             "GetEmailV2",
+                             "GetItem",
+                             "GetItems",
+                             "HttpRequest",
+                             "RunScriptProdV2",
+                             "SendEmailV2"
+                         ],
+        "sourceDefinition":  "unpacked/Workflows/orderProcess-DorothyLaneXLSX-D941FBA0-326B-F111-A826-70A8A54248F2.json",
+        "libraryDefinition":  "flow-library/03-order-process/orderprocess-dorothy-lane-xlsx/definition.json"
+    },
+    {
+        "displayName":  "orderProcess - Email Body - Market Place Pet Supplies w Item Validation",
+        "slug":  "orderprocess-email-body-market-place-pet-supplies-w-item-validation",
+        "state":  "Activated",
+        "group":  "03-order-process",
+        "capability":  "order processing",
+        "primaryBehavior":  "Transforms an email, attachment, PDF, workbook, CSV, or email body into order output and mailbox status updates.",
+        "migrationTarget":  "Azure Durable Functions order-processing engine and per-source parser modules.",
+        "triggers":  [
+                         "manual"
+                     ],
+        "connectors":  [
+                           "shared_office365",
+                           "shared_sharepointonline"
+                       ],
+        "operationIds":  [
+                             "CreateFile",
+                             "GetEmailV2",
+                             "GetItems",
+                             "HttpRequest",
+                             "SendEmailV2"
+                         ],
+        "sourceDefinition":  "unpacked/Workflows/orderProcess-EmailBody-MarketPlacePetSupplieswItem-D841FBA0-326B-F111-A826-70A8A54248F2.json",
+        "libraryDefinition":  "flow-library/03-order-process/orderprocess-email-body-market-place-pet-supplies-w-item-validation/definition.json"
+    },
+    {
+        "displayName":  "orderProcess - Email Body - moduleID",
+        "slug":  "orderprocess-email-body-moduleid",
+        "state":  "Activated",
+        "group":  "03-order-process",
+        "capability":  "order processing",
+        "primaryBehavior":  "Transforms an email, attachment, PDF, workbook, CSV, or email body into order output and mailbox status updates.",
+        "migrationTarget":  "Azure Durable Functions order-processing engine and per-source parser modules.",
+        "triggers":  [
+                         "manual"
+                     ],
+        "connectors":  [
+                           "shared_office365",
+                           "shared_sharepointonline"
+                       ],
+        "operationIds":  [
+                             "CreateFile",
+                             "DeleteItem",
+                             "GetAttachment_V2",
+                             "GetEmailV2",
+                             "GetItem",
+                             "GetItems",
+                             "HttpRequest",
+                             "PostItem",
+                             "SendEmailV2"
+                         ],
+        "sourceDefinition":  "unpacked/Workflows/orderProcess-EmailBody-moduleID-4AE98DA4-326B-F111-A826-70A8A54245EB.json",
+        "libraryDefinition":  "flow-library/03-order-process/orderprocess-email-body-moduleid/definition.json"
+    },
+    {
+        "displayName":  "orderProcess - Google Document AI -  PDF",
+        "slug":  "orderprocess-google-document-ai-pdf",
+        "state":  "Activated",
+        "group":  "03-order-process",
+        "capability":  "order processing",
+        "primaryBehavior":  "Transforms an email, attachment, PDF, workbook, CSV, or email body into order output and mailbox status updates.",
+        "migrationTarget":  "Azure Durable Functions order-processing engine and per-source parser modules.",
+        "triggers":  [
+                         "manual"
+                     ],
+        "connectors":  [
+                           "shared_office365",
+                           "shared_sharepointonline"
+                       ],
+        "operationIds":  [
+                             "CreateFile",
+                             "DeleteFile",
+                             "DeleteItem",
+                             "GetEmailV2",
+                             "GetFileContent",
+                             "GetItem",
+                             "GetItems",
+                             "HttpRequest",
+                             "SendEmailV2"
+                         ],
+        "sourceDefinition":  "unpacked/Workflows/orderProcess-GoogleDocumentAI-PDF-DA41FBA0-326B-F111-A826-70A8A54248F2.json",
+        "libraryDefinition":  "flow-library/03-order-process/orderprocess-google-document-ai-pdf/definition.json"
+    },
+    {
+        "displayName":  "orderProcess - XLS or XLT - AI Header - moduleID",
+        "slug":  "orderprocess-xls-or-xlt-ai-header-moduleid",
+        "state":  "Activated",
+        "group":  "03-order-process",
+        "capability":  "order processing",
+        "primaryBehavior":  "Transforms an email, attachment, PDF, workbook, CSV, or email body into order output and mailbox status updates.",
+        "migrationTarget":  "Azure Durable Functions order-processing engine and per-source parser modules.",
+        "triggers":  [
+                         "manual"
+                     ],
+        "connectors":  [
+                           "shared_excelonlinebusiness",
+                           "shared_excelonlinebusiness_1",
+                           "shared_office365",
+                           "shared_plumsail",
+                           "shared_sharepointonline"
+                       ],
+        "operationIds":  [
+                             "CreateFile",
+                             "DeleteItem",
+                             "FlowV1DocumentsJobsXls2XlsxPost",
+                             "GetEmailV2",
+                             "GetItem",
+                             "GetItems",
+                             "HttpRequest",
+                             "PostItem",
+                             "RunScriptProdV2",
+                             "SendEmailV2"
+                         ],
+        "sourceDefinition":  "unpacked/Workflows/orderProcess-XLSorXLT-AIHeader-moduleID-4BE98DA4-326B-F111-A826-70A8A54245EB.json",
+        "libraryDefinition":  "flow-library/03-order-process/orderprocess-xls-or-xlt-ai-header-moduleid/definition.json"
+    },
+    {
+        "displayName":  "orderProcess - XLSX - AI Header - moduleID",
+        "slug":  "orderprocess-xlsx-ai-header-moduleid",
+        "state":  "Activated",
+        "group":  "03-order-process",
+        "capability":  "order processing",
+        "primaryBehavior":  "Transforms an email, attachment, PDF, workbook, CSV, or email body into order output and mailbox status updates.",
+        "migrationTarget":  "Azure Durable Functions order-processing engine and per-source parser modules.",
+        "triggers":  [
+                         "manual"
+                     ],
+        "connectors":  [
+                           "shared_excelonlinebusiness",
+                           "shared_excelonlinebusiness_1",
+                           "shared_office365",
+                           "shared_sharepointonline"
+                       ],
+        "operationIds":  [
+                             "CreateFile",
+                             "DeleteItem",
+                             "GetEmailV2",
+                             "GetItem",
+                             "GetItems",
+                             "HttpRequest",
+                             "PostItem",
+                             "RunScriptProdV2",
+                             "SendEmailV2"
+                         ],
+        "sourceDefinition":  "unpacked/Workflows/orderProcess-XLSX-AIHeader-moduleID-49E98DA4-326B-F111-A826-70A8A54245EB.json",
+        "libraryDefinition":  "flow-library/03-order-process/orderprocess-xlsx-ai-header-moduleid/definition.json"
+    },
+    {
+        "displayName":  "orderProcess - XLSX - AI Header ID - Petland",
+        "slug":  "orderprocess-xlsx-ai-header-id-petland",
+        "state":  "Activated",
+        "group":  "03-order-process",
+        "capability":  "order processing",
+        "primaryBehavior":  "Transforms an email, attachment, PDF, workbook, CSV, or email body into order output and mailbox status updates.",
+        "migrationTarget":  "Azure Durable Functions order-processing engine and per-source parser modules.",
+        "triggers":  [
+                         "manual"
+                     ],
+        "connectors":  [
+                           "shared_excelonlinebusiness",
+                           "shared_excelonlinebusiness_2",
+                           "shared_office365",
+                           "shared_sharepointonline"
+                       ],
+        "operationIds":  [
+                             "CreateFile",
+                             "DeleteItem",
+                             "GetEmailV2",
+                             "GetItem",
+                             "GetItems",
+                             "HttpRequest",
+                             "RunScriptProdV2",
+                             "SendEmailV2"
+                         ],
+        "sourceDefinition":  "unpacked/Workflows/orderProcess-XLSX-AIHeaderID-Petland-3F70F6A6-326B-F111-A826-70A8A54248F2.json",
+        "libraryDefinition":  "flow-library/03-order-process/orderprocess-xlsx-ai-header-id-petland/definition.json"
+    },
+    {
+        "displayName":  "itemNumber Scheduler",
+        "slug":  "itemnumber-scheduler",
+        "state":  "Activated",
+        "group":  "04-item-number",
+        "capability":  "data refresh",
+        "primaryBehavior":  "Refreshes item/customer reference data or maintenance state from SharePoint/SQL sources.",
+        "migrationTarget":  "Azure /imports/customers or /imports/items writing canonical Cosmos records and Blob audit copies.",
+        "triggers":  [
+                         "Recurrence"
+                     ],
+        "connectors":  [
+                           "shared_sharepointonline"
+                       ],
+        "operationIds":  [
+                             "GetItems",
+                             "PatchItem"
+                         ],
+        "sourceDefinition":  "unpacked/Workflows/itemNumberScheduler-000C6194-F86B-F111-A826-70A8A54248F2.json",
+        "libraryDefinition":  "flow-library/04-item-number/itemnumber-scheduler/definition.json"
+    },
+    {
+        "displayName":  "ItemNumber Sharepoint List",
+        "slug":  "itemnumber-sharepoint-list",
+        "state":  "Activated",
+        "group":  "04-item-number",
+        "capability":  "data refresh",
+        "primaryBehavior":  "Refreshes item/customer reference data or maintenance state from SharePoint/SQL sources.",
+        "migrationTarget":  "Azure /imports/customers or /imports/items writing canonical Cosmos records and Blob audit copies.",
+        "triggers":  [
+                         "manual"
+                     ],
+        "connectors":  [
+                           "shared_sharepointonline",
+                           "shared_sql"
+                       ],
+        "operationIds":  [
+                             "GetItems",
+                             "GetItems_V2",
+                             "PatchItem",
+                             "PostItem"
+                         ],
+        "sourceDefinition":  "unpacked/Workflows/ItemNumberSharepointList-59430393-F86B-F111-A826-7CED8DD5E9C6.json",
+        "libraryDefinition":  "flow-library/04-item-number/itemnumber-sharepoint-list/definition.json"
+    },
+    {
+        "displayName":  "ItemNumber Sharepoint List 1",
+        "slug":  "itemnumber-sharepoint-list-1",
+        "state":  "Activated",
+        "group":  "04-item-number",
+        "capability":  "data refresh",
+        "primaryBehavior":  "Refreshes item/customer reference data or maintenance state from SharePoint/SQL sources.",
+        "migrationTarget":  "Azure /imports/customers or /imports/items writing canonical Cosmos records and Blob audit copies.",
+        "triggers":  [
+                         "manual"
+                     ],
+        "connectors":  [
+                           "shared_sharepointonline",
+                           "shared_sql"
+                       ],
+        "operationIds":  [
+                             "GetItems",
+                             "GetItems_V2",
+                             "PatchItem",
+                             "PostItem"
+                         ],
+        "sourceDefinition":  "unpacked/Workflows/ItemNumberSharepointList1-F20B6194-F86B-F111-A826-70A8A54248F2.json",
+        "libraryDefinition":  "flow-library/04-item-number/itemnumber-sharepoint-list-1/definition.json"
+    },
+    {
+        "displayName":  "ItemNumber Sharepoint List Delete Un-Updated",
+        "slug":  "itemnumber-sharepoint-list-delete-un-updated",
+        "state":  "Activated",
+        "group":  "04-item-number",
+        "capability":  "data refresh",
+        "primaryBehavior":  "Refreshes item/customer reference data or maintenance state from SharePoint/SQL sources.",
+        "migrationTarget":  "Azure /imports/customers or /imports/items writing canonical Cosmos records and Blob audit copies.",
+        "triggers":  [
+                         "manual"
+                     ],
+        "connectors":  [
+                           "shared_sharepointonline"
+                       ],
+        "operationIds":  [
+                             "DeleteItem",
+                             "GetItems"
+                         ],
+        "sourceDefinition":  "unpacked/Workflows/ItemNumberSharepointListDeleteUn-Updated-E50B6194-F86B-F111-A826-70A8A54248F2.json",
+        "libraryDefinition":  "flow-library/04-item-number/itemnumber-sharepoint-list-delete-un-updated/definition.json"
+    },
+    {
+        "displayName":  "Module - Item Number Validator",
+        "slug":  "module-item-number-validator",
+        "state":  "Activated",
+        "group":  "04-item-number",
+        "capability":  "item validation",
+        "primaryBehavior":  "Validates provided item numbers/UPCs against SharePoint item reference data.",
+        "migrationTarget":  "Azure /items/validate backed by Cosmos items.",
+        "triggers":  [
+                         "manual"
+                     ],
+        "connectors":  [
+                           "shared_sharepointonline"
+                       ],
+        "operationIds":  [
+                             "GetItems"
+                         ],
+        "sourceDefinition":  "unpacked/Workflows/Module-ItemNumberValidator-3109BFD1-F76B-F111-A826-7CED8DD5E9C6.json",
+        "libraryDefinition":  "flow-library/04-item-number/module-item-number-validator/definition.json"
+    },
+    {
+        "displayName":  "Order Automate Request - Form Submission",
+        "slug":  "order-automate-request-form-submission",
+        "state":  "Activated",
+        "group":  "05-form-submissions",
+        "capability":  "support form",
+        "primaryBehavior":  "Supports request, problem-report, manual diagnostic, or temporary test workflows.",
+        "migrationTarget":  "Console workflow, optional M365 adapter, or remove if temporary diagnostic only.",
+        "triggers":  [
+                         "When_a_new_response_is_submitted"
+                     ],
+        "connectors":  [
+                           "shared_approvals",
+                           "shared_microsoftforms",
+                           "shared_office365"
+                       ],
+        "operationIds":  [
+                             "GetFormResponseById",
+                             "SendEmailV2",
+                             "StartAndWaitForAnApproval"
+                         ],
+        "sourceDefinition":  "unpacked/Workflows/OrderAutomateRequest-FormSubmission-ABDB78C1-F76B-F111-A826-70A8A54245EB.json",
+        "libraryDefinition":  "flow-library/05-form-submissions/order-automate-request-form-submission/definition.json"
+    },
+    {
+        "displayName":  "Problem Report - Form Submission",
+        "slug":  "problem-report-form-submission",
+        "state":  "Activated",
+        "group":  "05-form-submissions",
+        "capability":  "support form",
+        "primaryBehavior":  "Supports request, problem-report, manual diagnostic, or temporary test workflows.",
+        "migrationTarget":  "Console workflow, optional M365 adapter, or remove if temporary diagnostic only.",
+        "triggers":  [
+                         "When_a_new_response_is_submitted"
+                     ],
+        "connectors":  [
+                           "shared_approvals",
+                           "shared_microsoftforms",
+                           "shared_office365"
+                       ],
+        "operationIds":  [
+                             "GetFormResponseById",
+                             "SendEmailV2",
+                             "StartAndWaitForAnApproval"
+                         ],
+        "sourceDefinition":  "unpacked/Workflows/ProblemReport-FormSubmission-2785C0C5-F76B-F111-A826-7CED8DD5E9C6.json",
+        "libraryDefinition":  "flow-library/05-form-submissions/problem-report-form-submission/definition.json"
+    },
+    {
+        "displayName":  "orders@ - Customer List Assistant Creation and Deletion - 01:00",
+        "slug":  "orders-customer-list-assistant-creation-and-deletion-01-00",
+        "state":  "Activated",
+        "group":  "06-maintenance",
+        "capability":  "data refresh",
+        "primaryBehavior":  "Refreshes item/customer reference data or maintenance state from SharePoint/SQL sources.",
+        "migrationTarget":  "Azure /imports/customers or /imports/items writing canonical Cosmos records and Blob audit copies.",
+        "triggers":  [
+                         "Recurrence"
+                     ],
+        "connectors":  [
+                           "shared_office365",
+                           "shared_sharepointonline",
+                           "shared_sql"
+                       ],
+        "operationIds":  [
+                             "CreateFile",
+                             "DeleteItem",
+                             "GetFileContent",
+                             "GetItems",
+                             "GetItems_V2",
+                             "PatchItem",
+                             "PostItem",
+                             "SendEmailV2"
+                         ],
+        "sourceDefinition":  "unpacked/Workflows/orders-CustomerListAssistantCreationandDeletion-01-90F0B4C0-F76B-F111-A826-70A8A54248F2.json",
+        "libraryDefinition":  "flow-library/06-maintenance/orders-customer-list-assistant-creation-and-deletion-01-00/definition.json"
+    },
+    {
+        "displayName":  "Temp - Manually Send Email HTTP Request",
+        "slug":  "temp-manually-send-email-http-request",
+        "state":  "Activated",
+        "group":  "90-temp-test",
+        "capability":  "support form",
+        "primaryBehavior":  "Supports request, problem-report, manual diagnostic, or temporary test workflows.",
+        "migrationTarget":  "Console workflow, optional M365 adapter, or remove if temporary diagnostic only.",
+        "triggers":  [
+                         "manual"
+                     ],
+        "connectors":  [
+                           "shared_office365"
+                       ],
+        "operationIds":  [
+                             "GetEmailV2",
+                             "HttpRequest"
+                         ],
+        "sourceDefinition":  "unpacked/Workflows/Temp-ManuallySendEmailHTTPRequest-C26D53D4-F76B-F111-A826-70A8A54245EB.json",
+        "libraryDefinition":  "flow-library/90-temp-test/temp-manually-send-email-http-request/definition.json"
+    },
+    {
+        "displayName":  "Test - Send HTTP Request",
+        "slug":  "test-send-http-request",
+        "state":  "Activated",
+        "group":  "90-temp-test",
+        "capability":  "support form",
+        "primaryBehavior":  "Supports request, problem-report, manual diagnostic, or temporary test workflows.",
+        "migrationTarget":  "Console workflow, optional M365 adapter, or remove if temporary diagnostic only.",
+        "triggers":  [
+                         "manual"
+                     ],
+        "connectors":  [
+                           "shared_sql"
+                       ],
+        "operationIds":  [
+                             "GetItems_V2"
+                         ],
+        "sourceDefinition":  "unpacked/Workflows/Test-SendHTTPRequest-E40B6194-F86B-F111-A826-70A8A54248F2.json",
+        "libraryDefinition":  "flow-library/90-temp-test/test-send-http-request/definition.json"
+    }
+]

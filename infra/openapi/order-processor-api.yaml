@@ -1,0 +1,1052 @@
+openapi: 3.0.3
+info:
+  title: Order Processor API
+  version: 1.0.0
+  description: Azure backend contract exposed through API Management for Power Automate adapters and the console.
+paths:
+  /emails/ingest:
+    post:
+      operationId: emailsIngest
+      summary: Ingest email metadata and attachment references.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailIngestRequest'
+      responses:
+        '200':
+          description: Email was stored and routed.
+          content:
+            application/json:
+              schema:
+                type: object
+  /orders/{orderRunId}/process:
+    post:
+      operationId: ordersProcess
+      summary: Process a queued order run.
+      parameters:
+        - $ref: '#/components/parameters/OrderRunId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrderProcessRequest'
+      responses:
+        '200':
+          description: Order run processing result.
+          content:
+            application/json:
+              schema:
+                type: object
+  /orders/{orderRunId}/timeline:
+    post:
+      operationId: ordersTimeline
+      summary: Return the audit timeline and observability details for an order run.
+      parameters:
+        - $ref: '#/components/parameters/OrderRunId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Order timeline result.
+          content:
+            application/json:
+              schema:
+                type: object
+  /customers/identify:
+    post:
+      operationId: customersIdentify
+      summary: Identify a customer from email/order context.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerIdentifyRequest'
+      responses:
+        '200':
+          description: Customer identification result.
+          content:
+            application/json:
+              schema:
+                type: object
+  /items/validate:
+    post:
+      operationId: itemsValidate
+      summary: Validate a customer-provided item number, UPC, or description.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ItemValidateRequest'
+      responses:
+        '200':
+          description: Item validation result.
+          content:
+            application/json:
+              schema:
+                type: object
+  /imports/customers:
+    post:
+      operationId: importsCustomers
+      summary: Import normalized customer rows.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerImportRequest'
+      responses:
+        '200':
+          description: Customer import result.
+          content:
+            application/json:
+              schema:
+                type: object
+  /imports/items:
+    post:
+      operationId: importsItems
+      summary: Import normalized item rows.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ItemImportRequest'
+      responses:
+        '200':
+          description: Item import result.
+          content:
+            application/json:
+              schema:
+                type: object
+  /mailboxes:
+    post:
+      operationId: mailboxesUpsert
+      summary: Create or update a customer-specific monitored mailbox configuration.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MailboxRequest'
+      responses:
+        '200':
+          description: Mailbox configuration result.
+          content:
+            application/json:
+              schema:
+                type: object
+  /mailboxes/{id}/test-connection:
+    post:
+      operationId: mailboxesTestConnection
+      summary: Test whether the Microsoft connection can access the configured mailbox.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Mailbox connection test result.
+          content:
+            application/json:
+              schema:
+                type: object
+  /console/session:
+    post:
+      operationId: consoleSession
+      summary: Resolve the signed-in Microsoft user and return console authorization context.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConsoleSessionRequest'
+      responses:
+        '200':
+          description: Console session result.
+          content:
+            application/json:
+              schema:
+                type: object
+  /console/dashboard:
+    post:
+      operationId: consoleDashboard
+      summary: Return customer-scoped console dashboard data for the signed-in Microsoft user.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConsoleDashboardRequest'
+      responses:
+        '200':
+          description: Console dashboard result.
+          content:
+            application/json:
+              schema:
+                type: object
+  /console/artifacts/download:
+    post:
+      operationId: consoleArtifactsDownload
+      summary: Return an authorized output artifact reference and inline content when locally available.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConsoleArtifactDownloadRequest'
+      responses:
+        '200':
+          description: Output artifact download/open result.
+          content:
+            application/json:
+              schema:
+                type: object
+  /console/mailboxes:
+    post:
+      operationId: consoleMailboxesUpsert
+      summary: Admin console route for monitored mailbox configuration.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MailboxRequest'
+      responses:
+        '200':
+          description: Mailbox configuration result.
+          content:
+            application/json:
+              schema:
+                type: object
+  /console/routing-rules:
+    post:
+      operationId: consoleRoutingRulesUpsert
+      summary: Admin console route for data-driven routing rule edits.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoutingRuleRequest'
+      responses:
+        '200':
+          description: Routing rule result.
+          content:
+            application/json:
+              schema:
+                type: object
+  /console/customers:
+    post:
+      operationId: consoleCustomersUpsert
+      summary: Admin console route for customer profile/configuration edits.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerConfigRequest'
+      responses:
+        '200':
+          description: Customer configuration result.
+          content:
+            application/json:
+              schema:
+                type: object
+  /console/processor-profiles:
+    post:
+      operationId: consoleProcessorProfilesUpsert
+      summary: Admin console route for parser/processor profile edits.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProcessorProfileRequest'
+      responses:
+        '200':
+          description: Processor profile result.
+          content:
+            application/json:
+              schema:
+                type: object
+  /console/output-profiles:
+    post:
+      operationId: consoleOutputProfilesUpsert
+      summary: Admin console route for output profile edits.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OutputProfileRequest'
+      responses:
+        '200':
+          description: Output profile result.
+          content:
+            application/json:
+              schema:
+                type: object
+  /console/users:
+    post:
+      operationId: consoleUsersUpsert
+      summary: Create or update a Microsoft-authenticated console user.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConsoleUserRequest'
+      responses:
+        '200':
+          description: Console user result.
+          content:
+            application/json:
+              schema:
+                type: object
+  /console/customers/{customerId}/users:
+    post:
+      operationId: consoleCustomerUsersAssign
+      summary: Admin console route for assigning Microsoft users to a customer.
+      parameters:
+        - $ref: '#/components/parameters/CustomerId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerUserAssignmentRequest'
+      responses:
+        '200':
+          description: Customer user assignment result.
+          content:
+            application/json:
+              schema:
+                type: object
+  /console/exceptions/{id}/resolve:
+    post:
+      operationId: consoleExceptionsResolve
+      summary: Console-authorized route for resolving a human-review exception task.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExceptionResolveRequest'
+      responses:
+        '200':
+          description: Exception resolution result.
+          content:
+            application/json:
+              schema:
+                type: object
+  /console/orders/{orderRunId}/reprocess:
+    post:
+      operationId: consoleOrdersReprocess
+      summary: Console-authorized route for requesting order reprocessing.
+      parameters:
+        - $ref: '#/components/parameters/OrderRunId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Reprocess request result.
+          content:
+            application/json:
+              schema:
+                type: object
+  /console/orders/{orderRunId}/timeline:
+    post:
+      operationId: consoleOrdersTimeline
+      summary: Console-authorized route for viewing an order audit timeline.
+      parameters:
+        - $ref: '#/components/parameters/OrderRunId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Order timeline result.
+          content:
+            application/json:
+              schema:
+                type: object
+  /customers/{customerId}/users:
+    post:
+      operationId: customerUsersAssign
+      summary: Assign a console user to a customer.
+      parameters:
+        - $ref: '#/components/parameters/CustomerId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Customer user assignment result.
+          content:
+            application/json:
+              schema:
+                type: object
+  /exceptions/{id}/resolve:
+    post:
+      operationId: exceptionsResolve
+      summary: Resolve a human-review exception task.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Exception resolution result.
+          content:
+            application/json:
+              schema:
+                type: object
+  /orders/{orderRunId}/reprocess:
+    post:
+      operationId: ordersReprocess
+      summary: Request order reprocessing after configuration or exception correction.
+      parameters:
+        - $ref: '#/components/parameters/OrderRunId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Reprocess request result.
+          content:
+            application/json:
+              schema:
+                type: object
+components:
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    CustomerId:
+      name: customerId
+      in: path
+      required: true
+      schema:
+        type: string
+    OrderRunId:
+      name: orderRunId
+      in: path
+      required: true
+      schema:
+        type: string
+  schemas:
+    EmailIngestRequest:
+      type: object
+      required:
+        - tenantId
+        - mailbox
+        - messageId
+        - sender
+        - subject
+      properties:
+        tenantId:
+          type: string
+        mailbox:
+          type: string
+        mailboxAccountId:
+          type: string
+        customerId:
+          type: string
+          description: Optional customer scope when a configured mailbox already identifies the customer.
+        messageId:
+          type: string
+          description: Source mailbox provider message id, usually Microsoft Graph message id.
+        sender:
+          type: string
+        subject:
+          type: string
+        receivedAt:
+          type: string
+          format: date-time
+        bodyText:
+          type: string
+        bodyHtml:
+          type: string
+        categories:
+          type: array
+          items:
+            type: string
+        correlationId:
+          type: string
+        source:
+          type: object
+          additionalProperties: true
+        attachments:
+          type: array
+          items:
+            $ref: '#/components/schemas/EmailAttachment'
+    EmailAttachment:
+      type: object
+      properties:
+        name:
+          type: string
+        contentType:
+          type: string
+        size:
+          type: integer
+          format: int64
+        blobUrl:
+          type: string
+        sourceUrl:
+          type: string
+        contentId:
+          type: string
+        isInline:
+          type: boolean
+        metadata:
+          type: object
+          additionalProperties: true
+    OrderProcessRequest:
+      type: object
+      required:
+        - tenantId
+      properties:
+        tenantId:
+          type: string
+        customerId:
+          type: string
+        emailMessageId:
+          type: string
+        processorProfileId:
+          type: string
+        processorType:
+          type: string
+          enum:
+            - csv
+            - xlsx
+            - xls
+            - xlt
+            - pdf
+            - emailBody
+            - customerOverride
+        processorSettings:
+          type: object
+          additionalProperties: true
+        outputProfileId:
+          type: string
+        outputProfileIds:
+          type: array
+          items:
+            type: string
+        outputProfiles:
+          type: array
+          description: Inline output profiles for controlled callers/tests; normal operation uses Cosmos outputProfiles.
+          items:
+            type: object
+        outputTypes:
+          type: array
+          items:
+            type: string
+        requestedOutputTypes:
+          type: array
+          items:
+            type: string
+        outputSettings:
+          type: object
+          additionalProperties: true
+        outputDestination:
+          type: object
+          additionalProperties: true
+        poNumber:
+          type: string
+        orderNumber:
+          type: string
+        sourceFileName:
+          type: string
+        contentType:
+          type: string
+        sourceMetadata:
+          type: object
+          additionalProperties: true
+        sourceContent:
+          type: string
+          description: Text source content for CSV, email body, extracted PDF text, or HTML-backed workbook exports.
+        sourceContentBase64:
+          type: string
+          description: Base64 encoded binary source content for XLSX/XLS/XLT handoff.
+        sourceEncoding:
+          type: string
+        sourceRows:
+          type: array
+          description: Pre-normalized row objects supplied by an adapter or extraction service.
+          items:
+            type: object
+        rows:
+          type: array
+          description: Alias for sourceRows.
+          items:
+            type: object
+        bodyText:
+          type: string
+        extractedText:
+          type: string
+        documentIntelligenceResult:
+          type: object
+          description: Azure Document Intelligence analyze result, usually from the prebuilt-layout model.
+          additionalProperties: true
+        fieldMap:
+          type: object
+          additionalProperties:
+            type: string
+        lines:
+          type: array
+          description: Already-canonical order lines.
+          items:
+            type: object
+    CustomerIdentifyRequest:
+      type: object
+      required:
+        - emailMessage
+      properties:
+        emailMessage:
+          type: object
+          required:
+            - tenantId
+            - sender
+            - subject
+          properties:
+            id:
+              type: string
+            tenantId:
+              type: string
+            mailbox:
+              type: string
+            mailboxAccountId:
+              type: string
+            customerId:
+              type: string
+            messageId:
+              type: string
+            sender:
+              type: string
+            subject:
+              type: string
+            receivedAt:
+              type: string
+              format: date-time
+            bodyText:
+              type: string
+            bodyHtml:
+              type: string
+            orderRunId:
+              type: string
+            correlationId:
+              type: string
+        confidenceThreshold:
+          type: number
+          format: float
+          default: 0.85
+        customers:
+          type: array
+          description: Optional caller-supplied customer candidates; normally loaded from Cosmos.
+          items:
+            type: object
+        customerAliases:
+          type: array
+          description: Optional caller-supplied aliases; normally loaded from Cosmos.
+          items:
+            type: object
+    ImportProfile:
+      type: object
+      properties:
+        parserModule:
+          type: string
+          description: Parser module such as rows, csv, json, jsonl, genericCustomerCsv, or genericItemCsv.
+        fieldMap:
+          type: object
+          additionalProperties:
+            type: string
+        settings:
+          type: object
+          additionalProperties: true
+        sourceName:
+          type: string
+        refreshIntervalDays:
+          type: integer
+    CustomerImportRequest:
+      type: object
+      required:
+        - tenantId
+      properties:
+        tenantId:
+          type: string
+        sourceName:
+          type: string
+        contentType:
+          type: string
+        parserModule:
+          type: string
+        sourceContent:
+          type: string
+          description: CSV, JSON array/object, or JSONL content when rows are not supplied directly.
+        rows:
+          type: array
+          items:
+            type: object
+        fieldMap:
+          type: object
+          additionalProperties:
+            type: string
+        importProfile:
+          $ref: '#/components/schemas/ImportProfile'
+        customerConfig:
+          type: object
+          additionalProperties: true
+        sourceMetadata:
+          type: object
+          additionalProperties: true
+    ItemImportRequest:
+      type: object
+      required:
+        - tenantId
+        - customerId
+      properties:
+        tenantId:
+          type: string
+        customerId:
+          type: string
+        sourceName:
+          type: string
+        contentType:
+          type: string
+        parserModule:
+          type: string
+        sourceContent:
+          type: string
+        rows:
+          type: array
+          items:
+            type: object
+        fieldMap:
+          type: object
+          additionalProperties:
+            type: string
+        importProfile:
+          $ref: '#/components/schemas/ImportProfile'
+        customerConfig:
+          type: object
+          additionalProperties: true
+        sourceMetadata:
+          type: object
+          additionalProperties: true
+    ItemValidateRequest:
+      type: object
+      required:
+        - tenantId
+        - customerId
+      properties:
+        tenantId:
+          type: string
+        customerId:
+          type: string
+        providedItemNumber:
+          type: string
+        providedUpc:
+          type: string
+        description:
+          type: string
+        rowContext:
+          type: object
+          description: Optional raw source row/context used to infer item number, UPC, or description when direct fields are blank.
+          additionalProperties: true
+        orderRunId:
+          type: string
+        lineNumber:
+          type: integer
+        confidenceThreshold:
+          type: number
+          format: float
+          default: 0.9
+        possibleMatchThreshold:
+          type: number
+          format: float
+          default: 0.55
+        candidateLimit:
+          type: integer
+          default: 5
+        items:
+          type: array
+          description: Optional caller-supplied item candidates; normally loaded from Cosmos.
+          items:
+            type: object
+        line:
+          type: object
+          description: Optional canonical order line; raw line values are merged into rowContext.
+    MailboxRequest:
+      type: object
+      required:
+        - tenantId
+        - customerId
+        - mailboxAddress
+      properties:
+        tenantId:
+          type: string
+        customerId:
+          type: string
+        mailboxAddress:
+          type: string
+        displayName:
+          type: string
+        provider:
+          type: string
+          default: microsoft365
+        connectionId:
+          type: string
+        enabled:
+          type: boolean
+    ConsoleSessionRequest:
+      type: object
+      properties:
+        tenantId:
+          type: string
+        principalEmail:
+          type: string
+          description: Local/testing fallback only. Deployed console identity comes from App Service Easy Auth headers.
+    ConsoleDashboardRequest:
+      type: object
+      properties:
+        tenantId:
+          type: string
+        customerId:
+          type: string
+          description: Optional customer filter; non-admin users can only request assigned customers.
+    ConsoleArtifactDownloadRequest:
+      type: object
+      required:
+        - tenantId
+      properties:
+        tenantId:
+          type: string
+        orderRunId:
+          type: string
+        artifactId:
+          type: string
+        blobUrl:
+          type: string
+    RoutingRuleRequest:
+      type: object
+      required:
+        - tenantId
+        - name
+        - outcome
+      properties:
+        tenantId:
+          type: string
+        id:
+          type: string
+        customerId:
+          type: string
+          default: _global
+        name:
+          type: string
+        outcome:
+          type: string
+          enum:
+            - knownOrder
+            - knownCustomerNonOrder
+            - needsCustomerIdentification
+            - needsHumanReview
+            - ignored
+        priority:
+          type: integer
+          default: 100
+        enabled:
+          type: boolean
+          default: true
+        processorProfileId:
+          type: string
+        mailboxAccountIds:
+          type: array
+          items:
+            type: string
+        mailboxAddresses:
+          type: array
+          items:
+            type: string
+        senderEquals:
+          type: array
+          items:
+            type: string
+        senderDomains:
+          type: array
+          items:
+            type: string
+        subjectRegex:
+          type: array
+          items:
+            type: string
+        bodyRegex:
+          type: array
+          items:
+            type: string
+        attachmentExtensions:
+          type: array
+          items:
+            type: string
+    CustomerConfigRequest:
+      type: object
+      required:
+        - tenantId
+      properties:
+        tenantId:
+          type: string
+        id:
+          type: string
+        customerId:
+          type: string
+        customerCode:
+          type: string
+        name:
+          type: string
+        routeNumber:
+          type: string
+        csrEmail:
+          type: string
+        csrFolder:
+          type: string
+        storeNumber:
+          type: string
+        senderDomains:
+          type: array
+          items:
+            type: string
+        aliases:
+          type: array
+          items:
+            type: string
+        knownSubjectPatterns:
+          type: array
+          items:
+            type: string
+    ProcessorProfileRequest:
+      type: object
+      required:
+        - tenantId
+        - name
+        - processorType
+      properties:
+        tenantId:
+          type: string
+        id:
+          type: string
+        customerId:
+          type: string
+          default: _global
+        name:
+          type: string
+        processorType:
+          type: string
+        outputProfileId:
+          type: string
+        settings:
+          type: object
+          additionalProperties: true
+    OutputProfileRequest:
+      type: object
+      required:
+        - tenantId
+        - name
+        - outputType
+      properties:
+        tenantId:
+          type: string
+        id:
+          type: string
+        customerId:
+          type: string
+          default: _global
+        name:
+          type: string
+        outputType:
+          type: string
+        destination:
+          type: object
+          additionalProperties: true
+        settings:
+          type: object
+          additionalProperties: true
+    ConsoleUserRequest:
+      type: object
+      required:
+        - tenantId
+        - email
+      properties:
+        tenantId:
+          type: string
+        email:
+          type: string
+        displayName:
+          type: string
+        roles:
+          type: array
+          items:
+            type: string
+        enabled:
+          type: boolean
+    CustomerUserAssignmentRequest:
+      type: object
+      required:
+        - tenantId
+        - email
+      properties:
+        tenantId:
+          type: string
+        email:
+          type: string
+        roles:
+          type: array
+          items:
+            type: string
+        enabled:
+          type: boolean
+    ExceptionResolveRequest:
+      type: object
+      required:
+        - tenantId
+        - resolution
+      properties:
+        tenantId:
+          type: string
+        resolution:
+          type: object
+          additionalProperties: true

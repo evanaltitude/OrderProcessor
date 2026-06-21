@@ -1,0 +1,27 @@
+[
+  {
+    "id": "pilot-csv-mailbox",
+    "tenantId": "altitude",
+    "customerId": "pilot-customer",
+    "mailboxAddress": "pilot-csv-orders@focuseautomate.test",
+    "displayName": "Pilot CSV Orders",
+    "provider": "microsoft365",
+    "connectionId": "pilot-m365-shadow-connection",
+    "enabled": true,
+    "ingestStatus": "shadowConfigured",
+    "permissionStatus": "notTested",
+    "requiredPermissions": [
+      "Mail.Read",
+      "Mail.ReadWrite"
+    ],
+    "folderIds": {
+      "inbox": "shadow-inbox",
+      "processed": "shadow-processed",
+      "needsReview": "shadow-needs-review"
+    },
+    "settings": {
+      "shadowMode": true,
+      "productionActionsEnabled": false
+    }
+  }
+]

@@ -1,0 +1,25 @@
+[
+  {
+    "id": "pilot-csv-parse-profile",
+    "tenantId": "altitude",
+    "customerId": "pilot-customer",
+    "name": "Pilot CSV Parse Processor",
+    "processorType": "csv",
+    "outputProfileId": "pilot-csv-line-output",
+    "settings": {
+      "hasHeader": true,
+      "delimiter": ",",
+      "usesPlumsail": false,
+      "csvToXlsxReplacement": "standard-library csv parsing plus backend-generated XLSX only when an output profile requests XLSX",
+      "fieldMap": {
+        "po_number": "po_number",
+        "provided_item_number": "item_number",
+        "quantity": "quantity",
+        "description": "description",
+        "provided_upc": "upc"
+      },
+      "activeReferenceFlow": "orderProcess CSV Parse",
+      "deprecatedCsvFlowsExcluded": true
+    }
+  }
+]

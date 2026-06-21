@@ -1,0 +1,11 @@
+name: order-processor
+metadata:
+  template: order-processor@0.1.0
+infra:
+  provider: bicep
+  path: infra
+services:
+  functions:
+    project: apps/functions
+    language: python
+    host: function

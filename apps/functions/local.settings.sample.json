@@ -1,0 +1,29 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "ORDER_PROCESSOR_ENV": "local",
+    "ORDER_PROCESSOR_STORAGE_BACKEND": "memory",
+    "ORDER_PROCESSOR_SOURCE_ARCHIVE_BACKEND": "memory",
+    "ORDER_PROCESSOR_OUTPUT_ARCHIVE_BACKEND": "memory",
+    "ORDER_PROCESSOR_ENABLE_IMPORT_EMBEDDINGS": "false",
+    "ORDER_PROCESSOR_ENABLE_CUSTOMER_VECTOR_SEARCH": "false",
+    "COSMOS_DATABASE_NAME": "orderProcessor",
+    "COSMOS_ACCOUNT_ENDPOINT": "https://localhost:8081/",
+    "STORAGE_ACCOUNT_NAME": "devstoreaccount1",
+    "SOURCE_ROWS_STORAGE_ACCOUNT_URL": "http://127.0.0.1:10000/devstoreaccount1",
+    "ORDER_ARTIFACTS_STORAGE_ACCOUNT_URL": "http://127.0.0.1:10000/devstoreaccount1",
+    "BLOB_SERVICE_ENDPOINT": "http://127.0.0.1:10000/devstoreaccount1",
+    "EMAIL_ATTACHMENTS_CONTAINER_NAME": "email-attachments",
+    "ORDER_ARTIFACTS_CONTAINER_NAME": "order-artifacts",
+    "SOURCE_ROWS_CONTAINER_NAME": "source-rows",
+    "IMPORTS_CONTAINER_NAME": "imports",
+    "DEAD_LETTER_CONTAINER_NAME": "dead-letter",
+    "KEY_VAULT_URI": "https://example-local-vault.vault.azure.net/",
+    "AZURE_OPENAI_ENDPOINT": "https://example-openai.openai.azure.com/",
+    "AZURE_AI_SERVICES_ENDPOINT": "https://example-ai-services.cognitiveservices.azure.com/",
+    "DOCUMENT_INTELLIGENCE_ENDPOINT": "https://example-docintel.cognitiveservices.azure.com/",
+    "APIM_API_BASE_URL": "https://example.azure-api.net/order-processor"
+  }
+}

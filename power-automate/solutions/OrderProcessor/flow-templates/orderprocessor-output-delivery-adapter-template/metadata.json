@@ -1,0 +1,15 @@
+{
+    "name":  "OrderProcessor - Output Delivery Adapter Template",
+    "slug":  "orderprocessor-output-delivery-adapter-template",
+    "workflowId":  "92df442b-2360-42dd-b787-ce339813d877",
+    "trigger":  "HTTP request from Azure completion callback or scheduled adapter poll",
+    "endpoint":  "customer-specific M365 delivery",
+    "status":  "disabled optional template",
+    "connectionReferences":  [
+
+                             ],
+    "notes":  [
+                  "Use only when customer output delivery must remain in M365 or Power Automate.",
+                  "Default platform output generation belongs in Azure. This template is a placeholder for customer-specific delivery actions."
+              ]
+}

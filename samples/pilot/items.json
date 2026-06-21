@@ -1,0 +1,32 @@
+[
+  {
+    "id": "pilot-item-10001",
+    "tenantId": "altitude",
+    "customerId": "pilot-customer",
+    "internalItemNumber": "10001",
+    "description": "Dog Food 25 lb",
+    "upc": "012345678905",
+    "customerItemNumbers": [
+      "PILOT123"
+    ],
+    "aliases": [
+      "DOGFOOD25"
+    ],
+    "sourceName": "pilot-shadow-items.json"
+  },
+  {
+    "id": "pilot-item-10002",
+    "tenantId": "altitude",
+    "customerId": "pilot-customer",
+    "internalItemNumber": "10002",
+    "description": "Cat Treats 12 oz",
+    "upc": "998877665544",
+    "customerItemNumbers": [
+      "PILOT456"
+    ],
+    "aliases": [
+      "CATTREATS12"
+    ],
+    "sourceName": "pilot-shadow-items.json"
+  }
+]

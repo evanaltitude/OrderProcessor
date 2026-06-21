@@ -1,0 +1,3 @@
+po_number,order_number,line_number,quantity,provided_item_number,provided_upc,description,matched_internal_item_number,validation_status,validation_confidence
+PO-PILOT-001,,1,2.0,PILOT123,012345678905,Dog Food 25 lb,10001,matched,1.0
+PO-PILOT-001,,2,3.0,PILOT456,998877665544,Cat Treats 12 oz,10002,matched,1.0
