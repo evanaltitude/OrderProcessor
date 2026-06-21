@@ -21,9 +21,9 @@ Phase 3 converts the roadmap architecture into deployable Azure infrastructure-a
 | Azure Functions with Durable Functions | Linux Python 3.11 Function app, Durable hub app setting, Durable extension dependency, identity-based host storage. |
 | Cosmos DB for NoSQL | Serverless account with local auth disabled, `orderProcessor` database, operational containers, and vector-enabled `customers`/`items`. |
 | Blob Storage | Hardened StorageV2 account plus `email-attachments`, `order-artifacts`, `source-rows`, `imports`, and `dead-letter` containers. |
-| Key Vault | RBAC-enabled vault for secrets, including the APIM-to-Function host key. |
+| Key Vault | RBAC-enabled vault for secrets, including the APIM-to-Function shared backend key. |
 | Application Insights | Workspace-based Application Insights connected to Log Analytics. |
-| API Management | Consumption APIM, Power Automate adapter product, imported OpenAPI contract, API policy that forwards the Function host key from Key Vault. |
+| API Management | Consumption APIM, Power Automate adapter product, imported OpenAPI contract, API policy that forwards the shared backend key from Key Vault. |
 | Azure AI Foundry/Azure OpenAI | Azure AI Services account and Azure OpenAI account with local auth disabled. |
 | Azure Document Intelligence | Form Recognizer/Document Intelligence account with local auth disabled. |
 
@@ -60,7 +60,7 @@ The Function app receives:
 
 API Management receives:
 
-- Key Vault Secrets User on Key Vault so it can resolve the Function host key named value.
+- Key Vault Secrets User on Key Vault so it can resolve the shared backend key named value.
 
 Secrets stay in Key Vault or APIM secret references. Function app settings do not contain storage account keys, Cognitive Services keys, OpenAI keys, Document Intelligence keys, or Cosmos keys.
 

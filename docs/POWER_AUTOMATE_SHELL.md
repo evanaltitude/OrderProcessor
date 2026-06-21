@@ -49,8 +49,8 @@ All four flows are disabled templates. Customer-specific instances should be tur
 ## Security Expectations
 
 - Power Automate calls API Management at the deployed `apiGatewayBaseUrl`, not raw Function URLs.
-- API Management validates the caller through APIM subscription access and forwards to Azure Functions with the Function host key stored in Key Vault.
-- Adapter flows must not store Function host keys, Cognitive Services keys, OpenAI keys, Document Intelligence keys, Cosmos keys, or direct Power Platform workflow webhook URLs.
+- API Management validates the caller through APIM subscription access and forwards to Azure Functions with the backend shared key stored in Key Vault.
+- Adapter flows must not store backend shared keys, Cognitive Services keys, OpenAI keys, Document Intelligence keys, Cosmos keys, or direct Power Platform workflow webhook URLs.
 - Console users authenticate with Entra ID/Microsoft login and are authorized from `consoleUsers` plus `customerUserAssignments`.
 - Azure services use managed identity/RBAC where possible.
 - Secrets are stored in Key Vault, not Power Automate variables.

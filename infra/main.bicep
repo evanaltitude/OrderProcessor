@@ -44,6 +44,10 @@ param deployAzureOpenAI bool = true
 @description('Optional Blob URL for the Linux Consumption Function run-from-package deployment package.')
 param functionPackageUrl string = ''
 
+@secure()
+@description('Shared backend key APIM sends to the Function app in x-order-processor-function-key. Defaults to a new value per deployment.')
+param functionSharedKey string = newGuid()
+
 var normalizedEnvironment = toLower(replace(environmentName, '-', ''))
 var suffix = toLower(uniqueString(resourceGroup().id, projectName, environmentName))
 var storageAccountName = take('op${normalizedEnvironment}${suffix}', 24)
@@ -180,7 +184,7 @@ var apiPolicyXml = '''
 <policies>
   <inbound>
     <base />
-    <set-header name="x-functions-key" exists-action="override">
+    <set-header name="x-order-processor-function-key" exists-action="override">
       <value>{{function-host-key}}</value>
     </set-header>
     <set-header name="x-order-processor-ingress" exists-action="override">
@@ -411,6 +415,14 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
         {
           name: 'APIM_API_BASE_URL'
           value: 'https://${apiManagementName}.azure-api.net/${apiPath}'
+        }
+        {
+          name: 'ORDER_PROCESSOR_FUNCTION_SHARED_KEY'
+          value: functionSharedKey
+        }
+        {
+          name: 'ORDER_PROCESSOR_DEBUG_ERRORS'
+          value: 'false'
         }
       ], empty(functionPackageUrl) ? [] : [
         {
@@ -759,7 +771,7 @@ resource apimFunctionKeySecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = 
   parent: keyVault
   name: 'function-host-key-apim'
   properties: {
-    value: functionApp.listKeys().functionKeys.default
+    value: functionSharedKey
   }
 }
 

@@ -94,15 +94,16 @@ class InfraContractTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertIn(path, openapi)
 
-    def test_apim_policy_uses_key_vault_backed_function_key(self) -> None:
+    def test_apim_policy_uses_key_vault_backed_shared_key(self) -> None:
         bicep = (ROOT / "infra" / "main.bicep").read_text(encoding="utf-8")
 
         self.assertIn("function-host-key-apim", bicep)
+        self.assertIn("functionSharedKey", bicep)
         self.assertIn("console-web-app", bicep)
         self.assertIn("ORDER_PROCESSOR_APIM_SUBSCRIPTION_KEY", bicep)
         self.assertIn("authsettingsV2", bicep)
         self.assertIn("secretIdentifier: apimFunctionKeySecret.properties.secretUriWithVersion", bicep)
-        self.assertIn('<set-header name="x-functions-key"', bicep)
+        self.assertIn('<set-header name="x-order-processor-function-key"', bicep)
         self.assertIn("loadTextContent('openapi/order-processor-api.yaml')", bicep)
         self.assertIn("subscriptionRequired: true", bicep)
 

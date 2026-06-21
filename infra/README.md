@@ -53,7 +53,7 @@ Production parameters currently set `deployAzureOpenAI = false` because the targ
 
 Production parameters also set `consoleLocation = 'centralus'` while the core foundation remains in `westus2`. This avoids the App Service capacity conflict Azure returned for the console plan in `westus2` while keeping Cosmos, Functions, Storage, APIM, Key Vault, and AI services together.
 
-Production parameters set `functionPackageUrl` to the private Blob package uploaded for the current commit. Linux Consumption Functions require `WEBSITE_RUN_FROM_PACKAGE` to point at a URL; the Function app uses its system-assigned managed identity to fetch that private package.
+Production deployment note: the initial Linux Consumption Function app hit Azure package-mount and host-key runtime issues during deployment. The working production backend is the clean dedicated Function app `orderprocessor-prod-funcapi-vc5upbm44rc4w`, deployed from extracted files on the Central US App Service plan and fronted by APIM.
 
 ## Security Model
 
@@ -63,7 +63,7 @@ Production parameters set `functionPackageUrl` to the private Blob package uploa
 - Storage shared key access is disabled. The Function identity receives Blob, Queue, and Table data contributor roles for host storage, Durable Functions state, attachments, imports, and artifacts.
 - Key Vault uses RBAC. Function and API Management identities receive `Key Vault Secrets User`.
 - Azure OpenAI, Azure AI Services, and Azure Document Intelligence local key auth is disabled when deployed. The Function identity receives RBAC access for AI calls.
-- API Management imports the public API contract and injects the Function host key from Key Vault. Power Automate should call APIM, not raw Function URLs.
+- API Management imports the public API contract and injects the backend shared key from Key Vault through `x-order-processor-function-key`. Power Automate should call APIM, not raw Function URLs.
 
 ## API Management
 
@@ -73,4 +73,4 @@ External callers use:
 https://{apim-name}.azure-api.net/order-processor
 ```
 
-The imported API includes every public contract endpoint currently listed in `docs/API_CONTRACTS.md`. Subscription keys belong at the APIM layer. Function host keys stay behind APIM and are stored in Key Vault.
+The imported API includes every public contract endpoint currently listed in `docs/API_CONTRACTS.md`. Subscription keys belong at the APIM layer. The APIM-to-Function shared key stays behind APIM and is stored in Key Vault.

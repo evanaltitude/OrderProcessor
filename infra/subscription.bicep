@@ -47,6 +47,10 @@ param deployAzureOpenAI bool = true
 @description('Optional Blob URL for the Linux Consumption Function run-from-package deployment package.')
 param functionPackageUrl string = ''
 
+@secure()
+@description('Shared backend key APIM sends to the Function app in x-order-processor-function-key. Defaults to a new value per deployment.')
+param functionSharedKey string = newGuid()
+
 resource foundationResourceGroup 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   name: resourceGroupName
   location: location
@@ -70,6 +74,7 @@ module foundation 'main.bicep' = {
     consoleBootstrapAdminEmail: consoleBootstrapAdminEmail
     deployAzureOpenAI: deployAzureOpenAI
     functionPackageUrl: functionPackageUrl
+    functionSharedKey: functionSharedKey
     tags: tags
   }
 }

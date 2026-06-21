@@ -1,0 +1,103 @@
+param(
+    [string]$OutputPath = ".deploy/functions-posix.zip",
+    [switch]$SkipDependencies
+)
+
+$ErrorActionPreference = "Stop"
+
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$deployRoot = Join-Path $repoRoot ".deploy"
+$stagingRoot = Join-Path $deployRoot "functions"
+$outputFullPath = Join-Path $repoRoot $OutputPath
+
+if (-not (Test-Path $deployRoot)) {
+    New-Item -ItemType Directory -Path $deployRoot | Out-Null
+}
+
+if (Test-Path $stagingRoot) {
+    $resolvedStaging = (Resolve-Path $stagingRoot).Path
+    if (-not $resolvedStaging.StartsWith($deployRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to clean unexpected staging path: $resolvedStaging"
+    }
+    Remove-Item -LiteralPath $resolvedStaging -Recurse -Force
+}
+
+New-Item -ItemType Directory -Path $stagingRoot | Out-Null
+Copy-Item -LiteralPath (Join-Path $repoRoot "apps/functions/function_app.py") -Destination $stagingRoot -Force
+Copy-Item -LiteralPath (Join-Path $repoRoot "apps/functions/host.json") -Destination $stagingRoot -Force
+Copy-Item -LiteralPath (Join-Path $repoRoot "apps/functions/requirements.txt") -Destination $stagingRoot -Force
+Copy-Item -LiteralPath (Join-Path $repoRoot "src") -Destination (Join-Path $stagingRoot "src") -Recurse -Force
+
+if (-not $SkipDependencies) {
+    $sitePackages = Join-Path $stagingRoot ".python_packages/lib/site-packages"
+    New-Item -ItemType Directory -Path $sitePackages | Out-Null
+    python -m pip install `
+        --requirement (Join-Path $repoRoot "apps/functions/requirements.txt") `
+        --target $sitePackages `
+        --platform manylinux2014_x86_64 `
+        --implementation cp `
+        --python-version 3.11 `
+        --only-binary=:all: `
+        --upgrade
+}
+
+$routes = @(
+    @{ Name = "emails_ingest"; EntryPoint = "emails_ingest"; Route = "emails/ingest" },
+    @{ Name = "orders_process"; EntryPoint = "orders_process"; Route = "orders/{orderRunId}/process" },
+    @{ Name = "customers_identify"; EntryPoint = "customers_identify"; Route = "customers/identify" },
+    @{ Name = "items_validate"; EntryPoint = "items_validate"; Route = "items/validate" },
+    @{ Name = "imports_customers"; EntryPoint = "imports_customers"; Route = "imports/customers" },
+    @{ Name = "imports_items"; EntryPoint = "imports_items"; Route = "imports/items" },
+    @{ Name = "mailboxes_upsert"; EntryPoint = "mailboxes_upsert"; Route = "mailboxes" },
+    @{ Name = "mailboxes_test_connection"; EntryPoint = "mailboxes_test_connection"; Route = "mailboxes/{id}/test-connection" },
+    @{ Name = "orders_timeline"; EntryPoint = "orders_timeline"; Route = "orders/{orderRunId}/timeline" },
+    @{ Name = "console_session"; EntryPoint = "console_session"; Route = "console/session" },
+    @{ Name = "console_dashboard"; EntryPoint = "console_dashboard"; Route = "console/dashboard" },
+    @{ Name = "console_artifacts_download"; EntryPoint = "console_artifacts_download"; Route = "console/artifacts/download" },
+    @{ Name = "console_routing_rules_upsert"; EntryPoint = "console_routing_rules_upsert"; Route = "console/routing-rules" },
+    @{ Name = "console_customers_upsert"; EntryPoint = "console_customers_upsert"; Route = "console/customers" },
+    @{ Name = "console_mailboxes_upsert"; EntryPoint = "console_mailboxes_upsert"; Route = "console/mailboxes" },
+    @{ Name = "console_processor_profiles_upsert"; EntryPoint = "console_processor_profiles_upsert"; Route = "console/processor-profiles" },
+    @{ Name = "console_output_profiles_upsert"; EntryPoint = "console_output_profiles_upsert"; Route = "console/output-profiles" },
+    @{ Name = "console_users_upsert"; EntryPoint = "console_users_upsert"; Route = "console/users" },
+    @{ Name = "console_customer_users_assign"; EntryPoint = "console_customer_users_assign"; Route = "console/customers/{customerId}/users" },
+    @{ Name = "console_exceptions_resolve"; EntryPoint = "console_exceptions_resolve"; Route = "console/exceptions/{id}/resolve" },
+    @{ Name = "console_orders_reprocess"; EntryPoint = "console_orders_reprocess"; Route = "console/orders/{orderRunId}/reprocess" },
+    @{ Name = "console_orders_timeline"; EntryPoint = "console_orders_timeline"; Route = "console/orders/{orderRunId}/timeline" },
+    @{ Name = "customer_users_assign"; EntryPoint = "customer_users_assign"; Route = "customers/{customerId}/users" },
+    @{ Name = "exceptions_resolve"; EntryPoint = "exceptions_resolve"; Route = "exceptions/{id}/resolve" },
+    @{ Name = "orders_reprocess"; EntryPoint = "orders_reprocess"; Route = "orders/{orderRunId}/reprocess" }
+)
+
+foreach ($route in $routes) {
+    $routeDir = Join-Path $stagingRoot $route.Name
+    New-Item -ItemType Directory -Path $routeDir | Out-Null
+    $metadata = @{
+        scriptFile = "../function_app.py"
+        entryPoint = $route.EntryPoint
+        bindings = @(
+            @{
+                authLevel = "anonymous"
+                type = "httpTrigger"
+                direction = "in"
+                name = "req"
+                methods = @("post")
+                route = $route.Route
+            },
+            @{
+                type = "http"
+                direction = "out"
+                name = '$return'
+            }
+        )
+    } | ConvertTo-Json -Depth 10
+    Set-Content -LiteralPath (Join-Path $routeDir "function.json") -Value $metadata -Encoding ASCII
+}
+
+Get-ChildItem -Path $stagingRoot -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
+if (Test-Path $outputFullPath) {
+    Remove-Item -LiteralPath $outputFullPath -Force
+}
+
+tar -a -cf $outputFullPath -C $stagingRoot .
+Write-Host "Built Function package: $outputFullPath"
