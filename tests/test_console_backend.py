@@ -184,6 +184,46 @@ class ConsoleBackendTests(unittest.TestCase):
         self.assertEqual([customer["id"] for customer in dashboard["customers"]], ["store-100"])
         self.assertEqual([item["id"] for item in dashboard["items"]], ["item-100"])
 
+    def test_platform_admin_can_manage_new_distributor_tenant_after_create(self) -> None:
+        api, repo, _ = self._api()
+        api.upsert_console_user(
+            {
+                "tenantId": "default",
+                "email": "admin@example.com",
+                "displayName": "Admin",
+                "roles": ["platformAdmin"],
+            }
+        )
+
+        created = api.console_upsert_tenant_config(
+            {
+                "tenantId": "default",
+                "email": "admin@example.com",
+                "targetTenantId": "test-distributor",
+                "name": "Test Distributor",
+            }
+        )
+        mailbox = api.console_upsert_mailbox(
+            {
+                "tenantId": "test-distributor",
+                "email": "admin@example.com",
+                "mailboxAddress": "orders@example.com",
+                "displayName": "Orders",
+                "connectionId": "m365-test",
+            }
+        )
+
+        self.assertEqual(created["tenant"]["tenantId"], "test-distributor")
+        self.assertTrue(mailbox["session"]["authorized"])
+        self.assertEqual(mailbox["mailboxAccount"]["tenantId"], "test-distributor")
+        self.assertEqual(mailbox["mailboxAccount"]["mailboxAddress"], "orders@example.com")
+        cloned_admin = next(
+            user
+            for user in repo.query_by_tenant("consoleUsers", "test-distributor")
+            if user["email"] == "admin@example.com"
+        )
+        self.assertEqual(cloned_admin["roles"], ["platformAdmin"])
+
     def test_console_microsoft_auth_start_requires_configuration(self) -> None:
         api, _, _ = self._api()
         admin_headers = {"x-ms-client-principal": _easy_auth_header("connect@focuseautomate.com")}

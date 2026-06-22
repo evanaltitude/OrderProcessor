@@ -27,6 +27,19 @@ async function post(path, body = {}, options = {}) {
   return response.json();
 }
 
+function actionFailed(result) {
+  return Boolean(result?.error || result?.session?.authorized === false);
+}
+
+function showActionResult(result) {
+  showDetails(result);
+  return !actionFailed(result);
+}
+
+function activeConsoleView() {
+  return document.querySelector(".tab.active")?.dataset.view || "monitor";
+}
+
 function showDetails(payload) {
   const pane = el("detailsPane");
   pane.innerHTML = `<pre>${escapeHtml(JSON.stringify(payload, null, 2))}</pre>`;
@@ -289,8 +302,9 @@ function renderSession() {
     : `${session.reason || "unauthorized"}`;
 }
 
-async function refresh() {
-  const customerId = el("customerFilter").value;
+async function refresh(options = {}) {
+  const includeCustomerFilter = options.includeCustomerFilter ?? activeConsoleView() !== "customers";
+  const customerId = includeCustomerFilter ? el("customerFilter").value : "";
   state.dashboard = await post("/console/dashboard", customerId ? { customerId } : {});
   state.selectedDistributorId = state.dashboard?.tenant?.tenantId || state.tenantId;
   renderSession();
@@ -311,7 +325,7 @@ async function openDistributor(tenantId) {
   state.tenantId = tenantId;
   state.selectedDistributorId = tenantId;
   state.customerPage = "detail";
-  await refresh();
+  await refresh({ includeCustomerFilter: false });
 }
 
 async function resolveTask(id, type) {
@@ -340,31 +354,32 @@ function wireForms() {
       environment: value(form, "environment"),
       status: value(form, "status") || "active"
     });
-    showDetails(result);
+    if (!showActionResult(result)) return;
     state.tenantId = targetTenantId;
     state.selectedDistributorId = targetTenantId;
     state.customerPage = "detail";
-    await refresh();
+    await refresh({ includeCustomerFilter: false });
   });
 
   el("mailboxForm").addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
     const mailbox = primaryMailbox();
-    showDetails(await post("/console/mailboxes", {
+    const result = await post("/console/mailboxes", {
       id: mailbox?.id,
       mailboxAddress: value(form, "mailboxAddress"),
       displayName: value(form, "displayName"),
       connectionId: value(form, "connectionId"),
       enabled: form.enabled.checked
-    }));
-    await refresh();
+    });
+    if (!showActionResult(result)) return;
+    await refresh({ includeCustomerFilter: false });
   });
 
   el("automationSettingsForm").addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
-    showDetails(await post("/console/tenants", {
+    const result = await post("/console/tenants", {
       targetTenantId: state.tenantId,
       id: state.tenantId,
       name: selectedDistributor().name || state.tenantId,
@@ -377,15 +392,16 @@ function wireForms() {
         extractionRules: parseJsonField(form, "extractionRules"),
         emailSubjectSettings: parseJsonField(form, "emailSubjectSettings")
       }
-    }));
-    await refresh();
+    });
+    if (!showActionResult(result)) return;
+    await refresh({ includeCustomerFilter: false });
   });
 
   el("routingForm").addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
     const mailbox = primaryMailbox();
-    showDetails(await post("/console/routing-rules", {
+    const result = await post("/console/routing-rules", {
       id: value(form, "id"),
       customerId: "_global",
       name: value(form, "name"),
@@ -409,8 +425,9 @@ function wireForms() {
       subjectTemplate: value(form, "subjectTemplate"),
       categoryCsrField: "csrFolder",
       categoryTemplates: split(value(form, "categoryTemplates"))
-    }));
-    await refresh();
+    });
+    if (!showActionResult(result)) return;
+    await refresh({ includeCustomerFilter: false });
   });
 
   el("profileForm").addEventListener("submit", async (event) => {
@@ -421,30 +438,33 @@ function wireForms() {
     const path = value(form, "kind") === "processor" ? "/console/processor-profiles" : "/console/output-profiles";
     if (value(form, "kind") === "processor") body.processorType = value(form, "type");
     else body.outputType = value(form, "type");
-    showDetails(await post(path, body));
-    await refresh();
+    const result = await post(path, body);
+    if (!showActionResult(result)) return;
+    await refresh({ includeCustomerFilter: false });
   });
 
   el("userForm").addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
-    showDetails(await post("/console/users", {
+    const result = await post("/console/users", {
       email: value(form, "email"),
       displayName: value(form, "displayName"),
       roles: split(value(form, "roles")),
       enabled: form.enabled.checked
-    }));
+    });
+    if (!showActionResult(result)) return;
     await refresh();
   });
 
   el("assignmentForm").addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
-    showDetails(await post(`/console/customers/${value(form, "customerId")}/users`, {
+    const result = await post(`/console/customers/${value(form, "customerId")}/users`, {
       email: value(form, "email"),
       roles: split(value(form, "roles")),
       enabled: form.enabled.checked
-    }));
+    });
+    if (!showActionResult(result)) return;
     await refresh();
   });
 }
@@ -463,6 +483,10 @@ async function authorizeMicrosoft() {
     redirectUri: `${window.location.origin}/auth/microsoft/callback`,
     returnTo: "/"
   });
+  if (actionFailed(result)) {
+    showDetails(result);
+    return;
+  }
   if (result.authorizationUrl) {
     window.location.href = result.authorizationUrl;
   } else {
@@ -483,7 +507,10 @@ async function testMailbox() {
 document.addEventListener("click", async (event) => {
   const target = event.target.closest("button, tr");
   if (!target) return;
-  if (target.classList.contains("tab")) activeView(target.dataset.view);
+  if (target.classList.contains("tab")) {
+    activeView(target.dataset.view);
+    if (target.dataset.view === "customers") await refresh({ includeCustomerFilter: false });
+  }
   if (target.dataset.action === "open-distributor") await openDistributor(target.dataset.tenant);
   if (target.id === "addDistributorButton") {
     state.customerPage = "edit";

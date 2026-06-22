@@ -21,6 +21,8 @@ class ConsoleFrontendTests(unittest.TestCase):
         self.assertIn("/console/mailboxes", app)
         self.assertIn("/console/microsoft-auth/start", app)
         self.assertIn("/test-connection", app)
+        self.assertIn("actionFailed", app)
+        self.assertIn("includeCustomerFilter: false", app)
         self.assertIn("/console/tenants", app)
         self.assertIn("/console/customers/", app)
         self.assertIn("/console/exceptions/", app)
