@@ -7,7 +7,7 @@ Phase 6 is complete as of 2026-06-20. The backend now treats `/emails/ingest` as
 - Ingested email metadata is normalized into `EmailMessage`.
 - Attachments are stored as metadata/reference records, not binary content.
 - Mailbox account context is resolved from `mailboxAccountId` or mailbox address.
-- Customer-specific mailbox accounts scope routing to the owning customer.
+- Tenant mailbox accounts scope routing to the distributor tenant. They do not assign the downstream customer/account.
 - Data-driven `routingRules` determine whether the message is an order, non-order, needs identification, needs human review, or should be ignored.
 - Routing decisions are stored on the email record and emitted in the API response.
 - `knownOrder` creates an `orderRun`.
@@ -50,13 +50,13 @@ The ingest API resolves mailbox configuration in this order:
 2. Fall back to exact normalized mailbox address lookup in `mailboxAccounts`.
 3. Continue without mailbox configuration when only a raw mailbox address is available.
 
-Resolved mailbox accounts set `email.mailboxAccountId` and, when the mailbox owns a customer, scope `email.customerId`.
+Resolved mailbox accounts set `email.mailboxAccountId` and mailbox address context only. They do not assign `email.customerId`; downstream customer identification is handled by customer ID rules, AI/vector fallback, or human resolution.
 
 Special cases:
 
 - Disabled mailbox accounts route to `ignored`.
 - A provided but unknown `mailboxAccountId` routes to `needsHumanReview`.
-- A payload `customerId` that conflicts with the resolved mailbox customer routes to `needsHumanReview` and records the mailbox customer as the effective customer.
+- A trusted payload `customerId` is preserved as already-identified downstream customer context, but mailbox configuration does not override it.
 
 ## Routing Rule Signals
 
@@ -76,7 +76,7 @@ Rules are evaluated by priority and remain data, not flow branches. Supported si
 - `requiredAttachment`
 - `tags`
 
-Tenant-wide routing rules use `customerId: "_global"`. When a customer-specific mailbox scopes the email to a customer, the router considers global rules and that customer's rules, preventing another customer's rule from claiming the message.
+Tenant-wide routing rules use `customerId: "_global"`. Downstream customer-specific routing rules can still identify a customer when their hard conditions match the email, but mailbox configuration itself does not claim the downstream customer.
 
 ## Rule Examples
 
@@ -138,7 +138,7 @@ Tenant-wide webstore notification ignore rule:
 | `needsHumanReview` | `needsReview` | Creates routing exception task. |
 | `ignored` | `ignored` | Stores the email and decision only. |
 
-If no rule matches and the email has no customer context, the outcome is `needsCustomerIdentification`. If no rule matches but a customer-specific mailbox already scopes the email, the outcome is `needsHumanReview`; this avoids silently processing known-customer mail without an explicit data rule.
+If no rule matches and the email has no downstream customer context, the outcome is `needsCustomerIdentification`. If a trusted caller supplies a known downstream customer but no routing rule matches, the outcome is `needsHumanReview`; this avoids silently processing known-customer mail without an explicit data rule.
 
 ## Validation
 
@@ -150,11 +150,11 @@ Tests added or expanded:
 Coverage includes:
 
 - Known CSV/XLSX order routing.
-- Customer-specific mailbox scoping.
-- Filtering out other customers' routing rules.
+- Tenant mailbox scoping without downstream customer assignment.
+- Customer-specific routing rules that match only when their hard rule conditions match the email.
 - Disabled mailbox ignored behavior.
 - Unknown mailbox account id review behavior.
-- Payload customer/mailbox customer conflict handling.
+- Preservation of trusted payload customer context without mailbox override.
 - Prior processed subject patterns.
 - Known webstore patterns.
 - Attachment extension and content-type matching.

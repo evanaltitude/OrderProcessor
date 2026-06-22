@@ -2,7 +2,7 @@
   {
     "id": "pilot-csv-mailbox",
     "tenantId": "altitude",
-    "customerId": "pilot-customer",
+    "customerId": "_global",
     "mailboxAddress": "pilot-csv-orders@focuseautomate.test",
     "displayName": "Pilot CSV Orders",
     "provider": "microsoft365",

@@ -7,9 +7,8 @@
 | OrderProcessorApiBaseUrl | Azure/APIM deployment output | Example: https://{apim-name}.azure-api.net/order-processor. |
 | OrderProcessorApimSubscriptionKey | APIM subscription/custom connector connection | Used by adapter flows until Entra/custom-connector auth replaces subscription keys. |
 | OrderProcessorTenantId | Backend tenant config | Defaults to altitude for the first environment. |
-| OrderProcessorMailboxAddress | Backend mailbox config | One value per monitored customer mailbox trigger instance. |
+| OrderProcessorMailboxAddress | Backend mailbox config | One value per monitored distributor mailbox trigger instance. |
 | OrderProcessorMailboxAccountId | Cosmos mailboxAccounts.id | Lets Azure correlate the flow trigger to backend mailbox configuration. |
-| OrderProcessorCustomerId | Cosmos customers.id | Optional when mailbox is not customer-scoped yet. |
 
 ## Connection References
 
@@ -18,7 +17,7 @@
 
 ## Backend Configuration Boundary
 
-Power Automate must not own customer routing or parser logic. Mailbox address, owning customer, connection metadata, Graph permission status, and ingest state are stored in Cosmos containers mailboxAccounts and microsoftAuthConnections, then exposed through the console.
+Power Automate must not own customer routing, customer identification, or parser logic. Mailbox address, tenant ownership, connection metadata, Graph permission status, and ingest state are stored in Cosmos containers mailboxAccounts and microsoftAuthConnections, then exposed through the console. Downstream customer identification happens in Azure through deterministic rules, aliases, embeddings, and exception handling.
 
 ## Flow Activation Checklist
 
@@ -28,4 +27,4 @@ Power Automate must not own customer routing or parser logic. Mailbox address, o
 4. Configure the flow template parameters for the specific mailbox or adapter.
 5. Bind the Office 365 Outlook connection reference when the template uses M365.
 6. Run a test invocation against APIM.
-7. Turn on only the configured customer-specific flow instance.
+7. Turn on only the configured tenant mailbox flow instance.

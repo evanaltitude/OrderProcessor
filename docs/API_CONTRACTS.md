@@ -73,14 +73,18 @@ Request shape:
 
 Response includes `emailMessage`, `routingDecision`, optional `orderRun`, optional `exceptionTask`, and `observability`. Response documents use camelCase keys.
 
-Mailbox identity is first-class routing context. When a mailbox is configured for a specific customer, the ingest request should include `mailboxAccountId` and can include the scoped `customerId`. The backend also resolves the mailbox by mailbox address when `mailboxAccountId` is omitted.
+Mailbox identity is first-class tenant context. A monitored mailbox belongs to the distributor/tenant whose orders inbox is being watched; it does not identify the downstream end customer. The ingest request should include `mailboxAccountId` when available. `customerId` should be supplied only by a trusted caller that has already identified the downstream customer/account through customer-ID logic or manual resolution. The backend also resolves the mailbox by mailbox address when `mailboxAccountId` is omitted.
 
 Phase 6 routing behavior:
 
 - The backend persists email metadata, attachment references, message id, sender, subject, received date, mailbox, mailbox account id, customer id when known, processing status, source metadata, and the routing decision in `emailMessages`.
-- Mailbox configuration is read from `mailboxAccounts`. Disabled mailboxes route to `ignored`; unknown mailbox account ids and customer/mailbox conflicts route to `needsHumanReview`.
-- Candidate routing rules come from `routingRules` and are filtered to tenant-wide rules plus the scoped customer when a customer-specific mailbox is known.
+- Mailbox configuration is read from `mailboxAccounts`. Disabled mailboxes route to `ignored`; unknown mailbox account ids route to `needsHumanReview`. Mailbox configuration no longer overrides or assigns downstream `customerId`.
+- Candidate routing rules come from `routingRules`. Tenant-wide distributor rules use `customerId: "_global"`; downstream customer-specific rules can still identify a customer when hard conditions truly identify one end customer.
 - Routing rules are data, not flow branches. Supported rule signals include mailbox account id, mailbox address, sender, sender domain, subject regex, body regex, known webstore patterns, prior processed subject patterns, attachment extension, attachment content type, attachment filename regex, and required-attachment checks.
+- Routing rules now carry an ordered `phase`: `webstoreOrder`, `previouslyProcessed`, `orderCandidate`, `nonOrder`, or `general`. The backend evaluates phases in that order so webstore customer-code extraction and already-identified subject extraction happen before generic order/non-order decisions.
+- `customerCodeExtraction` lets a distributor-specific rule extract the downstream customer code from subject, body, sender, attachment names, or combined email text, then match it to `customers.customerCode` or `customerAliases`.
+- `subjectUpdate` stores subject detection/update policy, such as detecting subjects containing `Cust:` and `Rte:` and rendering `Cust: {customerCode} Rte: {routeNumber} - {originalSubject}`.
+- `emailActions` stores planned Microsoft mail actions for the Graph/Power Automate adapter: category templates, the customer record field used for CSR name, and per-status move settings for `processedOrder`, `failedOrder`, `nonOrder`, and `ignored`. Move mode can be `none`, `staticFolder`, or `customerField`.
 - Router outcomes are `knownOrder`, `knownCustomerNonOrder`, `needsCustomerIdentification`, `needsHumanReview`, and `ignored`.
 - `knownOrder` creates an `orderRun`. `needsCustomerIdentification` and `needsHumanReview` create an `exceptionTask`. `knownCustomerNonOrder` and `ignored` do not create order runs.
 
@@ -243,9 +247,12 @@ Deterministic match order/signals:
 - Customer code extracted from subject/body/sender text.
 - Store number.
 - Route number.
+- Sender email.
 - Sender domain.
 - Known subject pattern.
-- Customer alias records in `customerAliases` for customer code, store number, route number, sender domain, and known subject pattern.
+- Known body pattern.
+- Attachment/file-name pattern.
+- Customer alias records in `customerAliases` for account number/customer code, store number, route number, sender email, sender domain, known subject pattern, body pattern, and file-name pattern.
 
 Vector fallback:
 
@@ -337,6 +344,23 @@ Response includes import type, import run id, source rows blob URL/checksum, par
 
 Customer imports default to a daily refresh cadence. Override with `refreshIntervalDays`, `importProfile.refreshIntervalDays`, or `customerConfig.customerRefreshIntervalDays`.
 
+The universal customer row shape is accepted without a field map when upstream adapters can already emit it:
+
+```json
+{
+  "customer_name": "CHOW HOUND #4",
+  "customer_store_number": "504",
+  "location_address1": "734 28TH ST SE",
+  "location_city": "GRAND RAPIDS",
+  "location_state": "MI",
+  "location_zip": "49548",
+  "phone": "616-452-7877",
+  "customer_website": "WWW.CHOWHOUNDPET.COM",
+  "customer_email": "GREGC@CHOWHOUNDPET.COM",
+  "cust_code": "100029"
+}
+```
+
 Customer imports write:
 
 - `customers`
@@ -344,7 +368,7 @@ Customer imports write:
 - `auditEvents`
 - source rows archive in Blob Storage, or `memory://` archive in local tests
 
-Customer alias records are generated for customer code, sender domains, store number, route number, and known subject patterns. These feed Phase 7 deterministic customer identification.
+Customer alias records are generated for customer code, sender email, sender domains, store number, route number, and known subject patterns. These feed deterministic customer identification.
 
 ## `POST /imports/items`
 
@@ -374,7 +398,21 @@ Request shape:
 
 Item imports default to a weekly refresh cadence. A customer can override with `customerConfig.itemRefreshIntervalDays`, `refreshIntervalDays`, or `importProfile.refreshIntervalDays`.
 
-Item rows require at least one identifier: internal item number, UPC, or customer item number. Missing-identifier rows are skipped and returned in `errors`.
+Item rows require at least one identifier: internal item number, UPC, customer item number, or alternate item id. Missing-identifier rows are skipped and returned in `errors`.
+
+The universal item row shape is accepted without a field map. `alt_parts_combined` can arrive as an array or a pipe/comma/semicolon/newline-delimited string and is normalized into an array while also feeding item validation aliases:
+
+```json
+{
+  "part_code": "200510610",
+  "upc_code": "849910140402",
+  "alt_parts_combined": [
+    "849910140402",
+    "CLR LG TCT BK"
+  ],
+  "part_desc": "ALCOTT LARGE DOG SOLID BLACK TACTICAL COLLAR EA"
+}
+```
 
 Item imports write:
 
@@ -407,21 +445,22 @@ Example direct-row payload:
 
 ## `POST /mailboxes`
 
-Creates or updates a customer-specific monitored mailbox configuration.
+Creates or updates a tenant-scoped monitored mailbox configuration. The mailbox represents the distributor/company inbox being monitored; it does not represent one downstream end customer.
 
 Request shape:
 
 ```json
 {
   "tenantId": "altitude",
-  "customerId": "customer-1",
-  "mailboxAddress": "customer-orders@example.com",
-  "displayName": "Customer Orders",
+  "mailboxAddress": "orders@example.com",
+  "displayName": "Orders Mailbox",
   "provider": "microsoft365",
   "connectionId": "m365-connection-1",
   "enabled": true
 }
 ```
+
+Legacy callers may still send `customerId`; the backend stores mailbox records in the `_global` partition and preserves the legacy value only as deprecated metadata under `settings.deprecatedMailboxCustomerId`.
 
 ## `POST /mailboxes/{id}/test-connection`
 
@@ -433,7 +472,7 @@ Current local scaffold returns a `notTested` status until live Microsoft Graph c
 
 The console is hosted as an Azure Web App and should be protected by App Service Easy Auth with Microsoft Entra ID. The Web App proxies browser calls from `/api/*` to APIM, forwarding Easy Auth headers such as `x-ms-client-principal`.
 
-Only `connect@focuseautomate.com` is bootstrapped as the initial `platformAdmin`. Other Microsoft users must be created in `consoleUsers` and assigned to customers through `customerUserAssignments`.
+Only `connect@focuseautomate.com` is bootstrapped as the initial `platformAdmin`. Other Microsoft users must be created in `consoleUsers`. Tenant-level roles such as `tenantAdmin` can manage the distributor tenant without assigning the user to every downstream customer; downstream customer-specific access can still be represented through `customerUserAssignments`.
 
 Console user permissions:
 
@@ -480,8 +519,10 @@ Authorizes access to an output artifact by `orderRunId` plus `artifactId`, or by
 
 The console-prefixed mutation routes require the signed-in user to have the relevant console permission. These routes should be used by the Web App instead of raw service helpers.
 
-- `POST /console/mailboxes`: admin mailbox configuration.
-- `POST /console/customers`: admin customer profile/configuration edits.
+- `POST /console/mailboxes`: admin tenant mailbox configuration.
+- `POST /console/tenants`: admin distribution company/tenant configuration.
+- `POST /console/customers`: admin downstream end-customer/account profile edits.
+- `POST /console/customer-identification-rules`: admin deterministic customer-ID hard-rule edits backed by `customerAliases`.
 - `POST /console/routing-rules`: admin routing rule edits.
 - `POST /console/processor-profiles`: admin parser profile edits.
 - `POST /console/output-profiles`: admin output profile edits.

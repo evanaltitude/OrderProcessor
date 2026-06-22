@@ -167,6 +167,14 @@ if func is not None:
     def console_mailboxes_upsert(req: func.HttpRequest) -> func.HttpResponse:
         return _handle(req, lambda: order_api.console_upsert_mailbox(_payload_with_headers(req)))
 
+    @app.route(route="console/tenants", methods=["POST"])
+    def console_tenants_upsert(req: func.HttpRequest) -> func.HttpResponse:
+        return _handle(req, lambda: order_api.console_upsert_tenant_config(_payload_with_headers(req)))
+
+    @app.route(route="console/customer-identification-rules", methods=["POST"])
+    def console_customer_identification_rules_upsert(req: func.HttpRequest) -> func.HttpResponse:
+        return _handle(req, lambda: order_api.console_upsert_customer_identification_rule(_payload_with_headers(req)))
+
     @app.route(route="console/processor-profiles", methods=["POST"])
     def console_processor_profiles_upsert(req: func.HttpRequest) -> func.HttpResponse:
         return _handle(req, lambda: order_api.console_upsert_processor_profile(_payload_with_headers(req)))

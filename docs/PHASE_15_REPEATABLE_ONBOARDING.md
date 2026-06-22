@@ -25,7 +25,7 @@ The validator checks:
 - package id and tenant id
 - customer profile completeness and CSR folder
 - Microsoft auth connection mail scopes and no inline secret values
-- monitored mailbox customer scope, email format, and auth connection linkage
+- monitored tenant mailbox, email format, and auth connection linkage
 - bootstrap admin plus customer console user assignments
 - customer-scoped processor profiles with supported processor types and no Plumsail usage
 - routing rules with known mailbox/profile references and concrete matchers

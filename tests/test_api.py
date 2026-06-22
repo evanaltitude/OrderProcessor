@@ -32,7 +32,6 @@ class ApiTests(unittest.TestCase):
         mailbox = api.upsert_mailbox(
             {
                 "tenantId": "altitude",
-                "customerId": "pilot-customer",
                 "mailboxAddress": "orders@example.com",
                 "displayName": "Pilot Orders",
             }
@@ -104,7 +103,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(processed["unresolvedLineCount"], 0)
         self.assertEqual(processed["orderRun"]["status"], "completed")
 
-    def test_ingest_uses_mailbox_customer_scope_and_filters_other_customer_rules(self) -> None:
+    def test_ingest_does_not_use_mailbox_as_downstream_customer_scope(self) -> None:
         repo = InMemoryRepository()
         api = OrderProcessorApi(repo)
         mailbox = api.upsert_mailbox(
@@ -114,30 +113,6 @@ class ApiTests(unittest.TestCase):
                 "mailboxAddress": "pilot-orders@example.com",
             }
         )["mailboxAccount"]
-        repo.upsert(
-            "routingRules",
-            {
-                "id": "wrong-customer-rule",
-                "tenantId": "altitude",
-                "customerId": "other-customer",
-                "name": "other customer catch all",
-                "outcome": "knownOrder",
-                "priority": 1,
-            },
-        )
-        repo.upsert(
-            "routingRules",
-            {
-                "id": "pilot-rule",
-                "tenantId": "altitude",
-                "customerId": "pilot-customer",
-                "name": "pilot xlsx",
-                "outcome": "knownOrder",
-                "priority": 2,
-                "attachmentExtensions": ["xlsx"],
-                "requiredAttachment": True,
-            },
-        )
 
         result = api.ingest_email(
             {
@@ -151,9 +126,11 @@ class ApiTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(result["routingDecision"]["ruleId"], "pilot-rule")
-        self.assertEqual(result["routingDecision"]["customerId"], "pilot-customer")
-        self.assertIsNotNone(result["orderRun"])
+        self.assertEqual(mailbox["customerId"], "_global")
+        self.assertEqual(mailbox["settings"]["deprecatedMailboxCustomerId"], "pilot-customer")
+        self.assertEqual(result["routingDecision"]["outcome"], "needsCustomerIdentification")
+        self.assertIsNone(result["emailMessage"].get("customerId"))
+        self.assertIsNone(result["orderRun"])
 
     def test_disabled_mailbox_is_ignored_without_exception_or_order_run(self) -> None:
         repo = InMemoryRepository()
@@ -161,7 +138,6 @@ class ApiTests(unittest.TestCase):
         mailbox = api.upsert_mailbox(
             {
                 "tenantId": "altitude",
-                "customerId": "pilot-customer",
                 "mailboxAddress": "disabled-orders@example.com",
                 "enabled": False,
             }
@@ -184,7 +160,7 @@ class ApiTests(unittest.TestCase):
         self.assertIsNone(result["orderRun"])
         self.assertIsNone(result["exceptionTask"])
 
-    def test_mailbox_customer_conflict_creates_human_review_exception(self) -> None:
+    def test_payload_customer_id_is_not_replaced_by_mailbox_configuration(self) -> None:
         repo = InMemoryRepository()
         api = OrderProcessorApi(repo)
         mailbox = api.upsert_mailbox(
@@ -209,9 +185,126 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(result["routingDecision"]["outcome"], "needsHumanReview")
         self.assertEqual(result["emailMessage"]["status"], "needsReview")
-        self.assertEqual(result["emailMessage"]["customerId"], "pilot-customer")
+        self.assertEqual(result["emailMessage"]["customerId"], "other-customer")
         self.assertEqual(result["exceptionTask"]["type"], "routing")
         self.assertIsNone(result["orderRun"])
+
+    def test_webstore_triage_rule_extracts_downstream_customer_and_email_actions(self) -> None:
+        repo = InMemoryRepository()
+        api = OrderProcessorApi(repo)
+        mailbox = api.upsert_mailbox(
+            {
+                "tenantId": "altitude",
+                "mailboxAddress": "orders@example.com",
+            }
+        )["mailboxAccount"]
+        api.upsert_customer_config(
+            {
+                "tenantId": "altitude",
+                "id": "chow-hound-4",
+                "customerCode": "100029",
+                "name": "CHOW HOUND #4",
+                "routeNumber": "R12",
+                "csrFolder": "CSR/Jane",
+            }
+        )
+        api.upsert_routing_rule(
+            {
+                "tenantId": "altitude",
+                "customerId": "_global",
+                "id": "webstore-orders",
+                "name": "Webstore orders",
+                "phase": "webstoreOrder",
+                "outcome": "knownOrder",
+                "priority": 1,
+                "processorProfileId": "csv-default",
+                "mailboxAccountIds": [mailbox["id"]],
+                "senderEquals": ["orders@webstore.example"],
+                "knownWebstorePatterns": ["webstore order"],
+                "customerCodeSource": "bodyText",
+                "customerCodeRegex": r"Customer\s*Code:\s*(?P<customerCode>\d+)",
+                "subjectTemplate": "Cust: {customerCode} Rte: {routeNumber} - {originalSubject}",
+                "categoryCsrField": "csrFolder",
+                "categoryTemplates": ["CSR: {csrName}", "Status: {status}"],
+                "processedMoveMode": "customerField",
+                "processedMoveCustomerField": "csrFolder",
+            }
+        )
+
+        result = api.ingest_email(
+            {
+                "tenantId": "altitude",
+                "mailboxAccountId": mailbox["id"],
+                "messageId": "message-webstore",
+                "sender": "orders@webstore.example",
+                "subject": "New webstore order",
+                "bodyText": "Webstore order received. Customer Code: 100029",
+            }
+        )
+
+        actions = result["routingDecision"]["matchedSignals"]["emailActions"]
+        self.assertEqual(result["routingDecision"]["outcome"], "knownOrder")
+        self.assertEqual(result["routingDecision"]["customerId"], "chow-hound-4")
+        self.assertEqual(result["orderRun"]["customerId"], "chow-hound-4")
+        self.assertEqual(actions["subject"]["value"], "Cust: 100029 Rte: R12 - New webstore order")
+        self.assertIn("CSR: CSR/Jane", actions["categories"])
+        self.assertEqual(actions["move"]["folderName"], "CSR/Jane")
+
+    def test_previously_processed_subject_rule_extracts_customer_for_non_order_routing(self) -> None:
+        repo = InMemoryRepository()
+        api = OrderProcessorApi(repo)
+        mailbox = api.upsert_mailbox(
+            {
+                "tenantId": "altitude",
+                "mailboxAddress": "orders@example.com",
+            }
+        )["mailboxAccount"]
+        api.upsert_customer_config(
+            {
+                "tenantId": "altitude",
+                "id": "chow-hound-4",
+                "customerCode": "100029",
+                "name": "CHOW HOUND #4",
+                "csrFolder": "CSR/Jane",
+            }
+        )
+        api.upsert_routing_rule(
+            {
+                "tenantId": "altitude",
+                "customerId": "_global",
+                "id": "processed-subject",
+                "name": "Already identified subject",
+                "phase": "previouslyProcessed",
+                "outcome": "knownCustomerNonOrder",
+                "priority": 1,
+                "mailboxAccountIds": [mailbox["id"]],
+                "priorProcessedSubjectRegex": [r"Cust:\s*\d+.*Rte:"],
+                "customerCodeSource": "subject",
+                "customerCodeRegex": r"Cust:\s*(?P<customerCode>\d+)",
+                "nonOrderMoveMode": "customerField",
+                "nonOrderMoveCustomerField": "csrFolder",
+                "categoryCsrField": "csrFolder",
+                "categoryTemplates": ["CSR: {csrName}", "Review reply"],
+            }
+        )
+
+        result = api.ingest_email(
+            {
+                "tenantId": "altitude",
+                "mailboxAccountId": mailbox["id"],
+                "messageId": "message-reply",
+                "sender": "store@example.com",
+                "subject": "RE: Cust: 100029 Rte: R12 - PO 123",
+            }
+        )
+
+        actions = result["routingDecision"]["matchedSignals"]["emailActions"]
+        self.assertEqual(result["routingDecision"]["outcome"], "knownCustomerNonOrder")
+        self.assertEqual(result["routingDecision"]["customerId"], "chow-hound-4")
+        self.assertEqual(result["emailMessage"]["customerId"], "chow-hound-4")
+        self.assertIsNone(result["orderRun"])
+        self.assertEqual(actions["actionKey"], "nonOrder")
+        self.assertEqual(actions["move"]["folderName"], "CSR/Jane")
 
     def test_unknown_mailbox_account_id_creates_human_review_exception(self) -> None:
         repo = InMemoryRepository()
@@ -288,6 +381,44 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(stored_email["customerId"], "pilot-customer")
         self.assertEqual(stored_email["customerIdentification"]["matchMethod"], "customerCode")
         self.assertEqual(stored_order["customerId"], "pilot-customer")
+
+    def test_customer_identification_hard_rule_matches_sender_email(self) -> None:
+        repo = InMemoryRepository()
+        api = OrderProcessorApi(repo)
+        api.upsert_customer_config(
+            {
+                "tenantId": "altitude",
+                "id": "pilot-customer",
+                "customerCode": "PILOT",
+                "name": "Pilot Customer",
+            }
+        )
+        rule = api.upsert_customer_identification_rule(
+            {
+                "tenantId": "altitude",
+                "customerId": "pilot-customer",
+                "aliasType": "senderEmail",
+                "value": "buyer@example.com",
+            }
+        )["customerIdentificationRule"]
+
+        result = api.identify_customer(
+            {
+                "emailMessage": {
+                    "id": "email-sender-rule",
+                    "tenantId": "altitude",
+                    "mailbox": "orders@example.com",
+                    "messageId": "message-sender-rule",
+                    "sender": "Buyer <buyer@example.com>",
+                    "subject": "Please process this order",
+                }
+            }
+        )
+
+        self.assertEqual(rule["normalizedValue"], "buyer@example.com")
+        self.assertEqual(result["result"]["status"], "matched")
+        self.assertEqual(result["result"]["customerId"], "pilot-customer")
+        self.assertEqual(result["result"]["matchMethod"], "senderEmail")
 
     def test_identify_customer_uses_aliases_and_creates_exception_for_ambiguous_match(self) -> None:
         repo = InMemoryRepository()
@@ -380,12 +511,18 @@ class ApiTests(unittest.TestCase):
         mailbox = api.upsert_mailbox(
             {
                 "tenantId": "altitude",
-                "customerId": "pilot-customer",
                 "mailboxAddress": "PilotOrders@Example.com",
                 "displayName": "Pilot Orders",
                 "connectionId": "m365-pilot",
             }
         )["mailboxAccount"]
+        tenant = api.upsert_tenant_config(
+            {
+                "tenantId": "altitude",
+                "name": "Altitude Distribution",
+                "environment": "prod",
+            }
+        )["tenant"]
         connection_test = api.test_mailbox_connection(mailbox["id"], {"requestedBy": "connect@focuseautomate.com"})
         console_user = api.upsert_console_user(
             {
@@ -404,6 +541,8 @@ class ApiTests(unittest.TestCase):
         )["customerUserAssignment"]
 
         self.assertEqual(mailbox["mailboxAddress"], "pilotorders@example.com")
+        self.assertEqual(mailbox["customerId"], "_global")
+        self.assertEqual(tenant["name"], "Altitude Distribution")
         self.assertEqual(connection_test["connectionStatus"]["status"], "notTested")
         self.assertIn("platformAdmin", console_user["roles"])
         self.assertEqual(assignment["customerId"], "pilot-customer")

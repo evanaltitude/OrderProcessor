@@ -35,7 +35,7 @@ CSV scope note: `orderProcess - CSV Parse` is the only active CSV processor flow
 
 | Dependency | Current use | Migration direction |
 | --- | --- | --- |
-| Office 365 Outlook | 213 actions across 24 flows | Keep only customer-specific mailbox triggers and optional delivery adapters |
+| Office 365 Outlook | 213 actions across 24 flows | Keep only tenant mailbox triggers and optional delivery adapters |
 | SharePoint | 126 actions across 24 flows | Replace operational lists with Cosmos DB and Blob Storage |
 | OpenAI API | 99 endpoints across customer ID and order processing flows | Replace direct OpenAI calls with Azure OpenAI via backend service |
 | Microsoft Graph | 171 endpoint references for mailbox folders/messages | Move Graph access behind backend where possible; expose mailbox config/status in the console |

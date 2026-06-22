@@ -15,6 +15,6 @@
 - OrderProcessorApiBaseUrl: APIM base URL, for example https://{apim-name}.azure-api.net/order-processor.
 - OrderProcessorApimSubscriptionKey: APIM subscription key or future custom connector secret.
 - OrderProcessorTenantId: platform tenant identifier.
-- Mailbox templates additionally require OrderProcessorMailboxAddress, OrderProcessorMailboxAccountId, and OrderProcessorCustomerId.
+- Mailbox templates additionally require OrderProcessorMailboxAddress and OrderProcessorMailboxAccountId.
 
 Do not add parsing, customer identification, item validation, OpenAI, Google Document AI, Plumsail, SharePoint operational storage, or flow-to-flow webhook calls to this flow.

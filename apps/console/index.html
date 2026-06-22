@@ -14,8 +14,8 @@
         <p id="sessionLine">Microsoft sign-in required</p>
       </div>
       <div class="header-actions">
-        <select id="customerFilter" aria-label="Customer filter">
-          <option value="">All customers</option>
+        <select id="customerFilter" aria-label="End customer filter">
+          <option value="">All end customers</option>
         </select>
         <button id="refreshButton" type="button" title="Refresh dashboard">Refresh</button>
       </div>
@@ -42,7 +42,7 @@
               <thead>
                 <tr>
                   <th>Run</th>
-                  <th>Customer</th>
+                  <th>End Customer</th>
                   <th>Status</th>
                   <th>PO</th>
                   <th>Lines</th>
@@ -63,7 +63,7 @@
               <thead>
                 <tr>
                   <th>Run</th>
-                  <th>Customer</th>
+                  <th>End Customer</th>
                   <th>Status</th>
                   <th>Artifacts</th>
                   <th>Updated</th>
@@ -87,23 +87,57 @@
 
       <section id="customers" class="view" aria-labelledby="customers-title">
         <section class="band split">
+          <form id="tenantForm" class="editor">
+            <h2>Distribution Company</h2>
+            <input name="id" placeholder="Tenant id">
+            <input name="name" placeholder="Company name">
+            <input name="environment" placeholder="Environment">
+            <button type="submit">Save Company</button>
+          </form>
           <form id="customerForm" class="editor">
-            <h2 id="customers-title">Customer Config</h2>
-            <input name="id" placeholder="Customer id">
-            <input name="customerCode" placeholder="Customer code">
-            <input name="name" placeholder="Name">
-            <input name="senderDomains" placeholder="Sender domains, comma-separated">
+            <h2 id="customers-title">End Customer Profile</h2>
+            <input name="id" placeholder="End customer id">
+            <input name="customerCode" placeholder="Account number/code">
+            <input name="name" placeholder="End customer name">
+            <input name="storeNumber" placeholder="Store number">
+            <input name="routeNumber" placeholder="Route number">
+            <input name="address1" placeholder="Address">
+            <input name="city" placeholder="City">
+            <input name="state" placeholder="State">
+            <input name="postalCode" placeholder="ZIP/postal code">
+            <input name="phone" placeholder="Phone">
+            <input name="website" placeholder="Website">
+            <input name="customerEmail" placeholder="Customer email">
+            <input name="aliases" placeholder="Aliases, comma-separated">
+            <input name="knownSubjectPatterns" placeholder="Subject patterns, comma-separated">
             <input name="csrEmail" placeholder="CSR email">
-            <button type="submit">Save Customer</button>
+            <input name="csrFolder" placeholder="CSR folder">
+            <button type="submit">Save End Customer</button>
           </form>
           <form id="mailboxForm" class="editor">
-            <h2>Mailbox</h2>
-            <input name="customerId" placeholder="Customer id">
+            <h2>Tenant Mailbox</h2>
             <input name="mailboxAddress" placeholder="Mailbox address">
             <input name="displayName" placeholder="Display name">
             <input name="connectionId" placeholder="Microsoft connection id">
             <label><input name="enabled" type="checkbox" checked> Enabled</label>
             <button type="submit">Save Mailbox</button>
+          </form>
+          <form id="customerRuleForm" class="editor">
+            <h2>Customer ID Rule</h2>
+            <input name="customerId" placeholder="End customer id">
+            <select name="aliasType">
+              <option value="accountNumber">Account number</option>
+              <option value="storeNumber">Store number</option>
+              <option value="routeNumber">Route number</option>
+              <option value="senderEmail">Sender email</option>
+              <option value="senderDomain">Sender domain</option>
+              <option value="knownSubjectPattern">Subject pattern</option>
+              <option value="bodyPattern">Body pattern</option>
+              <option value="fileNamePattern">File name pattern</option>
+            </select>
+            <input name="value" placeholder="Value or regex">
+            <input name="confidence" placeholder="Confidence">
+            <button type="submit">Save ID Rule</button>
           </form>
         </section>
         <section class="band">
@@ -114,14 +148,32 @@
             <table>
               <thead>
                 <tr>
-                  <th>Customer</th>
-                  <th>Code</th>
+                  <th>End Customer</th>
+                  <th>Account</th>
                   <th>Customer Import</th>
                   <th>Items</th>
                   <th>Item Import</th>
                 </tr>
               </thead>
               <tbody id="dataStatusBody"></tbody>
+            </table>
+          </div>
+        </section>
+        <section class="band">
+          <div class="section-title">
+            <h2>Customer ID Rules</h2>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>End Customer</th>
+                  <th>Type</th>
+                  <th>Value</th>
+                  <th>Confidence</th>
+                </tr>
+              </thead>
+              <tbody id="customerRulesBody"></tbody>
             </table>
           </div>
         </section>
@@ -132,8 +184,15 @@
           <form id="routingForm" class="editor">
             <h2 id="routing-title">Routing Rule</h2>
             <input name="id" placeholder="Rule id">
-            <input name="customerId" placeholder="Customer id">
+            <input name="customerId" placeholder="End customer id or _global">
             <input name="name" placeholder="Rule name">
+            <select name="phase">
+              <option value="general">General</option>
+              <option value="webstoreOrder">Webstore order</option>
+              <option value="previouslyProcessed">Previously processed</option>
+              <option value="orderCandidate">Order candidate</option>
+              <option value="nonOrder">Non-order</option>
+            </select>
             <select name="outcome">
               <option value="knownOrder">knownOrder</option>
               <option value="knownCustomerNonOrder">knownCustomerNonOrder</option>
@@ -141,14 +200,57 @@
               <option value="needsHumanReview">needsHumanReview</option>
               <option value="ignored">ignored</option>
             </select>
+            <input name="priority" placeholder="Priority">
+            <input name="processorProfileId" placeholder="Processor profile id">
+            <input name="mailboxAccountIds" placeholder="Mailbox account ids">
+            <input name="mailboxAddresses" placeholder="Mailbox addresses">
+            <input name="senderEquals" placeholder="Sender emails">
             <input name="senderDomains" placeholder="Sender domains">
             <input name="subjectRegex" placeholder="Subject regex">
+            <input name="bodyRegex" placeholder="Body regex">
+            <input name="knownWebstorePatterns" placeholder="Webstore patterns">
+            <input name="priorProcessedSubjectRegex" placeholder="Processed subject regex">
             <input name="attachmentExtensions" placeholder="Attachment extensions">
+            <input name="attachmentNameRegex" placeholder="Attachment name regex">
+            <input name="tags" placeholder="Tags">
+            <select name="customerCodeSource">
+              <option value="combined">Extract from full email</option>
+              <option value="subject">Extract from subject</option>
+              <option value="bodyText">Extract from body</option>
+              <option value="sender">Extract from sender</option>
+              <option value="attachmentNames">Extract from attachment names</option>
+            </select>
+            <input name="customerCodeRegex" placeholder="Customer code extraction regex">
+            <input name="customerCodeGroup" placeholder="Regex group, e.g. customerCode">
+            <input name="subjectTemplate" placeholder="Subject template">
+            <input name="categoryCsrField" placeholder="CSR category field, e.g. csrFolder">
+            <input name="categoryTemplates" placeholder="Category templates">
+            <select name="processedMoveMode">
+              <option value="none">Processed move off</option>
+              <option value="customerField">Processed customer field</option>
+              <option value="staticFolder">Processed static folder</option>
+            </select>
+            <input name="processedMoveCustomerField" placeholder="Processed folder field">
+            <input name="processedMoveFolder" placeholder="Processed static folder">
+            <select name="failedMoveMode">
+              <option value="none">Failed move off</option>
+              <option value="customerField">Failed customer field</option>
+              <option value="staticFolder">Failed static folder</option>
+            </select>
+            <input name="failedMoveCustomerField" placeholder="Failed folder field">
+            <input name="failedMoveFolder" placeholder="Failed static folder">
+            <select name="nonOrderMoveMode">
+              <option value="none">Non-order move off</option>
+              <option value="customerField">Non-order customer field</option>
+              <option value="staticFolder">Non-order static folder</option>
+            </select>
+            <input name="nonOrderMoveCustomerField" placeholder="Non-order folder field">
+            <input name="nonOrderMoveFolder" placeholder="Non-order static folder">
             <button type="submit">Save Rule</button>
           </form>
           <form id="profileForm" class="editor">
             <h2>Profiles</h2>
-            <input name="customerId" placeholder="Customer id">
+            <input name="customerId" placeholder="End customer id or _global">
             <input name="name" placeholder="Profile name">
             <select name="kind">
               <option value="processor">Processor</option>
@@ -197,8 +299,8 @@
             <button type="submit">Save User</button>
           </form>
           <form id="assignmentForm" class="editor">
-            <h2>Customer Assignment</h2>
-            <input name="customerId" placeholder="Customer id">
+            <h2>End Customer Access</h2>
+            <input name="customerId" placeholder="End customer id">
             <input name="email" placeholder="Microsoft email">
             <input name="roles" placeholder="Roles">
             <label><input name="enabled" type="checkbox" checked> Enabled</label>

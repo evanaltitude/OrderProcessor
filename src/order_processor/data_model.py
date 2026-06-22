@@ -81,9 +81,9 @@ CONTAINER_DEFINITIONS: tuple[ContainerDefinition, ...] = (
         "mailboxAccounts",
         ("/tenantId", "/customerId"),
         "MailboxAccount",
-        "Customer-specific monitored mailbox configuration and ingest status.",
+        "Tenant-scoped monitored mailbox configuration and ingest status.",
         customer_scoped=True,
-        customer_id_required=True,
+        default_customer_id=GLOBAL_CUSTOMER_ID,
     ),
     ContainerDefinition(
         "microsoftAuthConnections",

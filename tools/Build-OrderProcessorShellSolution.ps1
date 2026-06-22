@@ -64,10 +64,6 @@ function New-CommonParameters {
             defaultValue = ''
             type = 'String'
         }
-        $parameters.OrderProcessorCustomerId = [ordered]@{
-            defaultValue = ''
-            type = 'String'
-        }
     }
 
     return $parameters
@@ -137,7 +133,6 @@ function New-MailboxTriggerDefinition {
                                 tenantId = "@{parameters('OrderProcessorTenantId')}"
                                 mailbox = "@{parameters('OrderProcessorMailboxAddress')}"
                                 mailboxAccountId = "@{parameters('OrderProcessorMailboxAccountId')}"
-                                customerId = "@{parameters('OrderProcessorCustomerId')}"
                                 messageId = "@{triggerOutputs()?['body/id']}"
                                 sender = "@{coalesce(triggerOutputs()?['body/from/emailAddress/address'], triggerOutputs()?['body/from'])}"
                                 subject = "@{triggerOutputs()?['body/subject']}"
@@ -358,8 +353,8 @@ $flows = @(
         connectionReferences = @('shared_office365')
         definition = New-MailboxTriggerDefinition
         notes = @(
-            'Instantiate one copy per monitored customer mailbox when Power Automate must own the mailbox trigger.',
-            'Mailbox address, mailboxAccountId, and customerId are parameters/configuration values, not branches.',
+            'Instantiate one copy per monitored distributor mailbox when Power Automate must own the mailbox trigger.',
+            'Mailbox address and mailboxAccountId are tenant configuration values, not downstream customer branches.',
             'Flow sends metadata and attachment references to APIM only; Azure performs routing and processing.'
         )
     }
@@ -446,7 +441,7 @@ $($flow.notes | ForEach-Object { "- $_" } | Out-String)
 - OrderProcessorApiBaseUrl: APIM base URL, for example https://{apim-name}.azure-api.net/order-processor.
 - OrderProcessorApimSubscriptionKey: APIM subscription key or future custom connector secret.
 - OrderProcessorTenantId: platform tenant identifier.
-- Mailbox templates additionally require OrderProcessorMailboxAddress, OrderProcessorMailboxAccountId, and OrderProcessorCustomerId.
+- Mailbox templates additionally require OrderProcessorMailboxAddress and OrderProcessorMailboxAccountId.
 
 Do not add parsing, customer identification, item validation, OpenAI, Google Document AI, Plumsail, SharePoint operational storage, or flow-to-flow webhook calls to this flow.
 "@
@@ -497,7 +492,7 @@ $manifest = [ordered]@{
         'Power Automate is a thin adapter layer.',
         'All backend calls go through API Management.',
         'Complex parsing, customer identification, item validation, output generation, and persistence belong in Azure.',
-        'Mailbox/customer configuration is backend/console data, not flow branching.'
+        'Mailbox/tenant configuration and downstream customer identification rules are backend/console data, not flow branching.'
     )
     flows = $flows | ForEach-Object {
         [ordered]@{
@@ -520,7 +515,7 @@ $catalogRows = $flows | ForEach-Object {
 $catalog = @"
 # OrderProcessor Shell Flow Catalog
 
-The OrderProcessor Power Automate solution intentionally contains only mailbox/customer adapter flows. These flows are templates and should stay disabled until APIM, mailbox configuration, and connection references are configured for a customer.
+The OrderProcessor Power Automate solution intentionally contains only mailbox/customer adapter flows. These flows are templates and should stay disabled until APIM, mailbox configuration, and connection references are configured for a distributor tenant.
 
 | Flow | Status | Trigger | Target | Connection references |
 | --- | --- | --- | --- | --- |
@@ -546,9 +541,8 @@ $configurationContract = @"
 | OrderProcessorApiBaseUrl | Azure/APIM deployment output | Example: https://{apim-name}.azure-api.net/order-processor. |
 | OrderProcessorApimSubscriptionKey | APIM subscription/custom connector connection | Used by adapter flows until Entra/custom-connector auth replaces subscription keys. |
 | OrderProcessorTenantId | Backend tenant config | Defaults to altitude for the first environment. |
-| OrderProcessorMailboxAddress | Backend mailbox config | One value per monitored customer mailbox trigger instance. |
+| OrderProcessorMailboxAddress | Backend mailbox config | One value per monitored distributor mailbox trigger instance. |
 | OrderProcessorMailboxAccountId | Cosmos mailboxAccounts.id | Lets Azure correlate the flow trigger to backend mailbox configuration. |
-| OrderProcessorCustomerId | Cosmos customers.id | Optional when mailbox is not customer-scoped yet. |
 
 ## Connection References
 
@@ -557,7 +551,7 @@ $configurationContract = @"
 
 ## Backend Configuration Boundary
 
-Power Automate must not own customer routing or parser logic. Mailbox address, owning customer, connection metadata, Graph permission status, and ingest state are stored in Cosmos containers mailboxAccounts and microsoftAuthConnections, then exposed through the console.
+Power Automate must not own customer routing, customer identification, or parser logic. Mailbox address, tenant ownership, connection metadata, Graph permission status, and ingest state are stored in Cosmos containers mailboxAccounts and microsoftAuthConnections, then exposed through the console. Downstream customer identification happens in Azure through deterministic rules, aliases, embeddings, and exception handling.
 
 ## Flow Activation Checklist
 
@@ -567,7 +561,7 @@ Power Automate must not own customer routing or parser logic. Mailbox address, o
 4. Configure the flow template parameters for the specific mailbox or adapter.
 5. Bind the Office 365 Outlook connection reference when the template uses M365.
 6. Run a test invocation against APIM.
-7. Turn on only the configured customer-specific flow instance.
+7. Turn on only the configured tenant mailbox flow instance.
 "@
 Write-Utf8NoBom -Path (Join-Path $solutionRoot 'CONFIGURATION_CONTRACT.md') -Content $configurationContract
 

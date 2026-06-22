@@ -53,6 +53,11 @@ p {
   color: var(--muted);
 }
 
+.muted {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .header-actions {
   display: flex;
   gap: 8px;

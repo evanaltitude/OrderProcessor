@@ -87,6 +87,7 @@ def score_item_candidate(
 
     searchable_numbers = {
         normalize_item_token(item.internal_item_number),
+        *(normalize_item_token(value) for value in item.alt_parts_combined),
         *(normalize_item_token(value) for value in item.customer_item_numbers),
         *(normalize_item_token(value) for value in item.aliases),
     }
@@ -122,6 +123,7 @@ def score_item_candidate(
         "internalItemNumber": item.internal_item_number,
         "description": item.description,
         "upc": item.upc,
+        "altPartsCombined": list(item.alt_parts_combined),
         "customerItemNumbers": list(item.customer_item_numbers),
         "aliases": list(item.aliases),
         "confidence": round(confidence, 4),

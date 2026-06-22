@@ -48,17 +48,21 @@ class CustomerSignals:
     customer_code: str | None = None
     store_number: str | None = None
     route_number: str | None = None
+    sender_email: str | None = None
     sender_domain: str | None = None
     subject: str = ""
     text: str = ""
+    attachment_names: list[str] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "customerCode": self.customer_code,
             "storeNumber": self.store_number,
             "routeNumber": self.route_number,
+            "senderEmail": self.sender_email,
             "senderDomain": self.sender_domain,
             "subject": self.subject,
+            "attachmentNames": self.attachment_names or [],
         }
 
 
@@ -86,6 +90,7 @@ ROUTE_NUMBER_PATTERNS = [
 ALIAS_CODE_TYPES = {"customercode", "customer_code", "code", "accountnumber", "account_number"}
 ALIAS_STORE_TYPES = {"storenumber", "store_number", "store", "location", "locationnumber", "location_number"}
 ALIAS_ROUTE_TYPES = {"routenumber", "route_number", "route"}
+ALIAS_SENDER_EMAIL_TYPES = {"senderemail", "sender_email", "email", "emailaddress", "email_address"}
 ALIAS_DOMAIN_TYPES = {"senderdomain", "sender_domain", "domain", "emaildomain", "email_domain"}
 ALIAS_SUBJECT_PATTERN_TYPES = {
     "knownsubjectpattern",
@@ -93,6 +98,15 @@ ALIAS_SUBJECT_PATTERN_TYPES = {
     "subjectpattern",
     "subject_pattern",
     "subject",
+}
+ALIAS_BODY_PATTERN_TYPES = {"bodypattern", "body_pattern", "bodyregex", "body_regex", "body"}
+ALIAS_FILE_NAME_PATTERN_TYPES = {
+    "filenamepattern",
+    "file_name_pattern",
+    "filenameregex",
+    "file_name_regex",
+    "attachmentnamepattern",
+    "attachment_name_pattern",
 }
 
 
@@ -124,15 +138,23 @@ def _sender_domain(sender: str) -> str | None:
     return normalize_domain(value.rsplit("@", 1)[1])
 
 
+def _sender_email(sender: str) -> str | None:
+    _, address = parseaddr(sender or "")
+    value = (address or sender or "").strip().lower()
+    return value if "@" in value else None
+
+
 def extract_customer_signals(email: EmailMessage) -> CustomerSignals:
     text = _combined_text(email)
     return CustomerSignals(
         customer_code=_first_match(CUSTOMER_CODE_PATTERNS, text),
         store_number=_first_match(STORE_NUMBER_PATTERNS, text),
         route_number=_first_match(ROUTE_NUMBER_PATTERNS, text),
+        sender_email=_sender_email(email.sender),
         sender_domain=_sender_domain(email.sender),
         subject=email.subject or "",
         text=text,
+        attachment_names=[attachment.name for attachment in email.attachments if attachment.name],
     )
 
 
@@ -198,6 +220,14 @@ def _sender_domains(customer: CustomerProfile, aliases: list[CustomerAlias]) -> 
     return [normalize_domain(value) for value in values if normalize_domain(value)]
 
 
+def _sender_emails(customer: CustomerProfile, aliases: list[CustomerAlias]) -> list[str]:
+    values = [*_raw_list(customer, "senderEmails", "sender_emails")]
+    for alias in aliases:
+        if _alias_type(alias.alias_type) in ALIAS_SENDER_EMAIL_TYPES:
+            values.append(alias.normalized_value or alias.value)
+    return [value.strip().lower() for value in values if value.strip()]
+
+
 def _known_subject_patterns(customer: CustomerProfile, aliases: list[CustomerAlias]) -> list[str]:
     values = [
         *customer.known_subject_patterns,
@@ -205,6 +235,30 @@ def _known_subject_patterns(customer: CustomerProfile, aliases: list[CustomerAli
     ]
     for alias in aliases:
         if _alias_type(alias.alias_type) in ALIAS_SUBJECT_PATTERN_TYPES:
+            values.append(alias.value)
+    return [value for value in values if value]
+
+
+def _known_body_patterns(customer: CustomerProfile, aliases: list[CustomerAlias]) -> list[str]:
+    values = [*_raw_list(customer, "bodyPatterns", "body_patterns", "bodyRegex", "body_regex")]
+    for alias in aliases:
+        if _alias_type(alias.alias_type) in ALIAS_BODY_PATTERN_TYPES:
+            values.append(alias.value)
+    return [value for value in values if value]
+
+
+def _known_file_name_patterns(customer: CustomerProfile, aliases: list[CustomerAlias]) -> list[str]:
+    values = [
+        *_raw_list(
+            customer,
+            "fileNamePatterns",
+            "file_name_patterns",
+            "attachmentNamePatterns",
+            "attachment_name_patterns",
+        )
+    ]
+    for alias in aliases:
+        if _alias_type(alias.alias_type) in ALIAS_FILE_NAME_PATTERN_TYPES:
             values.append(alias.value)
     return [value for value in values if value]
 
@@ -333,6 +387,16 @@ def deterministic_customer_candidates(
                 )
             )
 
+        if signals.sender_email and signals.sender_email in set(_sender_emails(customer, customer_aliases)):
+            candidates.append(
+                DeterministicCandidate(
+                    customer=customer,
+                    match_method="senderEmail",
+                    confidence=0.94,
+                    reason=f"sender email {signals.sender_email} matched",
+                )
+            )
+
         for pattern in _known_subject_patterns(customer, customer_aliases):
             if _safe_regex_match(pattern, email.subject or ""):
                 candidates.append(
@@ -341,6 +405,31 @@ def deterministic_customer_candidates(
                         match_method="knownSubjectPattern",
                         confidence=0.92,
                         reason=f"subject matched known pattern for {customer.id}",
+                    )
+                )
+                break
+
+        for pattern in _known_body_patterns(customer, customer_aliases):
+            if _safe_regex_match(pattern, signals.text):
+                candidates.append(
+                    DeterministicCandidate(
+                        customer=customer,
+                        match_method="bodyPattern",
+                        confidence=0.91,
+                        reason=f"body matched known pattern for {customer.id}",
+                    )
+                )
+                break
+
+        attachment_names = "\n".join(signals.attachment_names or [])
+        for pattern in _known_file_name_patterns(customer, customer_aliases):
+            if _safe_regex_match(pattern, attachment_names):
+                candidates.append(
+                    DeterministicCandidate(
+                        customer=customer,
+                        match_method="fileNamePattern",
+                        confidence=0.91,
+                        reason=f"attachment name matched known pattern for {customer.id}",
                     )
                 )
                 break
@@ -492,12 +581,20 @@ def _customer_from_mapping(mapping: Mapping[str, Any]) -> CustomerProfile:
         csr_email=_pick_mapping(mapping, "csrEmail", "csr_email", default=""),
         csr_folder=_pick_mapping(mapping, "csrFolder", "csr_folder", default=""),
         store_number=_pick_mapping(mapping, "storeNumber", "store_number", default=""),
+        address1=_pick_mapping(mapping, "address1", "locationAddress1", "location_address1", default=""),
+        city=_pick_mapping(mapping, "city", "locationCity", "location_city", default=""),
+        state=_pick_mapping(mapping, "state", "locationState", "location_state", default=""),
+        postal_code=_pick_mapping(mapping, "postalCode", "postal_code", "locationZip", "location_zip", default=""),
+        phone=_pick_mapping(mapping, "phone", default=""),
+        website=_pick_mapping(mapping, "website", "customerWebsite", "customer_website", default=""),
+        customer_email=_pick_mapping(mapping, "customerEmail", "customer_email", default=""),
         sender_domains=list(_as_list(_pick_mapping(mapping, "senderDomains", "sender_domains", default=[]))),
         aliases=list(_as_list(_pick_mapping(mapping, "aliases", default=[]))),
         known_subject_patterns=list(
             _as_list(_pick_mapping(mapping, "knownSubjectPatterns", "known_subject_patterns", default=[]))
         ),
         embedding=[float(value) for value in _as_list(_pick_mapping(mapping, "embedding", default=[]))],
+        custom_fields=dict(_pick_mapping(mapping, "customFields", "custom_fields", default={}) or {}),
         raw_source=dict(_pick_mapping(mapping, "rawSource", "raw_source", default={}) or {}),
     )
 

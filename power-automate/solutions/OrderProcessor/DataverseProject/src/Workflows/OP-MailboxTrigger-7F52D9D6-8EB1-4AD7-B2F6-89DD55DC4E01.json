@@ -46,11 +46,7 @@
                                                              "OrderProcessorMailboxAccountId":  {
                                                                                                     "defaultValue":  "",
                                                                                                     "type":  "String"
-                                                                                                },
-                                                             "OrderProcessorCustomerId":  {
-                                                                                              "defaultValue":  "",
-                                                                                              "type":  "String"
-                                                                                          }
+                                                                                                }
                                                          },
                                           "triggers":  {
                                                            "When_a_new_email_arrives_in_configured_shared_mailbox":  {
@@ -96,7 +92,6 @@
                                                                                                                                      "tenantId":  "@{parameters(\u0027OrderProcessorTenantId\u0027)}",
                                                                                                                                      "mailbox":  "@{parameters(\u0027OrderProcessorMailboxAddress\u0027)}",
                                                                                                                                      "mailboxAccountId":  "@{parameters(\u0027OrderProcessorMailboxAccountId\u0027)}",
-                                                                                                                                     "customerId":  "@{parameters(\u0027OrderProcessorCustomerId\u0027)}",
                                                                                                                                      "messageId":  "@{triggerOutputs()?[\u0027body/id\u0027]}",
                                                                                                                                      "sender":  "@{coalesce(triggerOutputs()?[\u0027body/from/emailAddress/address\u0027], triggerOutputs()?[\u0027body/from\u0027])}",
                                                                                                                                      "subject":  "@{triggerOutputs()?[\u0027body/subject\u0027]}",

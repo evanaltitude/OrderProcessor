@@ -43,6 +43,28 @@ class ItemValidationTests(unittest.TestCase):
         self.assertEqual(result.match_method, "itemNumberExact")
         self.assertEqual(result.candidates[0]["itemId"], "item-1")
 
+    def test_matches_universal_alternate_item_id(self) -> None:
+        result = validate_item(
+            tenant_id="altitude",
+            customer_id="pilot-customer",
+            provided_item_number="Pilot 123",
+            provided_upc="",
+            description="",
+            items=[
+                ItemRecord(
+                    id="item-1",
+                    tenant_id="altitude",
+                    customer_id="pilot-customer",
+                    internal_item_number="10001",
+                    description="Dog Food 25 lb",
+                    alt_parts_combined=["PILOT 123"],
+                )
+            ],
+        )
+
+        self.assertEqual(result.status, MatchStatus.MATCHED)
+        self.assertEqual(result.candidates[0]["altPartsCombined"], ["PILOT 123"])
+
     def test_uses_row_context_when_explicit_fields_are_missing(self) -> None:
         result = validate_item(
             tenant_id="altitude",

@@ -11,7 +11,7 @@
                        "Power Automate is a thin adapter layer.",
                        "All backend calls go through API Management.",
                        "Complex parsing, customer identification, item validation, output generation, and persistence belong in Azure.",
-                       "Mailbox/customer configuration is backend/console data, not flow branching."
+                       "Mailbox/tenant configuration and downstream customer identification rules are backend/console data, not flow branching."
                    ],
     "flows":  [
                   {
@@ -59,5 +59,5 @@
                                                ]
                   }
               ],
-    "generatedAt":  "2026-06-20T13:19:42.2706901-04:00"
+    "generatedAt":  "2026-06-22T14:53:54.5675608-04:00"
 }

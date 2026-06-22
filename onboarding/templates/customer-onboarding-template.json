@@ -30,7 +30,7 @@
       {
         "id": "replace-m365-connection",
         "tenantId": "altitude",
-        "customerId": "replace-with-customer-id",
+        "customerId": "_global",
         "provider": "microsoft365",
         "displayName": "Replace Customer Microsoft 365 Connection",
         "ownerEmail": "connect@focuseautomate.com",
@@ -52,7 +52,7 @@
       {
         "id": "replace-orders-mailbox",
         "tenantId": "altitude",
-        "customerId": "replace-with-customer-id",
+        "customerId": "_global",
         "mailboxAddress": "orders@customer-domain.example",
         "displayName": "Replace Customer Orders",
         "provider": "microsoft365",

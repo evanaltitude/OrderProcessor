@@ -12,7 +12,7 @@
       {
         "id": "pilot-m365-shadow-connection",
         "tenantId": "altitude",
-        "customerId": "pilot-customer",
+        "customerId": "_global",
         "provider": "microsoft365",
         "displayName": "Pilot Microsoft 365 Shadow Connection",
         "ownerEmail": "connect@focuseautomate.com",

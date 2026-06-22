@@ -2,7 +2,7 @@
 
 The new Power Platform solution is `OrderProcessor` in environment `abbd708f-4eaf-e875-a282-e1207f4e370c`. Phase 5 completed the local shell implementation and imported the unmanaged package into the target Focus Automate environment on 2026-06-20.
 
-Power Automate should stay intentionally small: it handles customer-specific mailbox/event triggers and M365-only adapters, while Azure owns processing state, mailbox configuration, Microsoft auth status, routing, parsing, matching, persistence, audit, and output generation.
+Power Automate should stay intentionally small: it handles tenant mailbox/event triggers and M365-only adapters, while Azure owns processing state, mailbox configuration, Microsoft auth status, routing, downstream customer identification, parsing, matching, persistence, audit, and output generation.
 
 ## Implemented Standard Flows
 
@@ -36,7 +36,7 @@ All four flows are disabled templates. Customer-specific instances should be tur
 ## Console Configuration
 
 - Initial full console admin: `connect@focuseautomate.com`.
-- Customer mailbox address, owning customer, Microsoft connection status, and ingest behavior are managed in the backend console.
+- Tenant mailbox address, Microsoft connection status, and ingest behavior are managed in the backend console. Downstream customer identification is configured separately through customer profiles, aliases, hard rules, AI/vector fallback, and exception resolution.
 - Customer user management accepts a Microsoft email address, assigns customer/role access, and relies on Microsoft login for authentication.
 
 ## Imported Connection Reference

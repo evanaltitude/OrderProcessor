@@ -1,6 +1,6 @@
 # OrderProcessor Shell Flow Catalog
 
-The OrderProcessor Power Automate solution intentionally contains only mailbox/customer adapter flows. These flows are templates and should stay disabled until APIM, mailbox configuration, and connection references are configured for a customer.
+The OrderProcessor Power Automate solution intentionally contains only mailbox/customer adapter flows. These flows are templates and should stay disabled until APIM, mailbox configuration, and connection references are configured for a distributor tenant.
 
 | Flow | Status | Trigger | Target | Connection references |
 | --- | --- | --- | --- | --- |

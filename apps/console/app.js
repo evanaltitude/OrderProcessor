@@ -87,7 +87,7 @@ function renderRows() {
   el("routingRulesBody").innerHTML = (dashboard.routingRules || []).map((rule) => `
     <tr>
       <td>${escapeHtml(rule.priority ?? "")}</td>
-      <td>${escapeHtml(rule.name || rule.id)}</td>
+      <td>${escapeHtml(rule.name || rule.id)}<br><span class="muted">${escapeHtml(rule.phase || "general")}</span></td>
       <td>${escapeHtml(rule.customerId || "")}</td>
       <td>${escapeHtml(rule.outcome || "")}</td>
       <td>${rule.enabled ? "Yes" : "No"}</td>
@@ -132,7 +132,7 @@ function renderDataStatus() {
   const customers = state.dashboard?.customerDataStatus || [];
   const items = new Map((state.dashboard?.itemDataStatus || []).map((entry) => [entry.customerId, entry]));
   const customerFilter = el("customerFilter");
-  customerFilter.innerHTML = '<option value="">All customers</option>' + (state.dashboard?.customers || [])
+  customerFilter.innerHTML = '<option value="">All end customers</option>' + (state.dashboard?.customers || [])
     .map((customer) => `<option value="${escapeHtml(customer.id)}">${escapeHtml(customer.name || customer.id)}</option>`)
     .join("");
   el("dataStatusBody").innerHTML = customers.map((customer) => {
@@ -147,6 +147,18 @@ function renderDataStatus() {
       </tr>
     `;
   }).join("");
+}
+
+function renderCustomerRules() {
+  const rules = state.dashboard?.customerIdentificationRules || [];
+  el("customerRulesBody").innerHTML = rules.map((rule) => `
+    <tr>
+      <td>${escapeHtml(rule.customerId || "")}</td>
+      <td>${escapeHtml(rule.aliasType || "")}</td>
+      <td>${escapeHtml(rule.value || "")}</td>
+      <td>${escapeHtml(rule.confidence ?? "")}</td>
+    </tr>
+  `).join("");
 }
 
 function renderSession() {
@@ -165,6 +177,7 @@ async function refresh() {
   renderExceptions();
   renderArtifacts();
   renderDataStatus();
+  renderCustomerRules();
 }
 
 function activeView(id) {
@@ -187,6 +200,17 @@ async function resolveTask(id, type) {
 }
 
 function wireForms() {
+  el("tenantForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    showDetails(await post("/console/tenants", {
+      id: value(form, "id") || tenantId,
+      name: value(form, "name"),
+      environment: value(form, "environment")
+    }));
+    await refresh();
+  });
+
   el("customerForm").addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
@@ -194,8 +218,19 @@ function wireForms() {
       id: value(form, "id"),
       customerCode: value(form, "customerCode"),
       name: value(form, "name"),
-      senderDomains: split(value(form, "senderDomains")),
-      csrEmail: value(form, "csrEmail")
+      storeNumber: value(form, "storeNumber"),
+      routeNumber: value(form, "routeNumber"),
+      address1: value(form, "address1"),
+      city: value(form, "city"),
+      state: value(form, "state"),
+      postalCode: value(form, "postalCode"),
+      phone: value(form, "phone"),
+      website: value(form, "website"),
+      customerEmail: value(form, "customerEmail"),
+      aliases: split(value(form, "aliases")),
+      knownSubjectPatterns: split(value(form, "knownSubjectPatterns")),
+      csrEmail: value(form, "csrEmail"),
+      csrFolder: value(form, "csrFolder")
     }));
     await refresh();
   });
@@ -204,11 +239,22 @@ function wireForms() {
     event.preventDefault();
     const form = event.currentTarget;
     showDetails(await post("/console/mailboxes", {
-      customerId: value(form, "customerId"),
       mailboxAddress: value(form, "mailboxAddress"),
       displayName: value(form, "displayName"),
       connectionId: value(form, "connectionId"),
       enabled: form.enabled.checked
+    }));
+    await refresh();
+  });
+
+  el("customerRuleForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    showDetails(await post("/console/customer-identification-rules", {
+      customerId: value(form, "customerId"),
+      aliasType: value(form, "aliasType"),
+      value: value(form, "value"),
+      confidence: value(form, "confidence") ? Number(value(form, "confidence")) : 1
     }));
     await refresh();
   });
@@ -220,10 +266,36 @@ function wireForms() {
       id: value(form, "id"),
       customerId: value(form, "customerId"),
       name: value(form, "name"),
+      phase: value(form, "phase"),
       outcome: value(form, "outcome"),
+      priority: value(form, "priority") ? Number(value(form, "priority")) : 100,
+      processorProfileId: value(form, "processorProfileId"),
+      mailboxAccountIds: split(value(form, "mailboxAccountIds")),
+      mailboxAddresses: split(value(form, "mailboxAddresses")),
+      senderEquals: split(value(form, "senderEquals")),
       senderDomains: split(value(form, "senderDomains")),
       subjectRegex: split(value(form, "subjectRegex")),
-      attachmentExtensions: split(value(form, "attachmentExtensions"))
+      bodyRegex: split(value(form, "bodyRegex")),
+      knownWebstorePatterns: split(value(form, "knownWebstorePatterns")),
+      priorProcessedSubjectRegex: split(value(form, "priorProcessedSubjectRegex")),
+      attachmentExtensions: split(value(form, "attachmentExtensions")),
+      attachmentNameRegex: split(value(form, "attachmentNameRegex")),
+      tags: split(value(form, "tags")),
+      customerCodeSource: value(form, "customerCodeSource"),
+      customerCodeRegex: value(form, "customerCodeRegex"),
+      customerCodeGroup: value(form, "customerCodeGroup") || "customerCode",
+      subjectTemplate: value(form, "subjectTemplate"),
+      categoryCsrField: value(form, "categoryCsrField"),
+      categoryTemplates: split(value(form, "categoryTemplates")),
+      processedMoveMode: value(form, "processedMoveMode"),
+      processedMoveCustomerField: value(form, "processedMoveCustomerField"),
+      processedMoveFolder: value(form, "processedMoveFolder"),
+      failedMoveMode: value(form, "failedMoveMode"),
+      failedMoveCustomerField: value(form, "failedMoveCustomerField"),
+      failedMoveFolder: value(form, "failedMoveFolder"),
+      nonOrderMoveMode: value(form, "nonOrderMoveMode"),
+      nonOrderMoveCustomerField: value(form, "nonOrderMoveCustomerField"),
+      nonOrderMoveFolder: value(form, "nonOrderMoveFolder")
     }));
     await refresh();
   });

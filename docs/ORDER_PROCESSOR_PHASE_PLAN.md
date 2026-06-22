@@ -2,7 +2,7 @@
 
 ## Summary
 
-Build the new `OrderProcessor` solution in Microsoft environment `abbd708f-4eaf-e875-a282-e1207f4e370c` under `evanb@altitudelogistics.com`, using Azure as the system of record and Power Automate as a thin mailbox/customer-adapter layer. Default choices: Azure core architecture, Cosmos DB including vector search for customer/item records, customer-specific monitored mailboxes, Microsoft/Entra ID login for console access, and one pilot customer migrated end-to-end first.
+Build the new `OrderProcessor` solution in Microsoft environment `abbd708f-4eaf-e875-a282-e1207f4e370c` under `evanb@altitudelogistics.com`, using Azure as the system of record and Power Automate as a thin mailbox/customer-adapter layer. Default choices: Azure core architecture, Cosmos DB including vector search for downstream customer/item records, tenant-scoped monitored distributor mailboxes, Microsoft/Entra ID login for console access, and one pilot customer migrated end-to-end first.
 
 ## Current References
 
@@ -97,8 +97,8 @@ Current CSV clarification: the only active CSV processor reference flow is `orde
 4. **Core Data Model** - Completed 2026-06-20
    - Create Cosmos containers: `tenants`, `customers`, `customerAliases`, `items`, `routingRules`, `processorProfiles`, `outputProfiles`, `mailboxAccounts`, `microsoftAuthConnections`, `consoleUsers`, `customerUserAssignments`, `emailMessages`, `orderRuns`, `orderLines`, `exceptionTasks`, and `auditEvents`.
    - Partition all operational data by `tenantId`, then `customerId` where appropriate.
-   - Store customer and item embeddings in Cosmos alongside canonical records for vector/keyword matching.
-   - Store mailbox configuration by customer, including mailbox address, owning customer, Graph/Power Automate connection metadata, ingest status, and permission requirements.
+   - Store downstream customer and item embeddings in Cosmos alongside canonical records for vector/keyword matching.
+   - Store mailbox configuration by distributor tenant, including mailbox address, Graph/Power Automate connection metadata, ingest status, and permission requirements.
    - Store console access assignments separately from customer records so a Microsoft user can be granted access to one or more customers.
    - Completion notes:
      - Phase 4 summary and handoff were recorded in `docs/PHASE_4_CORE_DATA_MODEL.md`.
@@ -109,7 +109,8 @@ Current CSV clarification: the only active CSV processor reference flow is `orde
      - Repository storage normalizes snake_case dataclass output into Cosmos-compatible camelCase keys, including `tenantId` and `customerId`.
      - `infra/main.bicep` was updated so stable customer-scoped containers use hierarchical partition keys `/tenantId`, then `/customerId`. Tenant-wide or customer-mutable records such as `emailMessages`, `orderRuns`, `exceptionTasks`, and `auditEvents` remain tenant-partitioned while carrying `customerId` when known.
      - `customers` and `items` retain vector embedding policies; `items` now partitions by tenant plus customer so item matching can be scoped per customer.
-     - Mailbox configuration is represented by `MailboxAccount` in `mailboxAccounts`, including mailbox address, customer owner, connection id, ingest status, permission status, required permissions, Graph user id, folder ids, settings, and test timestamp.
+     - Mailbox configuration is represented by `MailboxAccount` in `mailboxAccounts`, including mailbox address, tenant scope, connection id, ingest status, permission status, required permissions, Graph user id, folder ids, settings, and test timestamp.
+     - Follow-up correction completed on 2026-06-22: `mailboxAccounts.customerId` is now `_global` partition metadata for tenant mailboxes, not the downstream customer/account identified on an email.
      - Microsoft auth/connection metadata is represented by `MicrosoftAuthConnection` in `microsoftAuthConnections`; secrets remain in Key Vault and Cosmos stores only secret names/metadata.
      - Console authorization is represented separately with `ConsoleUser` and `CustomerUserAssignment`, preserving the bootstrap admin `connect@focuseautomate.com` as `platformAdmin` in the API scaffold.
      - Data model tests were added in `tests/test_data_model.py`; infra tests now also guard hierarchical partition key configuration.
@@ -144,19 +145,24 @@ Current CSV clarification: the only active CSV processor reference flow is `orde
 
 6. **Email Ingestion and Routing** - Completed 2026-06-20
    - Azure stores each email, attachments, message IDs, sender, subject, received date, mailbox, and processing status.
-   - Mailbox identity is part of routing. A message received in a customer-specific mailbox can directly scope customer identification, routing rules, and available processor profiles.
+   - Mailbox identity is part of routing. A message received in a tenant mailbox scopes the email to the distributor tenant, while downstream customer/account identification remains a separate deterministic/AI/manual step.
    - Implement routing rules as data, not flow branches: sender, subject/body regex, attachment type, file name, known webstore patterns, prior processed subject patterns.
    - The router returns one of: `knownOrder`, `knownCustomerNonOrder`, `needsCustomerIdentification`, `needsHumanReview`, or `ignored`.
    - Completion notes:
      - Phase 6 summary and handoff were recorded in `docs/PHASE_6_EMAIL_INGESTION_ROUTING.md`.
      - `EmailMessage` now persists mailbox account id, customer id when known, message id, sender, subject, received date, body text/body HTML, categories, attachment metadata, processing status, routing decision, source metadata, correlation id, and timestamps.
      - `EmailAttachment` now records `name`, `contentType`, `size`, `blobUrl`, `sourceUrl`, `contentId`, `isInline`, and metadata. Binary attachment content remains a Blob Storage responsibility; Cosmos stores references and metadata.
-     - `/emails/ingest` resolves mailbox configuration by `mailboxAccountId` first and mailbox address second. Resolved customer-specific mailbox accounts scope the email to the owning customer.
-     - Disabled mailbox accounts route to `ignored`; unknown mailbox account ids route to `needsHumanReview`; payload customer/mailbox customer conflicts route to `needsHumanReview` and preserve the mailbox customer as the effective customer.
+     - `/emails/ingest` resolves mailbox configuration by `mailboxAccountId` first and mailbox address second. Resolved mailbox accounts scope the email to the tenant only and no longer assign downstream `customerId`.
+     - Disabled mailbox accounts route to `ignored`; unknown mailbox account ids route to `needsHumanReview`. Payload `customerId` is preserved only when a trusted caller already identified the downstream customer.
      - Routing rules remain data-driven in `routingRules` and now support mailbox account ids, mailbox addresses, sender exact match, sender domains, subject regex, body regex, known webstore patterns, prior processed subject patterns, attachment extensions, attachment content types, attachment filename regex, required attachments, tags, priority, customer scope, and processor profile selection.
-     - Tenant-wide routing rules continue to use `customerId: "_global"`. When a mailbox scopes the email to a customer, the router considers tenant-wide rules plus that customer's rules, preventing another customer's rule from claiming the message.
+     - Follow-up correction completed on 2026-06-22: routing rules now support ordered distributor-specific phases (`webstoreOrder`, `previouslyProcessed`, `orderCandidate`, `nonOrder`, `general`), customer-code extraction regex policy, subject update/detection policy, and planned Microsoft mail actions for categories and folder movement.
+     - Webstore rules can now identify order emails by sender/subject/body/attachment conditions and extract the downstream distributor-customer code from subject/body/sender/attachment text before creating an order run.
+     - Previously processed/id'd subject handling is now configurable per distributor. Rules can detect a subject format such as `Cust: ###### Rte: ### - ...`, extract the customer code from the subject, and route the email without relying on mailbox-owned customer scope.
+     - Email action policy now records category templates, the customer record field used for CSR category/folder naming, and separate move policies for processed orders, failed orders, non-order emails, and ignored mail. Move mode can be off, static folder, or customer-record field.
+     - Tenant-wide routing rules continue to use `customerId: "_global"`. Downstream customer-specific routing rules can still identify a customer when their hard conditions match the email; mailbox configuration itself does not identify the customer.
      - `knownOrder` creates an `orderRun` with customer and processor profile context. `knownCustomerNonOrder` and `ignored` store the email/routing decision without creating an order run. `needsCustomerIdentification` and `needsHumanReview` create routing exception tasks.
-     - The fallback outcome is `needsCustomerIdentification` when no rule matches and no customer is known. If no rule matches but a customer-specific mailbox already identifies the customer, the fallback is `needsHumanReview` so a CSR/admin can add an explicit routing rule instead of silently processing mail.
+     - The fallback outcome is `needsCustomerIdentification` when no rule matches and no customer is known. If a trusted caller supplies a known customer but no routing rule matches, the fallback is `needsHumanReview` so a CSR/admin can add an explicit routing rule instead of silently processing mail.
+     - Follow-up correction completed on 2026-06-22: mailbox ingestion no longer copies mailbox `customerId` to email/order records, no longer treats mailbox metadata as a downstream-customer override, and no longer uses mailbox metadata to pre-filter downstream customer routing candidates.
      - Every ingest writes an `auditEvents` record with routing decision, mailbox context, and a diagnostic default-order signal.
      - API responses for dataclass-backed records now normalize to camelCase so Power Automate, console callers, OpenAPI examples, and stored Cosmos documents share the same field shape.
      - `infra/openapi/order-processor-api.yaml`, `docs/API_CONTRACTS.md`, and `docs/COSMOS_MODEL.md` were updated with the Phase 6 ingestion/routing contract.
@@ -198,8 +204,11 @@ Current CSV clarification: the only active CSV processor reference flow is `orde
      - Parser modules can be selected with `parserModule` or `importProfile.parserModule`; field maps can be supplied directly or through `importProfile.fieldMap`.
      - Customer imports validate that each row has `customer_code` or `name`; item imports validate that each row has at least one of `internal_item_number`, `upc`, or `customer_item_numbers`.
      - Customer import normalization writes canonical `customers` records with customer code, name, route number, CSR metadata, store number, sender domains, aliases, known subject patterns, source name, source-row archive URL, import timestamp, and raw source metadata.
+     - Follow-up correction completed on 2026-06-22: universal customer import normalization now accepts `cust_code`, `customer_name`, `customer_store_number`, `location_address1`, `location_city`, `location_state`, `location_zip`, `phone`, `customer_website`, and `customer_email` without a custom field map.
      - Customer imports now generate `customerAliases` records for customer code, store number, route number, sender domain, and known subject pattern so Phase 7 deterministic matching has normalized lookup records.
-     - Item import normalization writes canonical `items` records with internal item number, description, UPC, customer item numbers, aliases, source name, source-row archive URL, import timestamp, and raw source metadata.
+     - Customer imports now also create sender-email aliases when a customer email is present, while sender/domain matching remains a deterministic hard-rule tool rather than a required profile field.
+     - Item import normalization writes canonical `items` records with internal item number, description, UPC, alternate item id array, customer item numbers, aliases, source name, source-row archive URL, import timestamp, and raw source metadata.
+     - Universal item import normalization now accepts `part_code`, `upc_code`, `alt_parts_combined`, and `part_desc` without a custom field map. `alt_parts_combined` may arrive as an array or as pipe/comma/semicolon/newline-delimited text and is normalized to an array while also feeding item validator aliases.
      - Original source rows are serialized as JSONL before normalization and archived through the `SourceRowArchive` abstraction. Local/offline work uses `InMemorySourceRowArchive`; deployed mode can use Azure Blob Storage with `ORDER_PROCESSOR_SOURCE_ARCHIVE_BACKEND=blob`.
      - Azure Blob source-row archiving uses `SOURCE_ROWS_STORAGE_ACCOUNT_URL` or `STORAGE_ACCOUNT_NAME`, `SOURCE_ROWS_CONTAINER_NAME`, and managed identity through `DefaultAzureCredential`.
      - Import responses include `importRunId`, `sourceRowsBlobUrl`, checksum, parser module, source row count, imported/created/updated/skipped/error counts, row errors, normalized records, and `refreshPolicy`.
@@ -372,6 +381,8 @@ Current CSV clarification: the only active CSV processor reference flow is `orde
   - `POST /console/dashboard`
   - `POST /console/artifacts/download`
   - `POST /console/mailboxes`
+  - `POST /console/tenants`
+  - `POST /console/customer-identification-rules`
   - `POST /console/routing-rules`
   - `POST /console/customers`
   - `POST /console/processor-profiles`
@@ -385,7 +396,7 @@ Current CSV clarification: the only active CSV processor reference flow is `orde
   - `POST /exceptions/{id}/resolve`
   - `POST /orders/{orderRunId}/reprocess`
 - Canonical models:
-  - `EmailMessage`, `OrderRun`, `OrderLine`, `CustomerProfile`, `ItemRecord`, `RoutingRule`, `ProcessorProfile`, `OutputProfile`, `MailboxAccount`, `MicrosoftAuthConnection`, `ConsoleUser`, `CustomerUserAssignment`, `ExceptionTask`, `AuditEvent`.
+  - `Tenant`, `EmailMessage`, `OrderRun`, `OrderLine`, `CustomerProfile`, `CustomerAlias`, `ItemRecord`, `RoutingRule`, `ProcessorProfile`, `OutputProfile`, `MailboxAccount`, `MicrosoftAuthConnection`, `ConsoleUser`, `CustomerUserAssignment`, `ExceptionTask`, `AuditEvent`.
 - Power Automate remains responsible only for mailbox/event triggers and optional customer-specific M365 delivery adapters.
 
 ## Test Plan
@@ -396,7 +407,8 @@ Current CSV clarification: the only active CSV processor reference flow is `orde
 - End-to-end tests from sample email to completed output file and CSR routing decision.
 - Console tests for exception resolution, reprocessing, audit history, and download links.
 - Console auth tests for `connect@focuseautomate.com` bootstrap admin access, Microsoft login, customer-scoped authorization, and denied access for unassigned users.
-- Mailbox config tests for customer-specific mailbox routing, Microsoft connection status, and ingest scoping.
+- Mailbox config tests for tenant-scoped mailbox routing, Microsoft connection status, and no downstream customer assignment from mailbox config.
+- Customer identification rule tests for account number, sender email/domain, subject/body/file-name patterns, and manual hard-rule console saves.
 - CSV migration test for `orderProcess - CSV Parse` parity without Plumsail.
 - Shadow-run acceptance: new platform output must match or improve current flow output for pilot samples before production cutover.
 
@@ -405,7 +417,8 @@ Current CSV clarification: the only active CSV processor reference flow is `orde
 - Azure core, Cosmos vector retrieval, and one pilot customer first.
 - `connect@focuseautomate.com` is the initial backend console administrator.
 - Customer users authenticate with Microsoft accounts and receive customer access through console-managed assignments.
-- Customer-specific mailbox configuration is first-class platform data and must be visible in the console.
+- Distributor tenant mailbox configuration is first-class platform data and must be visible in the console.
+- Downstream customer/account identification is performed per email through deterministic rules, AI/vector matching, or human resolution. Mailbox configuration must not short-circuit that step.
 - The only active CSV reference flow is `orderProcess - CSV Parse`.
 - Plumsail CSV parsing/conversion should be replaced with Azure Function code and standard libraries; XLSX generation should happen only when required by an output profile.
 - Use Cosmos DB as canonical operational storage and vector store.
@@ -422,17 +435,18 @@ Current CSV clarification: the only active CSV processor reference flow is `orde
 - Phase 1 completed on 2026-06-20: planning artifact, baseline reference links, regenerated flow library, regenerated external dependency inventory, regenerated static SharePoint reference, and live Graph export attempt are complete.
 - Phase 2 completed on 2026-06-20: every active reference flow was mapped to a migration capability, all active order-processing flows were documented, Plumsail/Google/OpenAI/Office/SharePoint/mailbox dependencies were captured, and synthetic representative fixtures were created under `samples/phase-2`.
 - Phase 3 completed on 2026-06-20: deployable Azure foundation IaC, subscription/resource-group deployment paths, APIM OpenAPI facade, Key Vault secret path, managed identities, RBAC assignments, Durable Functions readiness, storage hardening, and deployment runbook are complete.
-- Phase 4 completed on 2026-06-20: canonical Cosmos data model, all required container definitions, customer-scoped partition strategy, vector metadata, mailbox/auth/console dataclasses, repository normalization, Cosmos repository selector, and data-model tests are complete.
+- Phase 4 completed on 2026-06-20: canonical Cosmos data model, all required container definitions, customer-scoped partition strategy, vector metadata, mailbox/auth/console dataclasses, repository normalization, Cosmos repository selector, and data-model tests are complete. Follow-up correction on 2026-06-22 changed mailbox accounts to tenant-scoped `_global` records while keeping downstream customer records separate.
 - Phase 5 completed on 2026-06-20: target `OrderProcessor` Power Platform shell solution verified in Focus Automate, four disabled adapter-flow templates generated, unmanaged package built and imported, Office 365 Outlook connection reference added, APIM-only shell boundaries documented, and shell guardrail tests added.
-- Phase 6 completed on 2026-06-20: mailbox-aware `/emails/ingest`, persisted email/attachment/routing data, customer-scoped routing rule evaluation, disabled/unknown/conflicting mailbox handling, routing exception creation, order-run creation for known orders, audit events, API/OpenAPI/Cosmos docs, and Phase 6 tests are complete.
+- Phase 6 completed on 2026-06-20: mailbox-aware `/emails/ingest`, persisted email/attachment/routing data, routing rule evaluation, disabled/unknown mailbox handling, routing exception creation, order-run creation for known orders, audit events, API/OpenAPI/Cosmos docs, and Phase 6 tests are complete. Follow-up correction on 2026-06-22 removed mailbox-owned downstream customer assignment and made mailbox config tenant-scoped.
 - Phase 7 completed on 2026-06-20: deterministic customer identification, customer alias support, known subject patterns, confidence thresholding, ambiguity handling, Azure OpenAI embedding client boundary, Cosmos customer vector-search adapter, low-confidence exception creation, stored email/order customer updates, audit events, API/OpenAPI/Cosmos docs, and Phase 7 tests are complete.
 - Phase 8 completed on 2026-06-20: parser registry for customer/item imports, refresh cadence policy, source-row archive abstraction with Blob-ready implementation, canonical Cosmos customer/item writes, customer alias generation, import metadata, optional import embeddings, import audit events, API/OpenAPI/Cosmos/local settings docs, and Phase 8 tests are complete.
+- Distributor email workflow correction completed on 2026-06-22: `/emails/ingest` now evaluates ordered distributor routing phases for webstore orders, previously processed subjects, order candidates, non-orders, and general rules; routing rules can extract downstream customer codes by regex; subject update/category/move policies are stored as planned Microsoft mail actions; console routing configuration exposes these fields; customer/item imports accept the universal sample shapes, including `alt_parts_combined` as an array.
 - Phase 9 completed on 2026-06-20: universal order model, processor registry, active CSV Parse replacement without Plumsail, standard-library XLSX parsing, HTML-backed XLS/XLT parsing, Azure Document Intelligence PDF result boundary, email-body parsing, customer override delegation, parser-failure exceptions, profile-dispatched `/orders/{orderRunId}/process`, code-generated XLSX output, API/OpenAPI/Cosmos docs, Phase 9 handoff doc, and Phase 9 tests are complete.
 - Phase 10 completed on 2026-06-20: service-grade `/items/validate`, row-context-aware item matching, exact/fuzzy/ambiguous candidate scoring, matched item id in results, customer-scoped item loading, persisted order-line validation updates, item-validation exception tasks, item validation audit events, API/OpenAPI/Cosmos docs, Phase 10 handoff doc, and Phase 10 tests are complete.
 - Phase 11 completed on 2026-06-20: universal output artifact generation, profile-driven CSV/XLSX/text/API/json/multi output adapters, Blob-ready output artifact storage, memory artifact storage for local tests, artifact references in `orderRuns`, default line CSV fallback, output profile resolution, output-generation exception handling, output audit details, API/OpenAPI/Cosmos/local settings docs, Phase 11 handoff doc, and Phase 11 tests are complete.
 - Phase 12 completed on 2026-06-21: Azure Web App console scaffold, Node static/proxy host, optional Entra Easy Auth IaC, bootstrap admin access for `connect@focuseautomate.com`, Microsoft user/customer assignment model, guarded console API routes, customer-scoped dashboard, mailbox/customer/routing/profile/user editors, output artifact access, exception resolution, reprocess controls, API/OpenAPI/Cosmos/README docs, Phase 12 handoff doc, and Phase 12 tests are complete.
 - Phase 13 completed on 2026-06-21: correlation context extraction, Function header preservation, optional Azure Monitor OpenTelemetry setup, first-class order/email correlation ids, order processing timestamps, enriched auditEvents with operation/trace/customer/order/email fields, order processing/customer identification/item validation/user-intervention audit details, order timeline routes, console observability metrics, recent audit events, console timeline buttons, API/OpenAPI/Cosmos/README docs, Phase 13 handoff doc, and Phase 13 tests are complete.
-- Phase 14 completed on 2026-06-21: active `orderProcess CSV Parse` pilot selected, synthetic customer-specific mailbox/customer/item/routing/processor/output fixture package created, executable local shadow-run comparator added, Plumsail-free CSV Parse replacement asserted, customer identification/item validation/output/routing tag/CSR folder/error handling parity gates checked, Phase 14 handoff doc added, README updated, and Phase 14 tests are complete.
+- Phase 14 completed on 2026-06-21: active `orderProcess CSV Parse` pilot selected, synthetic tenant mailbox/customer/item/routing/processor/output fixture package created, executable local shadow-run comparator added, Plumsail-free CSV Parse replacement asserted, customer identification/item validation/output/routing tag/CSR folder/error handling parity gates checked, Phase 14 handoff doc added, README updated, and Phase 14 tests are complete.
 - Phase 15 completed on 2026-06-21: repeatable onboarding package template added, pilot CSV Parse reference package added, onboarding CLI validator implemented, PowerShell validation wrapper added, customer onboarding checklist and Phase 15 handoff doc added, pilot-first batch migration strategy documented, package validation covers Microsoft auth/mailbox/user/routing/parser/output/import/CSR/fixture/cutover concerns, and Phase 15 tests are complete.
 - Production deployment pass on 2026-06-21: Azure resources are deployed in `rg-orderprocessor-prod`; the working backend is `orderprocessor-prod-funcapi-vc5upbm44rc4w` behind APIM `orderprocessor-prod-apim-vc5upbm44rc4w`; APIM imports the OpenAPI operations and forwards the Key Vault-backed shared key through `x-order-processor-function-key`; direct unauthenticated Function calls return `401`; APIM `/order-processor/console/session` smoke test returned `200` for `connect@focuseautomate.com`.
 - Completed beyond the current phase ledger: local backend package scaffold, Azure Functions HTTP facade, Power Automate shell design docs, and unit tests for first-pass services.

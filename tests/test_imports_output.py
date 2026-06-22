@@ -49,6 +49,47 @@ class ImportsOutputTests(unittest.TestCase):
         self.assertEqual(customer.known_subject_patterns, ["Pilot Order", "Pilot Weekly"])
         self.assertEqual(item.customer_item_numbers, ["PILOT123"])
 
+    def test_universal_customer_and_item_source_shapes_normalize_without_field_map(self) -> None:
+        customer = normalize_customer_row(
+            "altitude",
+            {
+                "customer_name": "CHOW HOUND #4",
+                "customer_store_number": "504",
+                "location_address1": "734 28TH ST SE",
+                "location_city": "GRAND RAPIDS",
+                "location_state": "MI",
+                "location_zip": "49548",
+                "phone": "616-452-7877",
+                "customer_website": "WWW.CHOWHOUNDPET.COM",
+                "customer_email": "GREGC@CHOWHOUNDPET.COM",
+                "cust_code": "100029",
+            },
+            {},
+        )
+        item = normalize_item_row(
+            "altitude",
+            customer.id,
+            {
+                "part_code": "200510610",
+                "upc_code": "849910140402",
+                "alt_parts_combined": "849910140402|CLR LG TCT BK",
+                "part_desc": "ALCOTT LARGE DOG SOLID BLACK TACTICAL COLLAR EA",
+            },
+            {},
+        )
+
+        self.assertEqual(customer.customer_code, "100029")
+        self.assertEqual(customer.name, "CHOW HOUND #4")
+        self.assertEqual(customer.store_number, "504")
+        self.assertEqual(customer.address1, "734 28TH ST SE")
+        self.assertEqual(customer.city, "GRAND RAPIDS")
+        self.assertEqual(customer.postal_code, "49548")
+        self.assertEqual(customer.customer_email, "GREGC@CHOWHOUNDPET.COM")
+        self.assertEqual(item.internal_item_number, "200510610")
+        self.assertEqual(item.upc, "849910140402")
+        self.assertEqual(item.alt_parts_combined, ["849910140402", "CLR LG TCT BK"])
+        self.assertIn("CLRLGTCTBK", item.customer_item_numbers)
+
     def test_csv_processor_outputs_universal_formats(self) -> None:
         order = OrderRun(
             id="order-run-1",

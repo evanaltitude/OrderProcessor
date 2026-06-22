@@ -10,12 +10,12 @@ The database name is `orderProcessor`.
 | --- | --- | --- | --- |
 | `tenants` | `/tenantId` | No | Tenant-level settings and environment flags |
 | `customers` | `/tenantId` | No | Canonical customer profiles, aliases, routing metadata, embeddings |
-| `customerAliases` | `/tenantId`, `/customerId` | Yes, required | Alternate names, codes, domains, and deterministic customer matching keys |
+| `customerAliases` | `/tenantId`, `/customerId` | Yes, required | Alternate names, account numbers, optional sender rules, regex rules, and deterministic customer matching keys |
 | `items` | `/tenantId`, `/customerId` | Yes, required | Canonical item records, customer item numbers, UPCs, aliases, embeddings |
 | `routingRules` | `/tenantId`, `/customerId` | Yes, default `_global` | Data-driven email routing rules |
 | `processorProfiles` | `/tenantId`, `/customerId` | Yes, default `_global` | Parser configuration by customer/source type |
 | `outputProfiles` | `/tenantId`, `/customerId` | Yes, default `_global` | Output format and delivery adapter configuration |
-| `mailboxAccounts` | `/tenantId`, `/customerId` | Yes, required | Customer-specific monitored mailbox configuration, ingest status, and owning customer |
+| `mailboxAccounts` | `/tenantId`, `/customerId` | Yes, default `_global` | Tenant-scoped monitored mailbox configuration and ingest status |
 | `microsoftAuthConnections` | `/tenantId`, `/customerId` | Yes, default `_global` | Microsoft/Graph/Power Automate connection metadata and consent status; secrets stay in Key Vault |
 | `consoleUsers` | `/tenantId` | No | Microsoft login users allowed into the console, including bootstrap admin `connect@focuseautomate.com` |
 | `customerUserAssignments` | `/tenantId`, `/customerId` | Yes, required | Customer-scoped user/role assignments for console authorization |
@@ -34,6 +34,7 @@ Customer-scoped containers use Cosmos hierarchical partition keys where the seco
 - Every document must have `id` and `tenantId`.
 - Required customer-scoped containers reject documents without `customerId`.
 - Tenant-wide customer-scoped config uses `customerId: "_global"`.
+- `mailboxAccounts.customerId` is `_global` for tenant mailbox partitioning and does not identify the downstream end customer.
 - Customer-unknown line-level records use `customerId: "_unassigned"` until resolved.
 
 ## Canonical Models
@@ -135,13 +136,15 @@ Supported output profile types are:
 Phase 12 stores console identity and authorization separately from customer configuration:
 
 - `consoleUsers` stores Microsoft-authenticated users allowed into the console. The bootstrap admin is `connect@focuseautomate.com` with `roles: ["platformAdmin"]`.
-- `customerUserAssignments` maps a Microsoft email to a customer and role list. Customer users can only see assigned customers unless they are platform admins.
-- `mailboxAccounts` stores customer-specific monitored mailboxes, provider, connection id, enabled/ingest status, permission status, Graph user id, folder ids, and settings.
+- `customerUserAssignments` maps a Microsoft email to a downstream customer and role list when customer-specific access is needed. Tenant-level roles on `consoleUsers`, such as `tenantAdmin`, can see/manage all downstream customers inside the tenant without thousands of assignments.
+- `mailboxAccounts` stores tenant-scoped monitored mailboxes, provider, connection id, enabled/ingest status, permission status, Graph user id, folder ids, and settings. Legacy mailbox `customerId` values are ignored for matching and may be preserved only as deprecated metadata.
 - `microsoftAuthConnections` stores Microsoft/Graph/Power Automate connection metadata and consent status. Secrets stay in Key Vault; Cosmos stores only secret names and metadata.
 
 Console roles map to permissions in the backend:
 
 - `platformAdmin`: full console access across customers, users, routing, mailboxes, profiles, exceptions, reprocess, and outputs.
+- `tenantAdmin`: full console access within one distributor tenant without cross-tenant/platform access.
+- `tenantUser`: all-customer dashboard access within one distributor tenant.
 - `orderViewer`: assigned-customer dashboard/output access.
 - `exceptionResolver`: assigned-customer exception resolution.
 - `orderManager`: assigned-customer exception resolution, output download, and reprocess controls.
@@ -212,10 +215,11 @@ Customer identification uses `customers.embedding` for Azure OpenAI/Cosmos vecto
 - `customers.customerCode`
 - `customers.storeNumber`
 - `customers.routeNumber`
-- `customers.senderDomains`
 - `customers.knownSubjectPatterns`
 - `customers.aliases`
-- `customerAliases` records for `customerCode`, `storeNumber`, `routeNumber`, `senderDomain`, and `knownSubjectPattern`
+- `customerAliases` records for account number/customer code, store number, route number, sender email, sender domain, known subject pattern, body pattern, and file-name pattern
+
+Sender domains are intentionally no longer exposed as a primary console field on customer profiles. Use `customerAliases` customer-identification rules for sender email/domain only when that signal is deterministic for a downstream end customer.
 
 Phase 8 import endpoints can populate `customers.embedding` and `items.embedding` when `ORDER_PROCESSOR_ENABLE_IMPORT_EMBEDDINGS=true`. Local/offline imports leave embeddings empty unless an embedding client is injected by tests.
 
@@ -237,6 +241,7 @@ Customer imports also generate `customerAliases` records for:
 - `customerCode`
 - `storeNumber`
 - `routeNumber`
+- `senderEmail`
 - `senderDomain`
 - `knownSubjectPattern`
 
@@ -274,7 +279,21 @@ Refresh cadence:
 
 Attachment records store `name`, `contentType`, `size`, `blobUrl`, `sourceUrl`, `contentId`, `isInline`, and `metadata`. Binary content belongs in Blob Storage; Cosmos stores metadata and blob/source references only.
 
-`routingRules` are data-driven and support tenant-wide rules through `customerId: "_global"` plus customer-specific rules through the customer partition. Phase 6 rule signals include:
+Universal customer imports can use distributor-customer fields such as `cust_code`, `customer_name`, `customer_store_number`, `location_address1`, `location_city`, `location_state`, `location_zip`, `phone`, `customer_website`, and `customer_email` without a field map. These normalize into `CustomerProfile` fields while preserving the original source row in `rawSource`.
+
+Universal item imports can use `part_code`, `upc_code`, `alt_parts_combined`, and `part_desc` without a field map. `alt_parts_combined` is stored as an array on `items.altPartsCombined` and also feeds normalized searchable item numbers for `items.customerItemNumbers`, so the item validator can match UPCs and alternate item identifiers.
+
+`routingRules` are data-driven and support tenant-wide distributor rules through `customerId: "_global"` plus customer-specific rules through the customer partition. Routing rules include an ordered `phase`:
+
+- `webstoreOrder`
+- `previouslyProcessed`
+- `orderCandidate`
+- `nonOrder`
+- `general`
+
+Rules are evaluated in that order. This mirrors the current Power Automate flow shape: known webstore messages can extract a downstream customer code first, already-processed subject formats can recover the customer code next, then distributor-specific order-candidate rules decide whether to create an order run, followed by non-order/general handling.
+
+Rule signals include:
 
 - `mailboxAccountIds`
 - `mailboxAddresses`
@@ -289,15 +308,24 @@ Attachment records store `name`, `contentType`, `size`, `blobUrl`, `sourceUrl`, 
 - `attachmentNameRegex`
 - `requiredAttachment`
 - `tags`
+- `customerCodeExtraction`
+- `subjectUpdate`
+- `emailActions`
+
+`customerCodeExtraction` stores a regex extraction policy with `source`, `regex`, `group`, and `required`. The extracted value is matched against `customers.customerCode` and `customerAliases` account/customer-code aliases.
+
+`subjectUpdate` stores distributor-specific subject policy, including templates such as `Cust: {customerCode} Rte: {routeNumber} - {originalSubject}` and extraction regexes for already-processed subjects.
+
+`emailActions` stores planned Graph/Power Automate adapter actions. Category templates can use customer fields such as `{csrName}`, and move policies can be configured separately for `processedOrder`, `failedOrder`, `nonOrder`, and `ignored` with `none`, `staticFolder`, or `customerField` modes.
 
 Routing decisions are stored on the email under `routing`, including `outcome`, `ruleId`, `customerId`, `processorProfileId`, `mailboxAccountId`, `confidence`, `reasons`, and `matchedSignals`.
 
 ## Mailbox and Microsoft Auth Data
 
-`mailboxAccounts` stores customer-facing mailbox configuration:
+`mailboxAccounts` stores distributor/tenant mailbox configuration:
 
 - `mailboxAddress`
-- `customerId`
+- `customerId` as `_global` partition metadata only
 - `provider`
 - `connectionId`
 - `enabled`
@@ -348,7 +376,7 @@ Local settings use `ORDER_PROCESSOR_STORAGE_BACKEND=memory`. The deployed Functi
 
 - Keep `tenantId` on every document.
 - Keep `customerId` on customer-scoped operational/configuration records.
-- Keep mailbox configuration customer-scoped and queryable from console configuration.
+- Keep mailbox configuration tenant-scoped and queryable from console configuration. Do not use mailbox configuration to assign downstream `customerId`.
 - Keep console authorization data separate from customer profiles.
 - Store source files and original source rows in Blob Storage, then reference blob URLs from Cosmos documents.
 - Store secrets in Key Vault only; Cosmos documents contain identifiers and metadata, not credentials.

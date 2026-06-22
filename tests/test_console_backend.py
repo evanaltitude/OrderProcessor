@@ -91,6 +91,7 @@ class ConsoleBackendTests(unittest.TestCase):
     def test_console_dashboard_filters_customer_scoped_views(self) -> None:
         api, repo, _ = self._api()
         api.upsert_console_user({"tenantId": "altitude", "email": "buyer@example.com", "roles": ["customerUser"]})
+        api.upsert_console_user({"tenantId": "altitude", "email": "tenant-admin@example.com", "roles": ["tenantAdmin"]})
         api.assign_customer_user(
             "pilot-customer",
             {"tenantId": "altitude", "email": "buyer@example.com", "roles": ["orderViewer", "exceptionResolver"]},
@@ -101,12 +102,7 @@ class ConsoleBackendTests(unittest.TestCase):
         api.upsert_customer_config(
             {"tenantId": "altitude", "id": "other-customer", "customerCode": "OTHER", "name": "Other"}
         )
-        api.upsert_mailbox(
-            {"tenantId": "altitude", "customerId": "pilot-customer", "mailboxAddress": "pilot@example.com"}
-        )
-        api.upsert_mailbox(
-            {"tenantId": "altitude", "customerId": "other-customer", "mailboxAddress": "other@example.com"}
-        )
+        api.upsert_mailbox({"tenantId": "altitude", "mailboxAddress": "orders@example.com"})
         api.upsert_routing_rule(
             {
                 "tenantId": "altitude",
@@ -144,13 +140,80 @@ class ConsoleBackendTests(unittest.TestCase):
         api._create_exception(tenant_id="altitude", task_type="itemValidation", prompt="Resolve", order_run_id="pilot-run")
 
         dashboard = api.console_dashboard({"tenantId": "altitude", "email": "buyer@example.com"})
+        tenant_dashboard = api.console_dashboard({"tenantId": "altitude", "email": "tenant-admin@example.com"})
 
         self.assertTrue(dashboard["session"]["authorized"])
         self.assertEqual([customer["id"] for customer in dashboard["customers"]], ["pilot-customer"])
-        self.assertEqual([mailbox["customerId"] for mailbox in dashboard["mailboxes"]], ["pilot-customer"])
+        self.assertEqual([mailbox["customerId"] for mailbox in dashboard["mailboxes"]], ["_global"])
         self.assertEqual([run["id"] for run in dashboard["activeRuns"]], ["pilot-run"])
         self.assertEqual(dashboard["summary"]["openExceptionCount"], 1)
         self.assertEqual(dashboard["summary"]["unresolvedLineCount"], 1)
+        self.assertEqual({customer["id"] for customer in tenant_dashboard["customers"]}, {"pilot-customer", "other-customer"})
+
+    def test_console_upserts_tenant_mailbox_and_customer_identification_rule(self) -> None:
+        api, repo, _ = self._api()
+        admin_headers = {"x-ms-client-principal": _easy_auth_header("connect@focuseautomate.com")}
+
+        tenant = api.console_upsert_tenant_config(
+            {
+                "tenantId": "altitude",
+                "headers": admin_headers,
+                "name": "Altitude Distribution",
+                "environment": "prod",
+            }
+        )
+        mailbox = api.console_upsert_mailbox(
+            {
+                "tenantId": "altitude",
+                "headers": admin_headers,
+                "mailboxAddress": "Orders@Example.com",
+                "connectionId": "m365-orders",
+            }
+        )
+        rule = api.console_upsert_customer_identification_rule(
+            {
+                "tenantId": "altitude",
+                "headers": admin_headers,
+                "customerId": "pilot-customer",
+                "aliasType": "accountNumber",
+                "value": "PILOT-001",
+            }
+        )
+
+        self.assertEqual(tenant["tenant"]["name"], "Altitude Distribution")
+        self.assertEqual(mailbox["mailboxAccount"]["customerId"], "_global")
+        self.assertEqual(mailbox["mailboxAccount"]["mailboxAddress"], "orders@example.com")
+        self.assertEqual(rule["customerIdentificationRule"]["normalizedValue"], "PILOT001")
+        self.assertIsNotNone(repo.get("customerAliases", rule["customerIdentificationRule"]["id"]))
+
+    def test_console_upserts_email_triage_policy_fields(self) -> None:
+        api, repo, _ = self._api()
+        admin_headers = {"x-ms-client-principal": _easy_auth_header("connect@focuseautomate.com")}
+
+        result = api.console_upsert_routing_rule(
+            {
+                "tenantId": "altitude",
+                "headers": admin_headers,
+                "id": "webstore-orders",
+                "customerId": "_global",
+                "name": "Webstore orders",
+                "phase": "webstoreOrder",
+                "outcome": "knownOrder",
+                "customerCodeSource": "bodyText",
+                "customerCodeRegex": r"Customer:\s*(?P<customerCode>\d+)",
+                "subjectTemplate": "Cust: {customerCode} - {originalSubject}",
+                "categoryCsrField": "csrFolder",
+                "categoryTemplates": ["CSR: {csrName}"],
+                "processedMoveMode": "customerField",
+                "processedMoveCustomerField": "csrFolder",
+            }
+        )
+
+        stored = repo.get("routingRules", result["routingRule"]["id"])
+        self.assertEqual(stored["phase"], "webstoreOrder")
+        self.assertEqual(stored["customerCodeExtraction"]["source"], "bodyText")
+        self.assertEqual(stored["subjectUpdate"]["template"], "Cust: {customerCode} - {originalSubject}")
+        self.assertEqual(stored["emailActions"]["moves"]["processedOrder"]["field"], "csrFolder")
 
     def test_console_upserts_profiles_and_downloads_output_artifact_content(self) -> None:
         api, _, _ = self._api()

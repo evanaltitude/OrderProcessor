@@ -57,6 +57,8 @@ $routes = @(
     @{ Name = "console_routing_rules_upsert"; EntryPoint = "console_routing_rules_upsert"; Route = "console/routing-rules" },
     @{ Name = "console_customers_upsert"; EntryPoint = "console_customers_upsert"; Route = "console/customers" },
     @{ Name = "console_mailboxes_upsert"; EntryPoint = "console_mailboxes_upsert"; Route = "console/mailboxes" },
+    @{ Name = "console_tenants_upsert"; EntryPoint = "console_tenants_upsert"; Route = "console/tenants" },
+    @{ Name = "console_customer_identification_rules_upsert"; EntryPoint = "console_customer_identification_rules_upsert"; Route = "console/customer-identification-rules" },
     @{ Name = "console_processor_profiles_upsert"; EntryPoint = "console_processor_profiles_upsert"; Route = "console/processor-profiles" },
     @{ Name = "console_output_profiles_upsert"; EntryPoint = "console_output_profiles_upsert"; Route = "console/output-profiles" },
     @{ Name = "console_users_upsert"; EntryPoint = "console_users_upsert"; Route = "console/users" },

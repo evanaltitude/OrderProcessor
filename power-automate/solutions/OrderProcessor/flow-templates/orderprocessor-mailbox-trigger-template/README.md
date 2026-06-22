@@ -7,8 +7,8 @@
 
 ## Notes
 
-- Instantiate one copy per monitored customer mailbox when Power Automate must own the mailbox trigger.
-- Mailbox address, mailboxAccountId, and customerId are parameters/configuration values, not branches.
+- Instantiate one copy per monitored distributor mailbox when Power Automate must own the mailbox trigger.
+- Mailbox address and mailboxAccountId are tenant configuration values, not downstream customer branches.
 - Flow sends metadata and attachment references to APIM only; Azure performs routing and processing.
 
 ## Configuration
@@ -16,6 +16,6 @@
 - OrderProcessorApiBaseUrl: APIM base URL, for example https://{apim-name}.azure-api.net/order-processor.
 - OrderProcessorApimSubscriptionKey: APIM subscription key or future custom connector secret.
 - OrderProcessorTenantId: platform tenant identifier.
-- Mailbox templates additionally require OrderProcessorMailboxAddress, OrderProcessorMailboxAccountId, and OrderProcessorCustomerId.
+- Mailbox templates additionally require OrderProcessorMailboxAddress and OrderProcessorMailboxAccountId.
 
 Do not add parsing, customer identification, item validation, OpenAI, Google Document AI, Plumsail, SharePoint operational storage, or flow-to-flow webhook calls to this flow.

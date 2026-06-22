@@ -9,8 +9,11 @@ from .customer_identification import (
     CustomerVectorSearch,
     customer_vector_search_from_environment,
     identify_customer as identify_customer_from_email,
+    normalize_domain,
+    normalize_identifier,
 )
 from .data_model import GLOBAL_CUSTOMER_ID, keys_to_camel
+from .email_triage import evaluate_email_triage
 from .imports import normalize_customer_row, normalize_item_row, stable_id
 from .imports import (
     CUSTOMER_IMPORT_TYPE,
@@ -58,6 +61,7 @@ from .models import (
     RoutingDecision,
     RoutingOutcome,
     RoutingRule,
+    Tenant,
     to_dict,
     utc_now,
 )
@@ -74,7 +78,7 @@ from .output_generation import (
     generate_order_output_artifacts,
     output_artifact_store_from_environment,
 )
-from .routing import default_order_signal, evaluate_routing
+from .routing import default_order_signal
 from .storage import InMemoryRepository, repository_from_environment
 
 
@@ -172,6 +176,7 @@ def _routing_rule_from_doc(doc: dict[str, Any]) -> RoutingRule:
         tenant_id=_pick(doc, "tenantId", "tenant_id", default="default"),
         name=_pick(doc, "name", default=""),
         outcome=outcome,
+        phase=_pick(doc, "phase", "triagePhase", "triage_phase", default="general"),
         priority=int(_pick(doc, "priority", default=100)),
         enabled=bool(_pick(doc, "enabled", default=True)),
         customer_id=_pick(doc, "customerId", "customer_id", default=None),
@@ -201,6 +206,11 @@ def _routing_rule_from_doc(doc: dict[str, Any]) -> RoutingRule:
         ),
         required_attachment=bool(_pick(doc, "requiredAttachment", "required_attachment", default=False)),
         tags=list(_as_list(_pick(doc, "tags", default=[]))),
+        customer_code_extraction=dict(
+            _pick(doc, "customerCodeExtraction", "customer_code_extraction", default={}) or {}
+        ),
+        subject_update=dict(_pick(doc, "subjectUpdate", "subject_update", default={}) or {}),
+        email_actions=dict(_pick(doc, "emailActions", "email_actions", default={}) or {}),
     )
 
 
@@ -214,6 +224,13 @@ def _customer_from_doc(doc: dict[str, Any]) -> CustomerProfile:
         csr_email=_pick(doc, "csrEmail", "csr_email", default=""),
         csr_folder=_pick(doc, "csrFolder", "csr_folder", default=""),
         store_number=_pick(doc, "storeNumber", "store_number", default=""),
+        address1=_pick(doc, "address1", "locationAddress1", "location_address1", default=""),
+        city=_pick(doc, "city", "locationCity", "location_city", default=""),
+        state=_pick(doc, "state", "locationState", "location_state", default=""),
+        postal_code=_pick(doc, "postalCode", "postal_code", "locationZip", "location_zip", default=""),
+        phone=_pick(doc, "phone", default=""),
+        website=_pick(doc, "website", "customerWebsite", "customer_website", default=""),
+        customer_email=_pick(doc, "customerEmail", "customer_email", default=""),
         sender_domains=list(_as_list(_pick(doc, "senderDomains", "sender_domains", default=[]))),
         aliases=list(_as_list(_pick(doc, "aliases", default=[]))),
         known_subject_patterns=list(
@@ -223,6 +240,7 @@ def _customer_from_doc(doc: dict[str, Any]) -> CustomerProfile:
         source_name=_pick(doc, "sourceName", "source_name", default=""),
         source_rows_blob_url=_pick(doc, "sourceRowsBlobUrl", "source_rows_blob_url", default=""),
         last_imported_at=_pick(doc, "lastImportedAt", "last_imported_at", default=None),
+        custom_fields=dict(_pick(doc, "customFields", "custom_fields", default={}) or {}),
         raw_source=dict(_pick(doc, "rawSource", "raw_source", default={}) or {}),
     )
 
@@ -251,6 +269,7 @@ def _item_from_doc(doc: dict[str, Any]) -> ItemRecord:
         internal_item_number=_pick(doc, "internalItemNumber", "internal_item_number", default=""),
         description=_pick(doc, "description", default=""),
         upc=_pick(doc, "upc", default=""),
+        alt_parts_combined=list(_as_list(_pick(doc, "altPartsCombined", "alt_parts_combined", default=[]))),
         customer_item_numbers=list(
             _as_list(_pick(doc, "customerItemNumbers", "customer_item_numbers", default=[]))
         ),
@@ -367,12 +386,6 @@ def _mailbox_enabled(mailbox: dict[str, Any]) -> bool:
     return bool(_pick(mailbox, "enabled", default=True))
 
 
-def _mailbox_customer_id(mailbox: dict[str, Any] | None) -> str | None:
-    if not mailbox:
-        return None
-    return _pick(mailbox, "customerId", "customer_id", default=None)
-
-
 def _candidate_routing_rules(email: EmailMessage, rules: list[RoutingRule]) -> list[RoutingRule]:
     candidates: list[RoutingRule] = []
     for rule in rules:
@@ -402,6 +415,38 @@ def _document_customer_id(document: dict[str, Any]) -> str | None:
 
 def _document_status(document: dict[str, Any]) -> str:
     return str(_pick(document, "status", default="") or "")
+
+
+def _normalized_customer_rule_value(alias_type: str, value: str) -> str:
+    normalized_type = str(alias_type or "").replace("-", "_").lower()
+    if normalized_type in {
+        "customercode",
+        "customer_code",
+        "code",
+        "accountnumber",
+        "account_number",
+        "storenumber",
+        "store_number",
+        "store",
+        "location",
+        "locationnumber",
+        "location_number",
+        "routenumber",
+        "route_number",
+        "route",
+    }:
+        return normalize_identifier(value)
+    if normalized_type in {
+        "senderdomain",
+        "sender_domain",
+        "domain",
+        "emaildomain",
+        "email_domain",
+    }:
+        return normalize_domain(value)
+    if normalized_type in {"senderemail", "sender_email", "email", "emailaddress", "email_address"}:
+        return str(value or "").strip().lower()
+    return str(value or "").strip()
 
 
 class OrderProcessorApi:
@@ -442,9 +487,6 @@ class OrderProcessorApi:
             email.mailbox_account_id = str(_pick(mailbox_account, "id"))
             if not email.mailbox:
                 email.mailbox = _pick(mailbox_account, "mailboxAddress", "mailbox_address", default="")
-            account_customer_id = _mailbox_customer_id(mailbox_account)
-        else:
-            account_customer_id = None
 
         if mailbox_account_requested and mailbox_account is None:
             decision = RoutingDecision(
@@ -461,7 +503,6 @@ class OrderProcessorApi:
                 },
             )
         elif mailbox_account is not None and not _mailbox_enabled(mailbox_account):
-            email.customer_id = email.customer_id or account_customer_id
             decision = RoutingDecision(
                 outcome=RoutingOutcome.IGNORED,
                 mailbox_account_id=email.mailbox_account_id,
@@ -475,31 +516,25 @@ class OrderProcessorApi:
                     "defaultOrderSignal": default_order_signal(email),
                 },
             )
-        elif email.customer_id and account_customer_id and email.customer_id != account_customer_id:
-            decision = RoutingDecision(
-                outcome=RoutingOutcome.NEEDS_HUMAN_REVIEW,
-                mailbox_account_id=email.mailbox_account_id,
-                customer_id=account_customer_id,
-                confidence=0.0,
-                reasons=[
-                    f"payload customer {email.customer_id} conflicts with mailbox account customer {account_customer_id}"
-                ],
-                matched_signals={
-                    "mailbox": email.mailbox,
-                    "mailboxAccountId": email.mailbox_account_id,
-                    "payloadCustomerId": email.customer_id,
-                    "mailboxCustomerId": account_customer_id,
-                    "defaultOrderSignal": default_order_signal(email),
-                },
-            )
-            email.customer_id = account_customer_id
         else:
-            email.customer_id = email.customer_id or account_customer_id
             rules = [
                 _routing_rule_from_doc(doc)
                 for doc in self.repository.query_by_tenant("routingRules", email.tenant_id)
             ]
-            decision = evaluate_routing(email, _candidate_routing_rules(email, rules))
+            customers = [
+                _customer_from_doc(doc)
+                for doc in self.repository.query_by_tenant("customers", email.tenant_id)
+            ]
+            aliases = [
+                _customer_alias_from_doc(doc)
+                for doc in self.repository.query_by_tenant("customerAliases", email.tenant_id)
+            ]
+            decision = evaluate_email_triage(
+                email,
+                _candidate_routing_rules(email, rules),
+                customers=customers,
+                aliases=aliases,
+            )
 
         email.customer_id = decision.customer_id or email.customer_id
         email.routing = to_dict(decision)
@@ -1351,7 +1386,7 @@ class OrderProcessorApi:
             "assignments": assignments,
             "isPlatformAdmin": is_platform_admin,
             "allowedCustomerIds": allowed_customer_ids,
-            "permissions": self._console_permissions(is_platform_admin, assignments),
+            "permissions": self._console_permissions(is_platform_admin, roles, assignments),
         }
         observability = correlation_context(payload, email)
         self._audit(
@@ -1393,6 +1428,12 @@ class OrderProcessorApi:
         )
         mailboxes = self._filter_customer_documents(
             self.repository.query_by_tenant("mailboxAccounts", tenant_id),
+            customer_filter,
+            session,
+            include_global=True,
+        )
+        customer_identification_rules = self._filter_customer_documents(
+            self.repository.query_by_tenant("customerAliases", tenant_id),
             customer_filter,
             session,
         )
@@ -1448,6 +1489,7 @@ class OrderProcessorApi:
 
         return {
             "session": session,
+            "tenant": self.repository.get("tenants", tenant_id),
             "summary": summary,
             "observabilityMetrics": observability_metrics,
             "recentAuditEvents": self._sort_recent(audit_events)[:50],
@@ -1457,6 +1499,7 @@ class OrderProcessorApi:
                 [item for item in exceptions if _document_status(item) == ExceptionStatus.OPEN.value]
             ),
             "mailboxes": self._sort_recent(mailboxes),
+            "customerIdentificationRules": self._sort_recent(customer_identification_rules),
             "routingRules": sorted(routing_rules, key=lambda rule: int(_pick(rule, "priority", default=100) or 100)),
             "customers": sorted(customers, key=lambda customer: str(_pick(customer, "name", default="")).lower()),
             "customerDataStatus": self._customer_data_status(customers),
@@ -1580,14 +1623,18 @@ class OrderProcessorApi:
         return response
 
     def console_upsert_mailbox(self, payload: dict[str, Any]) -> dict[str, Any]:
-        error = self._console_permission_error(
-            payload,
-            "manageMailboxes",
-            _pick(payload, "customerId", "customer_id", default=None),
-        )
+        error = self._console_permission_error(payload, "manageMailboxes")
         if error:
             return error
         result = self.upsert_mailbox(payload)
+        result["session"] = self.console_session(payload)
+        return result
+
+    def console_upsert_tenant_config(self, payload: dict[str, Any]) -> dict[str, Any]:
+        error = self._console_permission_error(payload, "manageCustomers")
+        if error:
+            return error
+        result = self.upsert_tenant_config(payload)
         result["session"] = self.console_session(payload)
         return result
 
@@ -1612,6 +1659,18 @@ class OrderProcessorApi:
         if error:
             return error
         result = self.upsert_customer_config(payload)
+        result["session"] = self.console_session(payload)
+        return result
+
+    def console_upsert_customer_identification_rule(self, payload: dict[str, Any]) -> dict[str, Any]:
+        error = self._console_permission_error(
+            payload,
+            "manageCustomers",
+            _pick(payload, "customerId", "customer_id", default=None),
+        )
+        if error:
+            return error
+        result = self.upsert_customer_identification_rule(payload)
         result["session"] = self.console_session(payload)
         return result
 
@@ -1696,6 +1755,7 @@ class OrderProcessorApi:
             "customerId": customer_id,
             "name": _pick(payload, "name", default=""),
             "outcome": _pick(payload, "outcome", default=RoutingOutcome.NEEDS_HUMAN_REVIEW),
+            "phase": _pick(payload, "phase", "triagePhase", "triage_phase", default="general"),
             "priority": int(_pick(payload, "priority", default=100) or 100),
             "enabled": bool(_pick(payload, "enabled", default=True)),
             "processorProfileId": _pick(payload, "processorProfileId", "processor_profile_id", default=None),
@@ -1712,11 +1772,84 @@ class OrderProcessorApi:
             "attachmentNameRegex": list(_as_list(_pick(payload, "attachmentNameRegex", "attachment_name_regex", default=[]))),
             "requiredAttachment": bool(_pick(payload, "requiredAttachment", "required_attachment", default=False)),
             "tags": list(_as_list(_pick(payload, "tags", default=[]))),
+            "customerCodeExtraction": self._routing_customer_code_extraction_from_payload(payload),
+            "subjectUpdate": self._routing_subject_update_from_payload(payload),
+            "emailActions": self._routing_email_actions_from_payload(payload),
         }
         rule = _routing_rule_from_doc(rule_doc)
         stored = self.repository.upsert("routingRules", to_dict(rule))
         self._audit(tenant_id, "routingRule.upserted", stored["id"], stored["id"], {"customerId": customer_id})
         return {"routingRule": stored}
+
+    @staticmethod
+    def _routing_customer_code_extraction_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        extraction = dict(_pick(payload, "customerCodeExtraction", "customer_code_extraction", default={}) or {})
+        regex = _pick(payload, "customerCodeRegex", "customer_code_regex", default=None)
+        if regex:
+            extraction.setdefault("regex", regex)
+            extraction.setdefault("source", _pick(payload, "customerCodeSource", "customer_code_source", default="combined"))
+            extraction.setdefault("group", _pick(payload, "customerCodeGroup", "customer_code_group", default="customerCode"))
+            extraction.setdefault("required", bool(_pick(payload, "customerCodeRequired", "customer_code_required", default=True)))
+        return extraction
+
+    @staticmethod
+    def _routing_subject_update_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        subject_update = dict(_pick(payload, "subjectUpdate", "subject_update", default={}) or {})
+        template = _pick(payload, "subjectTemplate", "subject_template", default=None)
+        if template:
+            subject_update.setdefault("template", template)
+        detect_regex = _pick(payload, "processedSubjectDetectRegex", "processed_subject_detect_regex", default=None)
+        if detect_regex:
+            subject_update.setdefault("detectRegex", detect_regex)
+        customer_code_regex = _pick(payload, "processedSubjectCustomerCodeRegex", "processed_subject_customer_code_regex", default=None)
+        if customer_code_regex:
+            subject_update.setdefault("customerCodeRegex", customer_code_regex)
+        route_regex = _pick(payload, "processedSubjectRouteRegex", "processed_subject_route_regex", default=None)
+        if route_regex:
+            subject_update.setdefault("routeRegex", route_regex)
+        return subject_update
+
+    @staticmethod
+    def _routing_email_actions_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        email_actions = dict(_pick(payload, "emailActions", "email_actions", default={}) or {})
+        category_templates = list(_as_list(_pick(payload, "categoryTemplates", "category_templates", default=[])))
+        if category_templates:
+            email_actions.setdefault("categoryTemplates", category_templates)
+        csr_field = _pick(payload, "categoryCsrField", "category_csr_field", default=None)
+        if csr_field:
+            email_actions.setdefault("csrField", csr_field)
+        moves = dict(email_actions.get("moves") or {})
+        for action_key, prefix in {
+            "processedOrder": "processed",
+            "failedOrder": "failed",
+            "nonOrder": "nonOrder",
+        }.items():
+            mode = _pick(payload, f"{prefix}MoveMode", f"{prefix}_move_mode", default=None)
+            folder = _pick(payload, f"{prefix}MoveFolder", f"{prefix}_move_folder", default=None)
+            field = _pick(payload, f"{prefix}MoveCustomerField", f"{prefix}_move_customer_field", default=None)
+            if mode or folder or field:
+                moves[action_key] = {
+                    "mode": mode or ("customerField" if field else "staticFolder"),
+                    "folder": folder or "",
+                    "field": field or "",
+                }
+        if moves:
+            email_actions["moves"] = moves
+        return email_actions
+
+    def upsert_tenant_config(self, payload: dict[str, Any]) -> dict[str, Any]:
+        tenant_id = _pick(payload, "tenantId", "tenant_id", "id", default="default")
+        tenant = Tenant(
+            id=tenant_id,
+            tenant_id=tenant_id,
+            name=_pick(payload, "name", default=tenant_id),
+            environment=_pick(payload, "environment", default=""),
+            status=_pick(payload, "status", default="active"),
+            settings=dict(_pick(payload, "settings", default={}) or {}),
+        )
+        stored = self.repository.upsert("tenants", to_dict(tenant))
+        self._audit(tenant_id, "tenantConfig.upserted", stored["id"], stored["id"], {"name": stored["name"]})
+        return {"tenant": stored}
 
     def upsert_customer_config(self, payload: dict[str, Any]) -> dict[str, Any]:
         tenant_id = _pick(payload, "tenantId", "tenant_id", default="default")
@@ -1731,17 +1864,55 @@ class OrderProcessorApi:
             csr_email=_pick(payload, "csrEmail", "csr_email", default=""),
             csr_folder=_pick(payload, "csrFolder", "csr_folder", default=""),
             store_number=_pick(payload, "storeNumber", "store_number", default=""),
+            address1=_pick(payload, "address1", "locationAddress1", "location_address1", default=""),
+            city=_pick(payload, "city", "locationCity", "location_city", default=""),
+            state=_pick(payload, "state", "locationState", "location_state", default=""),
+            postal_code=_pick(payload, "postalCode", "postal_code", "locationZip", "location_zip", default=""),
+            phone=_pick(payload, "phone", default=""),
+            website=_pick(payload, "website", "customerWebsite", "customer_website", default=""),
+            customer_email=_pick(payload, "customerEmail", "customer_email", default=""),
             sender_domains=list(_as_list(_pick(payload, "senderDomains", "sender_domains", default=[]))),
             aliases=list(_as_list(_pick(payload, "aliases", default=[]))),
             known_subject_patterns=list(_as_list(_pick(payload, "knownSubjectPatterns", "known_subject_patterns", default=[]))),
             source_name=_pick(payload, "sourceName", "source_name", default="console"),
             source_rows_blob_url=_pick(payload, "sourceRowsBlobUrl", "source_rows_blob_url", default=""),
             last_imported_at=_pick(payload, "lastImportedAt", "last_imported_at", default=None),
+            custom_fields=dict(_pick(payload, "customFields", "custom_fields", default={}) or {}),
             raw_source=dict(_pick(payload, "rawSource", "raw_source", default={}) or {}),
         )
         stored = self.repository.upsert("customers", to_dict(customer))
         self._audit(tenant_id, "customerConfig.upserted", stored["id"], stored["id"], {"customerCode": customer_code})
         return {"customer": stored}
+
+    def upsert_customer_identification_rule(self, payload: dict[str, Any]) -> dict[str, Any]:
+        tenant_id = _pick(payload, "tenantId", "tenant_id", default="default")
+        customer_id = _pick(payload, "customerId", "customer_id", default="")
+        alias_type = _pick(payload, "aliasType", "alias_type", "ruleType", "rule_type", default="")
+        value = str(_pick(payload, "value", "pattern", default="")).strip()
+        normalized_value = _pick(payload, "normalizedValue", "normalized_value", default=None)
+        if normalized_value is None:
+            normalized_value = _normalized_customer_rule_value(alias_type, value)
+        rule = CustomerAlias(
+            id=_pick(payload, "id", "ruleId", "rule_id", default=stable_id(tenant_id, customer_id, alias_type, value)),
+            tenant_id=tenant_id,
+            customer_id=customer_id,
+            alias_type=alias_type,
+            value=value,
+            normalized_value=normalized_value,
+            source=_pick(payload, "source", default="console"),
+            confidence=float(_pick(payload, "confidence", default=1.0) or 1.0),
+            raw_source=dict(_pick(payload, "rawSource", "raw_source", default={}) or {}),
+        )
+        stored = self.repository.upsert("customerAliases", to_dict(rule))
+        self._audit(
+            tenant_id,
+            "customerIdentificationRule.upserted",
+            stored["id"],
+            stored["id"],
+            {"customerId": customer_id, "aliasType": alias_type, "value": value},
+            customer_id=customer_id,
+        )
+        return {"customerIdentificationRule": stored}
 
     def upsert_processor_profile(self, payload: dict[str, Any]) -> dict[str, Any]:
         tenant_id = _pick(payload, "tenantId", "tenant_id", default="default")
@@ -1777,20 +1948,24 @@ class OrderProcessorApi:
 
     def upsert_mailbox(self, payload: dict[str, Any]) -> dict[str, Any]:
         tenant_id = _pick(payload, "tenantId", "tenant_id", default="default")
-        customer_id = _pick(payload, "customerId", "customer_id", default="")
+        deprecated_customer_id = _pick(payload, "customerId", "customer_id", default="")
+        customer_id = GLOBAL_CUSTOMER_ID
         mailbox_address = str(_pick(payload, "mailboxAddress", "mailbox_address", default="")).strip().lower()
         mailbox_id = _pick(
             payload,
             "id",
             "mailboxAccountId",
             "mailbox_account_id",
-            default=stable_id(tenant_id, customer_id, mailbox_address),
+            default=stable_id(tenant_id, mailbox_address),
         )
+        settings = dict(_pick(payload, "settings", default={}) or {})
+        if deprecated_customer_id and deprecated_customer_id != GLOBAL_CUSTOMER_ID:
+            settings["deprecatedMailboxCustomerId"] = deprecated_customer_id
         mailbox = MailboxAccount(
             id=mailbox_id,
             tenant_id=tenant_id,
-            customer_id=customer_id,
             mailbox_address=mailbox_address,
+            customer_id=customer_id,
             display_name=_pick(payload, "displayName", "display_name", default=mailbox_address),
             provider=_pick(payload, "provider", default="microsoft365"),
             connection_id=_pick(payload, "connectionId", "connection_id", default=""),
@@ -1809,10 +1984,20 @@ class OrderProcessorApi:
             ),
             graph_user_id=_pick(payload, "graphUserId", "graph_user_id", default=""),
             folder_ids=dict(_pick(payload, "folderIds", "folder_ids", default={}) or {}),
-            settings=dict(_pick(payload, "settings", default={}) or {}),
+            settings=settings,
         )
         stored = self.repository.upsert("mailboxAccounts", to_dict(mailbox))
-        self._audit(tenant_id, "mailbox.upserted", stored["id"], stored["id"], {"customerId": customer_id})
+        self._audit(
+            tenant_id,
+            "mailbox.upserted",
+            stored["id"],
+            stored["id"],
+            {
+                "mailboxAddress": mailbox_address,
+                "mailboxScope": "tenant",
+                "deprecatedCustomerIdIgnored": deprecated_customer_id or None,
+            },
+        )
         return {"mailboxAccount": stored}
 
     def test_mailbox_connection(self, mailbox_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -2179,7 +2364,11 @@ class OrderProcessorApi:
         return None
 
     @staticmethod
-    def _console_permissions(is_platform_admin: bool, assignments: list[dict[str, Any]]) -> list[str]:
+    def _console_permissions(
+        is_platform_admin: bool,
+        user_roles: set[str],
+        assignments: list[dict[str, Any]],
+    ) -> list[str]:
         if is_platform_admin:
             return [
                 "platformAdmin",
@@ -2193,7 +2382,21 @@ class OrderProcessorApi:
                 "downloadOutputs",
             ]
         roles = {role for assignment in assignments for role in _as_list(_pick(assignment, "roles", default=[]))}
+        roles.update(user_roles)
+        if "tenantAdmin" in roles:
+            return [
+                "viewAllCustomers",
+                "manageUsers",
+                "manageCustomers",
+                "manageRouting",
+                "manageMailboxes",
+                "resolveExceptions",
+                "reprocessOrders",
+                "downloadOutputs",
+            ]
         permissions = {"viewAssignedCustomers"}
+        if "tenantUser" in roles:
+            permissions.add("viewAllCustomers")
         if "exceptionResolver" in roles:
             permissions.add("resolveExceptions")
         if "orderManager" in roles:
@@ -2218,7 +2421,7 @@ class OrderProcessorApi:
         return None
 
     def _authorized_customer_filter(self, session: dict[str, Any], requested_customer_id: str | None) -> set[str] | None | str:
-        if session.get("isPlatformAdmin"):
+        if session.get("isPlatformAdmin") or "viewAllCustomers" in set(_as_list(session.get("permissions", []))):
             return {requested_customer_id} if requested_customer_id else None
         allowed = set(_as_list(session.get("allowedCustomerIds", [])))
         if requested_customer_id:
@@ -2226,7 +2429,7 @@ class OrderProcessorApi:
         return allowed
 
     def _session_can_access_customer(self, session: dict[str, Any], customer_id: str | None) -> bool:
-        if session.get("isPlatformAdmin"):
+        if session.get("isPlatformAdmin") or "viewAllCustomers" in set(_as_list(session.get("permissions", []))):
             return True
         return bool(customer_id and customer_id in set(_as_list(session.get("allowedCustomerIds", []))))
 
@@ -2239,7 +2442,8 @@ class OrderProcessorApi:
     ) -> list[dict[str, Any]]:
         if customer_filter == "__denied__":
             return []
-        if session.get("isPlatformAdmin") and customer_filter is None:
+        can_view_all = session.get("isPlatformAdmin") or "viewAllCustomers" in set(_as_list(session.get("permissions", [])))
+        if can_view_all and customer_filter is None:
             return documents
         allowed = set(customer_filter or _as_list(session.get("allowedCustomerIds", [])))
         filtered = []
@@ -2249,7 +2453,7 @@ class OrderProcessorApi:
                 filtered.append(document)
             elif customer_id in allowed:
                 filtered.append(document)
-            elif customer_id is None and session.get("isPlatformAdmin"):
+            elif customer_id is None and can_view_all:
                 filtered.append(document)
         return filtered
 
@@ -2273,7 +2477,7 @@ class OrderProcessorApi:
             customer_id = _pick(context, "customerId", "customer_id", "mailboxCustomerId", default=None)
             if self._session_can_access_customer(session, customer_id):
                 visible.append(task)
-            elif session.get("isPlatformAdmin"):
+            elif "viewAllCustomers" in set(_as_list(session.get("permissions", []))):
                 visible.append(task)
         return visible
 
@@ -2287,7 +2491,10 @@ class OrderProcessorApi:
     ) -> list[dict[str, Any]]:
         if customer_filter == "__denied__":
             return []
-        if session.get("isPlatformAdmin") and customer_filter is None:
+        if (
+            (session.get("isPlatformAdmin") or "viewAllCustomers" in set(_as_list(session.get("permissions", []))))
+            and customer_filter is None
+        ):
             return audit_events
 
         allowed = set(customer_filter or _as_list(session.get("allowedCustomerIds", [])))
@@ -2582,12 +2789,20 @@ def console_upsert_mailbox(payload: dict[str, Any]) -> dict[str, Any]:
     return default_api.console_upsert_mailbox(payload)
 
 
+def console_upsert_tenant_config(payload: dict[str, Any]) -> dict[str, Any]:
+    return default_api.console_upsert_tenant_config(payload)
+
+
 def console_upsert_routing_rule(payload: dict[str, Any]) -> dict[str, Any]:
     return default_api.console_upsert_routing_rule(payload)
 
 
 def console_upsert_customer_config(payload: dict[str, Any]) -> dict[str, Any]:
     return default_api.console_upsert_customer_config(payload)
+
+
+def console_upsert_customer_identification_rule(payload: dict[str, Any]) -> dict[str, Any]:
+    return default_api.console_upsert_customer_identification_rule(payload)
 
 
 def console_upsert_processor_profile(payload: dict[str, Any]) -> dict[str, Any]:
@@ -2618,8 +2833,16 @@ def upsert_routing_rule(payload: dict[str, Any]) -> dict[str, Any]:
     return default_api.upsert_routing_rule(payload)
 
 
+def upsert_tenant_config(payload: dict[str, Any]) -> dict[str, Any]:
+    return default_api.upsert_tenant_config(payload)
+
+
 def upsert_customer_config(payload: dict[str, Any]) -> dict[str, Any]:
     return default_api.upsert_customer_config(payload)
+
+
+def upsert_customer_identification_rule(payload: dict[str, Any]) -> dict[str, Any]:
+    return default_api.upsert_customer_identification_rule(payload)
 
 
 def upsert_processor_profile(payload: dict[str, Any]) -> dict[str, Any]:

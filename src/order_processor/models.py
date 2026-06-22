@@ -114,6 +114,7 @@ class RoutingRule:
     tenant_id: str
     name: str
     outcome: RoutingOutcome
+    phase: str = "general"
     priority: int = 100
     enabled: bool = True
     customer_id: str | None = None
@@ -131,6 +132,9 @@ class RoutingRule:
     attachment_name_regex: list[str] = field(default_factory=list)
     required_attachment: bool = False
     tags: list[str] = field(default_factory=list)
+    customer_code_extraction: dict[str, Any] = field(default_factory=dict)
+    subject_update: dict[str, Any] = field(default_factory=dict)
+    email_actions: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -155,6 +159,13 @@ class CustomerProfile:
     csr_email: str = ""
     csr_folder: str = ""
     store_number: str = ""
+    address1: str = ""
+    city: str = ""
+    state: str = ""
+    postal_code: str = ""
+    phone: str = ""
+    website: str = ""
+    customer_email: str = ""
     sender_domains: list[str] = field(default_factory=list)
     aliases: list[str] = field(default_factory=list)
     known_subject_patterns: list[str] = field(default_factory=list)
@@ -162,6 +173,7 @@ class CustomerProfile:
     source_name: str = ""
     source_rows_blob_url: str = ""
     last_imported_at: str | None = None
+    custom_fields: dict[str, Any] = field(default_factory=dict)
     raw_source: dict[str, Any] = field(default_factory=dict)
 
 
@@ -201,6 +213,7 @@ class ItemRecord:
     internal_item_number: str
     description: str = ""
     upc: str = ""
+    alt_parts_combined: list[str] = field(default_factory=list)
     customer_item_numbers: list[str] = field(default_factory=list)
     aliases: list[str] = field(default_factory=list)
     embedding: list[float] = field(default_factory=list)
@@ -293,8 +306,8 @@ class OutputProfile:
 class MailboxAccount:
     id: str
     tenant_id: str
-    customer_id: str
     mailbox_address: str
+    customer_id: str = "_global"
     display_name: str = ""
     provider: str = "microsoft365"
     connection_id: str = ""

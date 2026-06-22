@@ -88,15 +88,16 @@ class DataModelTests(unittest.TestCase):
         self.assertEqual(order_line["customerId"], UNASSIGNED_CUSTOMER_ID)
 
     def test_required_customer_id_is_enforced(self) -> None:
-        with self.assertRaises(ValueError):
-            normalize_document_for_storage(
-                "mailboxAccounts",
-                {
-                    "id": "mailbox-1",
-                    "tenantId": "altitude",
-                    "mailboxAddress": "orders@example.com",
-                },
-            )
+        mailbox = normalize_document_for_storage(
+            "mailboxAccounts",
+            {
+                "id": "mailbox-1",
+                "tenantId": "altitude",
+                "mailboxAddress": "orders@example.com",
+            },
+        )
+
+        self.assertEqual(mailbox["customerId"], GLOBAL_CUSTOMER_ID)
 
     def test_in_memory_repository_queries_by_customer(self) -> None:
         repo = InMemoryRepository()

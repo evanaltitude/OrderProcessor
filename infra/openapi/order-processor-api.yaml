@@ -130,7 +130,7 @@ paths:
   /mailboxes:
     post:
       operationId: mailboxesUpsert
-      summary: Create or update a customer-specific monitored mailbox configuration.
+      summary: Create or update a tenant-scoped monitored mailbox configuration.
       requestBody:
         required: true
         content:
@@ -227,6 +227,40 @@ paths:
       responses:
         '200':
           description: Mailbox configuration result.
+          content:
+            application/json:
+              schema:
+                type: object
+  /console/tenants:
+    post:
+      operationId: consoleTenantsUpsert
+      summary: Admin console route for distribution company tenant configuration.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TenantConfigRequest'
+      responses:
+        '200':
+          description: Tenant configuration result.
+          content:
+            application/json:
+              schema:
+                type: object
+  /console/customer-identification-rules:
+    post:
+      operationId: consoleCustomerIdentificationRulesUpsert
+      summary: Admin console route for downstream customer identification hard-rule edits.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerIdentificationRuleRequest'
+      responses:
+        '200':
+          description: Customer identification rule result.
           content:
             application/json:
               schema:
@@ -487,7 +521,7 @@ components:
           type: string
         customerId:
           type: string
-          description: Optional customer scope when a configured mailbox already identifies the customer.
+          description: Optional downstream customer id only when a trusted caller has already identified the end customer. Mailbox configuration does not set this value.
         messageId:
           type: string
           description: Source mailbox provider message id, usually Microsoft Graph message id.
@@ -816,13 +850,14 @@ components:
       type: object
       required:
         - tenantId
-        - customerId
         - mailboxAddress
       properties:
         tenantId:
           type: string
         customerId:
           type: string
+          deprecated: true
+          description: Deprecated legacy field. Mailboxes are tenant-scoped; downstream customer identification happens separately.
         mailboxAddress:
           type: string
         displayName:
@@ -834,6 +869,24 @@ components:
           type: string
         enabled:
           type: boolean
+    TenantConfigRequest:
+      type: object
+      required:
+        - tenantId
+      properties:
+        tenantId:
+          type: string
+        id:
+          type: string
+        name:
+          type: string
+        environment:
+          type: string
+        status:
+          type: string
+        settings:
+          type: object
+          additionalProperties: true
     ConsoleSessionRequest:
       type: object
       properties:
@@ -879,6 +932,15 @@ components:
           default: _global
         name:
           type: string
+        phase:
+          type: string
+          default: general
+          enum:
+            - webstoreOrder
+            - previouslyProcessed
+            - orderCandidate
+            - nonOrder
+            - general
         outcome:
           type: string
           enum:
@@ -919,10 +981,44 @@ components:
           type: array
           items:
             type: string
+        knownWebstorePatterns:
+          type: array
+          items:
+            type: string
+        priorProcessedSubjectRegex:
+          type: array
+          items:
+            type: string
         attachmentExtensions:
           type: array
           items:
             type: string
+        attachmentContentTypes:
+          type: array
+          items:
+            type: string
+        attachmentNameRegex:
+          type: array
+          items:
+            type: string
+        requiredAttachment:
+          type: boolean
+        tags:
+          type: array
+          items:
+            type: string
+        customerCodeExtraction:
+          type: object
+          additionalProperties: true
+          description: Regex extraction policy for distributor-customer code lookup, with source, regex, group, and required fields.
+        subjectUpdate:
+          type: object
+          additionalProperties: true
+          description: Subject detection/update policy, including templates and customer-code extraction from previously processed subjects.
+        emailActions:
+          type: object
+          additionalProperties: true
+          description: Category and move policy for processedOrder, failedOrder, nonOrder, and ignored outcomes.
     CustomerConfigRequest:
       type: object
       required:
@@ -936,6 +1032,7 @@ components:
           type: string
         customerCode:
           type: string
+          description: Optional downstream account/customer number from the distributor system.
         name:
           type: string
         routeNumber:
@@ -946,8 +1043,27 @@ components:
           type: string
         storeNumber:
           type: string
+        address1:
+          type: string
+        city:
+          type: string
+        state:
+          type: string
+        postalCode:
+          type: string
+        phone:
+          type: string
+        website:
+          type: string
+        customerEmail:
+          type: string
+        customFields:
+          type: object
+          additionalProperties: true
         senderDomains:
           type: array
+          deprecated: true
+          description: Deprecated on customer profile. Use customer identification hard rules when sender domain is truly deterministic.
           items:
             type: string
         aliases:
@@ -958,6 +1074,43 @@ components:
           type: array
           items:
             type: string
+    CustomerIdentificationRuleRequest:
+      type: object
+      required:
+        - tenantId
+        - customerId
+        - aliasType
+        - value
+      properties:
+        tenantId:
+          type: string
+        id:
+          type: string
+        customerId:
+          type: string
+          description: Downstream end customer/account id this hard rule identifies.
+        aliasType:
+          type: string
+          enum:
+            - accountNumber
+            - customerCode
+            - storeNumber
+            - routeNumber
+            - senderEmail
+            - senderDomain
+            - knownSubjectPattern
+            - bodyPattern
+            - fileNamePattern
+        value:
+          type: string
+        normalizedValue:
+          type: string
+        confidence:
+          type: number
+          format: float
+          default: 1
+        source:
+          type: string
     ProcessorProfileRequest:
       type: object
       required:

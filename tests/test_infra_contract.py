@@ -77,6 +77,8 @@ class InfraContractTests(unittest.TestCase):
             "/console/dashboard",
             "/console/artifacts/download",
             "/console/mailboxes",
+            "/console/tenants",
+            "/console/customer-identification-rules",
             "/console/routing-rules",
             "/console/customers",
             "/console/processor-profiles",

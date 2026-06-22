@@ -40,10 +40,100 @@ def split_multi(value: Any) -> list[str]:
     return parts
 
 
+FIELD_ALIASES: dict[str, tuple[str, ...]] = {
+    "customer_code": ("customerCode", "cust_code", "custCode", "account_number", "accountNumber"),
+    "name": ("customer_name", "customerName", "customer", "Customer Name"),
+    "store_number": (
+        "customer_store_number",
+        "customerStoreNumber",
+        "storeNumber",
+        "store",
+        "location_number",
+        "locationNumber",
+    ),
+    "route_number": ("routeNumber", "route", "route_no", "routeNo"),
+    "csr_email": ("csrEmail", "csr", "csr_email_address", "csrEmailAddress"),
+    "csr_folder": ("csrFolder", "csr_name", "csrName", "csr_folder_name", "csrFolderName"),
+    "address1": ("location_address1", "locationAddress1", "address", "address_1", "addressLine1"),
+    "city": ("location_city", "locationCity"),
+    "state": ("location_state", "locationState"),
+    "postal_code": ("location_zip", "locationZip", "zip", "zip_code", "zipCode", "postalCode"),
+    "phone": ("phone_number", "phoneNumber"),
+    "website": ("customer_website", "customerWebsite", "website"),
+    "customer_email": ("customerEmail", "customer_email_address", "email", "emailAddress"),
+    "sender_domains": ("senderDomains", "domains", "email_domains", "emailDomains"),
+    "known_subject_patterns": ("knownSubjectPatterns", "subject_patterns", "subjectPatterns"),
+    "alias_customer_codes": ("aliasCustomerCodes", "customer_code_aliases", "customerCodeAliases"),
+    "alias_store_numbers": ("aliasStoreNumbers", "store_number_aliases", "storeNumberAliases"),
+    "alias_route_numbers": ("aliasRouteNumbers", "route_number_aliases", "routeNumberAliases"),
+    "alias_sender_domains": ("aliasSenderDomains", "sender_domain_aliases", "senderDomainAliases"),
+    "alias_sender_emails": ("aliasSenderEmails", "sender_email_aliases", "senderEmailAliases"),
+    "alias_subject_patterns": ("aliasSubjectPatterns", "subject_pattern_aliases", "subjectPatternAliases"),
+    "internal_item_number": ("internalItemNumber", "part_code", "partCode", "item", "Item", "sku", "SKU"),
+    "description": ("part_desc", "partDesc", "item_description", "itemDescription", "Description"),
+    "upc": ("upc_code", "upcCode", "UPC", "barcode", "barCode"),
+    "customer_item_numbers": ("customerItemNumbers", "customer_item_number", "customerItemNumber"),
+    "alt_parts_combined": ("altPartsCombined", "alternate_item_ids", "alternateItemIds", "alt_parts"),
+    "aliases": ("itemAliases", "item_aliases", "alias"),
+}
+
+
 def _pick_field(row: dict[str, Any], field_map: dict[str, str], name: str, default: str = "") -> str:
     source = field_map.get(name, name)
-    value = row.get(source, default)
+    value = _first_row_value(row, source, default=None)
+    if value is None and name not in field_map:
+        for alias in FIELD_ALIASES.get(name, ()):
+            value = _first_row_value(row, alias, default=None)
+            if value is not None:
+                break
+    if value is None:
+        value = default
     return "" if value is None else str(value).strip()
+
+
+def _first_row_value(row: dict[str, Any], key: str, default: Any = None) -> Any:
+    if key in row:
+        return row[key]
+    normalized_key = _normalize_field_name(key)
+    for row_key, value in row.items():
+        if _normalize_field_name(row_key) == normalized_key:
+            return value
+    return default
+
+
+def _normalize_field_name(value: str) -> str:
+    return "".join(character for character in str(value or "").lower() if character.isalnum())
+
+
+def split_item_identifiers(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        values: list[str] = []
+        for item in value:
+            values.extend(split_item_identifiers(item))
+        return values
+    text = str(value).replace("\r", "\n").replace("|", "\n")
+    parts: list[str] = []
+    for chunk in text.split("\n"):
+        for semicolon_part in chunk.split(";"):
+            for comma_part in semicolon_part.split(","):
+                item = comma_part.strip()
+                if item:
+                    parts.append(item)
+    return parts
+
+
+def _unique_preserve_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        key = value.strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(key)
+    return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -381,11 +471,12 @@ def validate_item_rows(rows: list[dict[str, Any]], field_map: dict[str, str]) ->
         internal_item_number = _pick_field(row, field_map, "internal_item_number")
         upc = _pick_field(row, field_map, "upc")
         customer_item_numbers = _pick_field(row, field_map, "customer_item_numbers")
-        if not internal_item_number and not upc and not customer_item_numbers:
+        alt_parts_combined = _pick_field(row, field_map, "alt_parts_combined")
+        if not internal_item_number and not upc and not customer_item_numbers and not alt_parts_combined:
             errors.append(
                 {
                     "code": "missingItemIdentifier",
-                    "message": "Item row requires internal_item_number, upc, or customer_item_numbers.",
+                    "message": "Item row requires internal_item_number, upc, customer_item_numbers, or alt_parts_combined.",
                     "rowIndex": index,
                     "row": row,
                 }
@@ -418,12 +509,20 @@ def normalize_customer_row(
         csr_email=_pick_field(row, field_map, "csr_email"),
         csr_folder=_pick_field(row, field_map, "csr_folder"),
         store_number=_pick_field(row, field_map, "store_number"),
+        address1=_pick_field(row, field_map, "address1"),
+        city=_pick_field(row, field_map, "city"),
+        state=_pick_field(row, field_map, "state"),
+        postal_code=_pick_field(row, field_map, "postal_code"),
+        phone=_pick_field(row, field_map, "phone"),
+        website=_pick_field(row, field_map, "website"),
+        customer_email=_pick_field(row, field_map, "customer_email"),
         sender_domains=[domain for domain in sender_domains if domain],
         aliases=aliases,
         known_subject_patterns=known_subject_patterns,
         source_name=str(metadata.get("sourceName", "")),
         source_rows_blob_url=str(metadata.get("sourceRowsBlobUrl", "")),
         last_imported_at=metadata.get("importedAt"),
+        custom_fields=dict(metadata.get("customFields", {}) or {}),
         raw_source={"row": row, **metadata} if metadata else row,
     )
 
@@ -445,6 +544,13 @@ def normalize_customer_alias_rows(
             [
                 *customer.sender_domains,
                 *[normalize_domain(value) for value in split_multi(_pick_field(row, field_map, "alias_sender_domains"))],
+            ],
+        ),
+        (
+            "senderEmail",
+            [
+                customer.customer_email,
+                *split_multi(_pick_field(row, field_map, "alias_sender_emails")),
             ],
         ),
         (
@@ -481,6 +587,8 @@ def _normalize_alias_value(alias_type: str, value: Any) -> str:
         return ""
     if alias_type == "senderDomain":
         return normalize_domain(text)
+    if alias_type == "senderEmail":
+        return text.lower()
     if alias_type == "knownSubjectPattern":
         return text
     return normalize_identifier(text)
@@ -495,14 +603,17 @@ def normalize_item_row(
 ) -> ItemRecord:
     internal_item_number = _pick_field(row, field_map, "internal_item_number")
     upc = _pick_field(row, field_map, "upc")
-    fallback_item_number = normalize_item_token(split_multi(_pick_field(row, field_map, "customer_item_numbers"))[0]) if _pick_field(row, field_map, "customer_item_numbers") else ""
+    alt_parts_combined = split_item_identifiers(_pick_field(row, field_map, "alt_parts_combined"))
+    customer_item_number_values = split_multi(_pick_field(row, field_map, "customer_item_numbers"))
+    fallback_values = [*customer_item_number_values, *alt_parts_combined]
+    fallback_item_number = normalize_item_token(fallback_values[0]) if fallback_values else ""
     canonical_item_number = internal_item_number or upc or fallback_item_number
-    customer_item_numbers = [
+    customer_item_numbers = _unique_preserve_order([
         normalize_item_token(value)
-        for value in split_multi(_pick_field(row, field_map, "customer_item_numbers"))
+        for value in [*customer_item_number_values, *alt_parts_combined]
         if value.strip()
-    ]
-    aliases = split_multi(_pick_field(row, field_map, "aliases"))
+    ])
+    aliases = _unique_preserve_order(split_multi(_pick_field(row, field_map, "aliases")))
     metadata = dict(import_metadata or {})
 
     return ItemRecord(
@@ -512,6 +623,7 @@ def normalize_item_row(
         internal_item_number=canonical_item_number,
         description=_pick_field(row, field_map, "description"),
         upc=upc,
+        alt_parts_combined=_unique_preserve_order(alt_parts_combined),
         customer_item_numbers=customer_item_numbers,
         aliases=aliases,
         source_name=str(metadata.get("sourceName", "")),
@@ -537,6 +649,13 @@ def apply_customer_embedding(customer: CustomerProfile, embedding_client: TextEm
             customer.name,
             customer.store_number,
             customer.route_number,
+            customer.address1,
+            customer.city,
+            customer.state,
+            customer.postal_code,
+            customer.phone,
+            customer.website,
+            customer.customer_email,
             " ".join(customer.sender_domains),
             " ".join(customer.aliases),
         ]
@@ -553,6 +672,7 @@ def apply_item_embedding(item: ItemRecord, embedding_client: TextEmbeddingClient
             item.internal_item_number,
             item.description,
             item.upc,
+            " ".join(item.alt_parts_combined),
             " ".join(item.customer_item_numbers),
             " ".join(item.aliases),
         ]

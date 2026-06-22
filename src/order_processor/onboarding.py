@@ -82,10 +82,10 @@ def validate_onboarding_package_data(
         "monitoredMailboxes",
         bool(mailboxes)
         and all(_same_tenant(item, tenant_id) for item in mailboxes)
-        and all(_customer_id(item) == customer_id for item in mailboxes)
+        and all(_customer_id(item) == "_global" for item in mailboxes)
         and all(_valid_email(_text(item, "mailboxAddress", "mailbox_address")) for item in mailboxes)
         and all(_mailbox_connection_is_known(item, auth_ids) for item in mailboxes),
-        "Each monitored mailbox must be customer-scoped, syntactically valid, and tied to a known Microsoft connection.",
+        "Each monitored mailbox must be tenant-scoped with customerId _global, syntactically valid, and tied to a known Microsoft connection.",
         {"mailboxIds": sorted(mailbox_ids)},
     )
 
@@ -125,11 +125,15 @@ def validate_onboarding_package_data(
         "routingRules",
         bool(routing_rules)
         and all(_same_tenant(rule, tenant_id) for rule in routing_rules)
-        and all(_customer_id(rule) == customer_id for rule in routing_rules)
-        and all(_text(rule, "processorProfileId", "processor_profile_id") in processor_ids for rule in routing_rules)
+        and all(_customer_id(rule) in {customer_id, "_global"} for rule in routing_rules)
+        and all(
+            not _text(rule, "processorProfileId", "processor_profile_id")
+            or _text(rule, "processorProfileId", "processor_profile_id") in processor_ids
+            for rule in routing_rules
+        )
         and all(_routing_rule_has_matcher(rule) for rule in routing_rules)
         and all(_routing_rule_mailbox_known(rule, mailbox_ids, mailbox_addresses) for rule in routing_rules),
-        "Routing rules must point to known processor profiles and customer mailboxes and include concrete matching signals.",
+        "Routing rules must point to known processor profiles when applicable, reference known tenant mailboxes, and include concrete matching signals.",
         {"routingRuleIds": [_text(rule, "id") for rule in routing_rules]},
     )
 

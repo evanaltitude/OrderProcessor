@@ -69,7 +69,7 @@ The import completed, but PAC reported that connection references need concrete 
 2. Create or select an APIM subscription for Power Automate adapters.
 3. Create backend `mailboxAccounts` and `microsoftAuthConnections` records for the customer mailbox.
 4. Bind `alt_sharedoffice365_orderprocessor` to a concrete Office 365 Outlook connection with access to the monitored mailbox.
-5. Configure a customer-specific copy/instance of the mailbox trigger with `OrderProcessorMailboxAddress`, `OrderProcessorMailboxAccountId`, optional `OrderProcessorCustomerId`, `OrderProcessorTenantId`, `OrderProcessorApiBaseUrl`, and secure APIM subscription material.
+5. Configure a tenant mailbox copy/instance of the mailbox trigger with `OrderProcessorMailboxAddress`, `OrderProcessorMailboxAccountId`, `OrderProcessorTenantId`, `OrderProcessorApiBaseUrl`, and secure APIM subscription material.
 6. Run a test email or manual trigger against APIM and confirm an `emailMessages` record is created.
 7. Turn on only the configured customer-specific instance.
 

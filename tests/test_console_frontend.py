@@ -19,6 +19,8 @@ class ConsoleFrontendTests(unittest.TestCase):
         self.assertIn('<script src="./app.js" type="module"></script>', index)
         self.assertIn("/console/dashboard", app)
         self.assertIn("/console/mailboxes", app)
+        self.assertIn("/console/tenants", app)
+        self.assertIn("/console/customer-identification-rules", app)
         self.assertIn("/console/customers/", app)
         self.assertIn("/console/exceptions/", app)
         self.assertIn("/console/orders/", app)
@@ -29,6 +31,13 @@ class ConsoleFrontendTests(unittest.TestCase):
         self.assertNotIn('post(`/customers/${value(form, "customerId")}/users`', app)
         self.assertIn("x-ms-client-principal", server)
         self.assertIn("ORDER_PROCESSOR_API_BASE_URL", server)
+        self.assertIn("End Customer Profile", index)
+        self.assertIn("Tenant Mailbox", index)
+        customer_form = index[index.index('<form id="customerForm"') : index.index('<form id="mailboxForm"')]
+        mailbox_form = index[index.index('<form id="mailboxForm"') : index.index('<form id="customerRuleForm"')]
+        self.assertNotIn('name="senderDomains"', customer_form)
+        self.assertNotIn('name="customerId"', mailbox_form)
+        self.assertNotIn('name="customerId" placeholder="Customer id"', index)
 
     def test_console_javascript_parses(self) -> None:
         if shutil.which("node") is None:
