@@ -167,6 +167,18 @@ if func is not None:
     def console_mailboxes_upsert(req: func.HttpRequest) -> func.HttpResponse:
         return _handle(req, lambda: order_api.console_upsert_mailbox(_payload_with_headers(req)))
 
+    @app.route(route="console/mailboxes/{id}/test-connection", methods=["POST"])
+    def console_mailboxes_test_connection(req: func.HttpRequest) -> func.HttpResponse:
+        return _handle(req, lambda: order_api.console_test_mailbox_connection(req.route_params["id"], _payload_with_headers(req)))
+
+    @app.route(route="console/microsoft-auth/start", methods=["POST"])
+    def console_microsoft_auth_start(req: func.HttpRequest) -> func.HttpResponse:
+        return _handle(req, lambda: order_api.console_start_microsoft_auth(_payload_with_headers(req)))
+
+    @app.route(route="console/microsoft-auth/callback", methods=["POST"])
+    def console_microsoft_auth_callback(req: func.HttpRequest) -> func.HttpResponse:
+        return _handle(req, lambda: order_api.console_complete_microsoft_auth(_payload_with_headers(req)))
+
     @app.route(route="console/tenants", methods=["POST"])
     def console_tenants_upsert(req: func.HttpRequest) -> func.HttpResponse:
         return _handle(req, lambda: order_api.console_upsert_tenant_config(_payload_with_headers(req)))

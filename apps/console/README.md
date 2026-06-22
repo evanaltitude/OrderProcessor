@@ -24,6 +24,8 @@ Deployment notes:
 - App Service Easy Auth should require Microsoft Entra ID login.
 - The Node host proxies `/api/*` to APIM and forwards Easy Auth identity headers.
 - The dashboard shows Phase 13 observability metrics and order timeline actions.
+- The Customers view is organized by distributor/customer tenant. Open a customer to manage mailbox/auth/configuration and to view read-only imported downstream customer and item lists.
+- Microsoft Graph mailbox authorization is started from the opened customer detail page and returns through `/auth/microsoft/callback`.
 - `connect@focuseautomate.com` is the bootstrap platform admin.
 - `ORDER_PROCESSOR_API_BASE_URL` must point to the APIM API base URL.
 - `ORDER_PROCESSOR_APIM_SUBSCRIPTION_KEY` must contain the console APIM subscription key.

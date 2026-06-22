@@ -41,6 +41,18 @@ param consoleEntraClientId string = ''
 @description('Initial Microsoft account allowed as the full console administrator.')
 param consoleBootstrapAdminEmail string = 'connect@focuseautomate.com'
 
+@description('Microsoft Entra application client id used for delegated Microsoft Graph mailbox authorization.')
+param microsoftGraphAuthClientId string = ''
+
+@description('Key Vault secret name containing the delegated Microsoft Graph OAuth client secret.')
+param microsoftGraphAuthClientSecretName string = 'microsoft-graph-oauth-client-secret'
+
+@description('Microsoft Entra tenant id or authority segment used for delegated Microsoft Graph OAuth.')
+param microsoftGraphAuthTenantId string = subscription().tenantId
+
+@description('Space-delimited delegated Microsoft Graph OAuth scopes requested for shared mailbox automation.')
+param microsoftGraphAuthScopes string = 'openid profile offline_access User.Read Mail.ReadWrite.Shared Mail.Send.Shared'
+
 @description('Deploy the Azure OpenAI account. Set false when the subscription is not yet enabled for OpenAI S0 quota/features.')
 param deployAzureOpenAI bool = true
 
@@ -72,6 +84,10 @@ module foundation 'main.bicep' = {
     consoleLocation: consoleLocation
     consoleEntraClientId: consoleEntraClientId
     consoleBootstrapAdminEmail: consoleBootstrapAdminEmail
+    microsoftGraphAuthClientId: microsoftGraphAuthClientId
+    microsoftGraphAuthClientSecretName: microsoftGraphAuthClientSecretName
+    microsoftGraphAuthTenantId: microsoftGraphAuthTenantId
+    microsoftGraphAuthScopes: microsoftGraphAuthScopes
     deployAzureOpenAI: deployAzureOpenAI
     functionPackageUrl: functionPackageUrl
     functionSharedKey: functionSharedKey

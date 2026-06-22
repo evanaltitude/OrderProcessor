@@ -36,7 +36,9 @@ All four flows are disabled templates. Customer-specific instances should be tur
 ## Console Configuration
 
 - Initial full console admin: `connect@focuseautomate.com`.
-- Tenant mailbox address, Microsoft connection status, and ingest behavior are managed in the backend console. Downstream customer identification is configured separately through customer profiles, aliases, hard rules, AI/vector fallback, and exception resolution.
+- Tenant mailbox address, delegated Microsoft Graph connection status, and ingest behavior are managed from the distributor/customer detail page in the backend console. An authorized Microsoft user signs in to grant shared-mailbox Graph access; token secrets stay in Key Vault.
+- Downstream customer and item lists are read-only in the console and come from the scheduled import automations.
+- Downstream customer identification is configured separately through tenant-scoped profiles, aliases, hard rules, AI/vector fallback, and exception resolution.
 - Customer user management accepts a Microsoft email address, assigns customer/role access, and relies on Microsoft login for authentication.
 
 ## Imported Connection Reference

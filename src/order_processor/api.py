@@ -39,6 +39,7 @@ from .item_validation import (
 )
 from .models import (
     AuditEvent,
+    AuthConnectionStatus,
     CustomerIdentificationResult,
     CustomerAlias,
     ConsoleUser,
@@ -64,6 +65,21 @@ from .models import (
     Tenant,
     to_dict,
     utc_now,
+)
+from .microsoft_graph import (
+    InMemorySecretStore,
+    MicrosoftGraphError,
+    build_authorization_url,
+    config_from_environment,
+    exchange_authorization_code,
+    refresh_access_token,
+    secret_name,
+    secret_store_from_environment,
+    sign_state,
+    state_secret_from_environment,
+    test_shared_mailbox_access,
+    token_expiry,
+    verify_state,
 )
 from .observability import (
     correlation_context,
@@ -457,6 +473,7 @@ class OrderProcessorApi:
         source_archive: SourceRowArchive | None = None,
         import_embedding_client: TextEmbeddingClient | None = None,
         output_artifact_store: OutputArtifactStore | None = None,
+        secret_store: Any | None = None,
     ) -> None:
         self.repository = repository or InMemoryRepository()
         self.customer_vector_search = (
@@ -471,6 +488,7 @@ class OrderProcessorApi:
             else import_embedding_client_from_environment()
         )
         self.output_artifact_store = output_artifact_store or output_artifact_store_from_environment()
+        self.secret_store = secret_store if secret_store is not None else secret_store_from_environment()
 
     def ingest_email(self, payload: dict[str, Any]) -> dict[str, Any]:
         email = _email_from_payload(payload)
@@ -1347,6 +1365,20 @@ class OrderProcessorApi:
 
         user = self._console_user_by_email(tenant_id, email)
         if user is None:
+            user = self._platform_admin_user_by_email(email)
+            if user is not None:
+                user = {
+                    **dict(user),
+                    "id": stable_id(tenant_id, email),
+                    "tenantId": tenant_id,
+                    "updatedAt": utc_now(),
+                }
+                roles = list(_as_list(_pick(user, "roles", default=[])))
+                if "platformAdmin" not in roles:
+                    roles.append("platformAdmin")
+                user["roles"] = roles
+                user = self.repository.upsert("consoleUsers", user)
+        if user is None:
             return {
                 "authorized": False,
                 "reason": "consoleUserNotAssigned",
@@ -1486,10 +1518,20 @@ class OrderProcessorApi:
                 "p95ProcessingLatencyMs": observability_metrics["processingLatency"]["p95Ms"],
             }
         )
+        tenant = self.repository.get("tenants", tenant_id) or {
+            "id": tenant_id,
+            "tenantId": tenant_id,
+            "name": tenant_id,
+            "environment": "",
+            "status": "active",
+            "settings": {},
+        }
+        distributor_customers = self._distributor_customers_for_console(session, tenant)
 
         return {
             "session": session,
-            "tenant": self.repository.get("tenants", tenant_id),
+            "tenant": tenant,
+            "distributorCustomers": distributor_customers,
             "summary": summary,
             "observabilityMetrics": observability_metrics,
             "recentAuditEvents": self._sort_recent(audit_events)[:50],
@@ -1502,6 +1544,7 @@ class OrderProcessorApi:
             "customerIdentificationRules": self._sort_recent(customer_identification_rules),
             "routingRules": sorted(routing_rules, key=lambda rule: int(_pick(rule, "priority", default=100) or 100)),
             "customers": sorted(customers, key=lambda customer: str(_pick(customer, "name", default="")).lower()),
+            "items": sorted(items, key=lambda item: str(_pick(item, "internalItemNumber", "id", default="")).lower()),
             "customerDataStatus": self._customer_data_status(customers),
             "itemDataStatus": self._item_data_status(items),
             "processorProfiles": self._filter_customer_documents(
@@ -1627,6 +1670,189 @@ class OrderProcessorApi:
         if error:
             return error
         result = self.upsert_mailbox(payload)
+        result["session"] = self.console_session(payload)
+        return result
+
+    def console_start_microsoft_auth(self, payload: dict[str, Any]) -> dict[str, Any]:
+        error = self._console_permission_error(payload, "manageMailboxes")
+        if error:
+            return error
+
+        tenant_id = _pick(payload, "targetTenantId", "target_tenant_id", "tenantId", "tenant_id", default="default")
+        mailbox_id = _pick(payload, "mailboxAccountId", "mailbox_account_id", default="")
+        mailbox = self.repository.get("mailboxAccounts", mailbox_id) if mailbox_id else None
+        mailbox_address = _pick(payload, "mailboxAddress", "mailbox_address", default=None)
+        if mailbox is not None:
+            mailbox_address = _pick(mailbox, "mailboxAddress", "mailbox_address", default=mailbox_address)
+        connection_id = _pick(
+            payload,
+            "connectionId",
+            "connection_id",
+            default=_pick(mailbox or {}, "connectionId", "connection_id", default=""),
+        )
+        if not connection_id:
+            connection_id = stable_id(tenant_id, "microsoft365", mailbox_address or "shared-mailbox")
+        redirect_uri = _pick(payload, "redirectUri", "redirect_uri", default="")
+        config = config_from_environment(redirect_uri)
+        if not config.client_id:
+            return {
+                "error": "microsoftAuthNotConfigured",
+                "message": "ORDER_PROCESSOR_MICROSOFT_AUTH_CLIENT_ID is required before mailbox authorization can start.",
+            }
+        if not config.redirect_uri:
+            return {
+                "error": "microsoftAuthRedirectNotConfigured",
+                "message": "Configure ORDER_PROCESSOR_MICROSOFT_AUTH_REDIRECT_URI or pass redirectUri from the console.",
+            }
+
+        session = self.console_session(payload)
+        actor_email = _pick(session.get("principal", {}), "email", default="").lower()
+        state = sign_state(
+            {
+                "tenantId": tenant_id,
+                "connectionId": connection_id,
+                "mailboxAccountId": mailbox_id,
+                "mailboxAddress": mailbox_address or "",
+                "requestedBy": actor_email,
+                "redirectUri": config.redirect_uri,
+                "returnTo": _pick(payload, "returnTo", "return_to", default="/"),
+            },
+            state_secret_from_environment(),
+        )
+        authorization_url = build_authorization_url(config, state)
+        connection = MicrosoftAuthConnection(
+            id=connection_id,
+            tenant_id=tenant_id,
+            customer_id=GLOBAL_CUSTOMER_ID,
+            provider="microsoft365",
+            display_name=_pick(payload, "displayName", "display_name", default=mailbox_address or "Microsoft 365"),
+            owner_email=actor_email,
+            connection_type="delegated",
+            status=AuthConnectionStatus.NEEDS_CONSENT,
+            scopes=config.scopes,
+            power_automate_connection_reference=_pick(payload, "powerAutomateConnectionReference", default=""),
+            tenant_authority=config.tenant_authority,
+            metadata={
+                "mailboxAccountId": mailbox_id,
+                "mailboxAddress": mailbox_address or "",
+                "redirectUri": config.redirect_uri,
+                "authMethod": "delegatedAuthorizationCode",
+            },
+        )
+        stored = self.repository.upsert("microsoftAuthConnections", to_dict(connection))
+        return {
+            "authorizationUrl": authorization_url,
+            "microsoftAuthConnection": stored,
+            "stateExpiresInSeconds": 900,
+            "session": session,
+        }
+
+    def console_complete_microsoft_auth(self, payload: dict[str, Any]) -> dict[str, Any]:
+        state = _pick(payload, "state", default="")
+        code = _pick(payload, "code", default="")
+        provider_error = _pick(payload, "error", default="")
+        try:
+            state_payload = verify_state(
+                state,
+                state_secret_from_environment(_pick(payload, "clientId", "client_id", default="")),
+            )
+        except MicrosoftGraphError as exc:
+            return {"error": "invalidMicrosoftAuthState", "message": str(exc)}
+
+        tenant_id = _pick(state_payload, "tenantId", default=_pick(payload, "tenantId", "tenant_id", default="default"))
+        connection_id = _pick(state_payload, "connectionId", default="")
+        mailbox_id = _pick(state_payload, "mailboxAccountId", default="")
+        mailbox_address = _pick(state_payload, "mailboxAddress", default="")
+        redirect_uri = _pick(state_payload, "redirectUri", default=_pick(payload, "redirectUri", "redirect_uri", default=""))
+        config = config_from_environment(redirect_uri)
+        existing = self.repository.get("microsoftAuthConnections", connection_id) or {}
+
+        if provider_error:
+            failed = dict(existing)
+            failed.update({"status": AuthConnectionStatus.FAILED.value, "updatedAt": utc_now()})
+            failed.setdefault("id", connection_id)
+            failed.setdefault("tenantId", tenant_id)
+            failed.setdefault("customerId", GLOBAL_CUSTOMER_ID)
+            failed.setdefault("provider", "microsoft365")
+            failed["metadata"] = {
+                **dict(_pick(failed, "metadata", default={}) or {}),
+                "error": provider_error,
+                "errorDescription": _pick(payload, "errorDescription", "error_description", default=""),
+            }
+            stored = self.repository.upsert("microsoftAuthConnections", failed)
+            return {"error": provider_error, "microsoftAuthConnection": stored}
+        if not code:
+            return {"error": "missingCode", "message": "Microsoft callback did not include an authorization code."}
+
+        try:
+            client_secret = self._microsoft_client_secret(config)
+            token = exchange_authorization_code(config, code, client_secret)
+        except MicrosoftGraphError as exc:
+            return {
+                "error": "microsoftTokenExchangeFailed",
+                "message": str(exc),
+                "statusCode": exc.status_code,
+                "details": exc.details,
+            }
+
+        secrets = self._store_microsoft_tokens(connection_id, token)
+        access_token = str(token.get("access_token", ""))
+        mailbox_test = (
+            test_shared_mailbox_access(access_token, mailbox_address)
+            if access_token and mailbox_address
+            else {"status": "notTested", "canAccess": False, "message": "Mailbox address was not supplied."}
+        )
+        connection = MicrosoftAuthConnection(
+            id=connection_id,
+            tenant_id=tenant_id,
+            customer_id=GLOBAL_CUSTOMER_ID,
+            provider="microsoft365",
+            display_name=_pick(existing, "displayName", "display_name", default=mailbox_address or "Microsoft 365"),
+            owner_email=_pick(state_payload, "requestedBy", default=_pick(existing, "ownerEmail", "owner_email", default="")),
+            connection_type="delegated",
+            status=AuthConnectionStatus.ACTIVE if mailbox_test.get("canAccess") else AuthConnectionStatus.CONFIGURED,
+            scopes=list(_as_list(token.get("scope", " ".join(config.scopes)).split())),
+            key_vault_secret_names=secrets,
+            tenant_authority=config.tenant_authority,
+            consented_by=_pick(state_payload, "requestedBy", default=""),
+            consented_at=utc_now(),
+            expires_at=token_expiry(token.get("expires_in")),
+            metadata={
+                **dict(_pick(existing, "metadata", default={}) or {}),
+                "mailboxAccountId": mailbox_id,
+                "mailboxAddress": mailbox_address,
+                "authMethod": "delegatedAuthorizationCode",
+                "mailboxAccess": mailbox_test,
+            },
+        )
+        stored_connection = self.repository.upsert("microsoftAuthConnections", to_dict(connection))
+        stored_mailbox = None
+        if mailbox_id:
+            stored_mailbox = self._update_mailbox_after_graph_auth(
+                mailbox_id,
+                connection_id,
+                mailbox_test,
+                authorized_by=_pick(state_payload, "requestedBy", default=""),
+            )
+        self._audit(
+            tenant_id,
+            "microsoftAuthConnection.authorized",
+            connection_id,
+            connection_id,
+            {"connectionId": connection_id, "mailboxAccountId": mailbox_id, "mailboxAccess": mailbox_test},
+        )
+        return {
+            "microsoftAuthConnection": stored_connection,
+            "mailboxAccount": stored_mailbox,
+            "mailboxAccess": mailbox_test,
+            "returnTo": _pick(state_payload, "returnTo", default="/"),
+        }
+
+    def console_test_mailbox_connection(self, mailbox_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        error = self._console_permission_error(payload, "manageMailboxes")
+        if error:
+            return error
+        result = self.test_mailbox_connection(mailbox_id, payload)
         result["session"] = self.console_session(payload)
         return result
 
@@ -1838,14 +2064,20 @@ class OrderProcessorApi:
         return email_actions
 
     def upsert_tenant_config(self, payload: dict[str, Any]) -> dict[str, Any]:
-        tenant_id = _pick(payload, "tenantId", "tenant_id", "id", default="default")
+        tenant_id = _pick(payload, "targetTenantId", "target_tenant_id", "id", "tenantId", "tenant_id", default="default")
+        existing = self.repository.get("tenants", tenant_id) or {}
+        settings = {
+            **dict(_pick(existing, "settings", default={}) or {}),
+            **dict(_pick(payload, "settings", default={}) or {}),
+        }
         tenant = Tenant(
             id=tenant_id,
             tenant_id=tenant_id,
-            name=_pick(payload, "name", default=tenant_id),
-            environment=_pick(payload, "environment", default=""),
-            status=_pick(payload, "status", default="active"),
-            settings=dict(_pick(payload, "settings", default={}) or {}),
+            name=_pick(payload, "name", default=_pick(existing, "name", default=tenant_id)),
+            environment=_pick(payload, "environment", default=_pick(existing, "environment", default="")),
+            status=_pick(payload, "status", default=_pick(existing, "status", default="active")),
+            settings=settings,
+            created_at=_pick(existing, "createdAt", "created_at", default=utc_now()),
         )
         stored = self.repository.upsert("tenants", to_dict(tenant))
         self._audit(tenant_id, "tenantConfig.upserted", stored["id"], stored["id"], {"name": stored["name"]})
@@ -2005,17 +2237,65 @@ class OrderProcessorApi:
         if mailbox is None:
             return {"error": "notFound", "message": f"Mailbox account {mailbox_id} was not found."}
 
-        status = {
-            "mailboxAccountId": mailbox_id,
-            "provider": mailbox.get("provider", "microsoft365"),
-            "connectionId": mailbox.get("connectionId", ""),
-            "canAccess": False,
-            "status": "notTested",
-            "message": "Live Microsoft Graph mailbox validation is implemented when Graph connection wiring is added.",
-            "checkedAt": utc_now(),
-            "request": payload,
+        connection_id = str(_pick(mailbox, "connectionId", "connection_id", default=""))
+        connection = self.repository.get("microsoftAuthConnections", connection_id) if connection_id else None
+        if not connection:
+            status = {
+                "mailboxAccountId": mailbox_id,
+                "provider": mailbox.get("provider", "microsoft365"),
+                "connectionId": connection_id,
+                "canAccess": False,
+                "status": "needsConsent",
+                "message": "Authorize Microsoft access with a delegated user before testing this mailbox.",
+                "checkedAt": utc_now(),
+            }
+            return {"mailboxAccount": mailbox, "connectionStatus": status}
+
+        secret_names = dict(_pick(connection, "keyVaultSecretNames", "key_vault_secret_names", default={}) or {})
+        refresh_secret_name = str(secret_names.get("refreshToken", ""))
+        refresh_token_value = self.secret_store.get_secret(refresh_secret_name)
+        if not refresh_token_value:
+            status = {
+                "mailboxAccountId": mailbox_id,
+                "provider": mailbox.get("provider", "microsoft365"),
+                "connectionId": connection_id,
+                "canAccess": False,
+                "status": "needsConsent",
+                "message": "No Microsoft Graph refresh token is stored for this connection.",
+                "checkedAt": utc_now(),
+            }
+            return {"mailboxAccount": mailbox, "microsoftAuthConnection": connection, "connectionStatus": status}
+
+        config = config_from_environment(_pick(connection, "metadata", default={}).get("redirectUri", ""))
+        try:
+            token = refresh_access_token(config, refresh_token_value, self._microsoft_client_secret(config))
+            self._store_microsoft_tokens(connection_id, token)
+            status = test_shared_mailbox_access(
+                str(token.get("access_token", "")),
+                str(_pick(mailbox, "mailboxAddress", "mailbox_address", default="")),
+            )
+        except MicrosoftGraphError as exc:
+            status = {
+                "mailboxAccountId": mailbox_id,
+                "provider": mailbox.get("provider", "microsoft365"),
+                "connectionId": connection_id,
+                "canAccess": False,
+                "status": "failed",
+                "statusCode": exc.status_code,
+                "message": str(exc),
+                "details": exc.details,
+                "checkedAt": utc_now(),
+            }
+
+        stored_mailbox = self._update_mailbox_after_graph_auth(mailbox_id, connection_id, status)
+        connection["status"] = AuthConnectionStatus.ACTIVE.value if status.get("canAccess") else AuthConnectionStatus.FAILED.value
+        connection["lastTestedAt"] = status.get("checkedAt", utc_now())
+        connection["metadata"] = {
+            **dict(_pick(connection, "metadata", default={}) or {}),
+            "mailboxAccess": status,
         }
-        return {"mailboxAccount": mailbox, "connectionStatus": status}
+        stored_connection = self.repository.upsert("microsoftAuthConnections", connection)
+        return {"mailboxAccount": stored_mailbox, "microsoftAuthConnection": stored_connection, "connectionStatus": status}
 
     def upsert_console_user(self, payload: dict[str, Any]) -> dict[str, Any]:
         tenant_id = _pick(payload, "tenantId", "tenant_id", default="default")
@@ -2321,6 +2601,74 @@ class OrderProcessorApi:
         principal = self._console_principal_from_payload(payload)
         return principal["email"] or "system"
 
+    def _microsoft_client_secret(self, config: Any) -> str:
+        if config.client_secret:
+            return config.client_secret
+        if config.client_secret_name:
+            return self.secret_store.get_secret(config.client_secret_name)
+        return ""
+
+    def _store_microsoft_tokens(self, connection_id: str, token: dict[str, Any]) -> dict[str, str]:
+        names: dict[str, str] = {}
+        refresh_token_value = str(token.get("refresh_token", ""))
+        access_token_value = str(token.get("access_token", ""))
+        if refresh_token_value:
+            name = secret_name("msgraph", connection_id, "refresh-token")
+            self.secret_store.set_secret(name, refresh_token_value)
+            names["refreshToken"] = name
+        if access_token_value:
+            name = secret_name("msgraph", connection_id, "access-token")
+            self.secret_store.set_secret(name, access_token_value)
+            names["accessToken"] = name
+        return names
+
+    def _update_mailbox_after_graph_auth(
+        self,
+        mailbox_id: str,
+        connection_id: str,
+        status: dict[str, Any],
+        authorized_by: str = "",
+    ) -> dict[str, Any] | None:
+        mailbox = self.repository.get("mailboxAccounts", mailbox_id)
+        if mailbox is None:
+            return None
+        settings = dict(_pick(mailbox, "settings", default={}) or {})
+        if authorized_by:
+            settings["authorizedBy"] = authorized_by
+        settings["graphAccess"] = status
+        mailbox.update(
+            {
+                "connectionId": connection_id,
+                "permissionStatus": "active" if status.get("canAccess") else "failed",
+                "ingestStatus": "configured" if status.get("canAccess") else "needsAttention",
+                "lastTestedAt": status.get("checkedAt", utc_now()),
+                "settings": settings,
+            }
+        )
+        return self.repository.upsert("mailboxAccounts", mailbox)
+
+    def _distributor_customers_for_console(self, session: dict[str, Any], current_tenant: dict[str, Any]) -> list[dict[str, Any]]:
+        can_view_all = session.get("isPlatformAdmin") or "viewAllCustomers" in set(
+            _as_list(session.get("permissions", []))
+        )
+        tenants = self.repository.list("tenants") if can_view_all else [current_tenant]
+        by_id: dict[str, dict[str, Any]] = {}
+        for tenant in tenants + [current_tenant]:
+            tenant_id = str(_pick(tenant, "tenantId", "tenant_id", "id", default=""))
+            if not tenant_id:
+                continue
+            by_id[tenant_id] = {
+                "id": str(_pick(tenant, "id", default=tenant_id)),
+                "tenantId": tenant_id,
+                "name": _pick(tenant, "name", default=tenant_id),
+                "environment": _pick(tenant, "environment", default=""),
+                "status": _pick(tenant, "status", default="active"),
+                "settings": dict(_pick(tenant, "settings", default={}) or {}),
+                "updatedAt": _pick(tenant, "updatedAt", "updated_at", default=""),
+                "createdAt": _pick(tenant, "createdAt", "created_at", default=""),
+            }
+        return sorted(by_id.values(), key=lambda item: str(item.get("name") or item.get("tenantId")).lower())
+
     @staticmethod
     def _decode_easy_auth_principal(header_value: str) -> dict[str, Any]:
         if not header_value:
@@ -2360,6 +2708,17 @@ class OrderProcessorApi:
         normalized = _normalized_email(email)
         for user in self.repository.query_by_tenant("consoleUsers", tenant_id):
             if _normalized_email(_pick(user, "email", default="")) == normalized:
+                return user
+        return None
+
+    def _platform_admin_user_by_email(self, email: str) -> dict[str, Any] | None:
+        normalized = _normalized_email(email)
+        for user in self.repository.list("consoleUsers"):
+            if _normalized_email(_pick(user, "email", default="")) != normalized:
+                continue
+            if not bool(_pick(user, "enabled", default=True)):
+                continue
+            if "platformAdmin" in set(_as_list(_pick(user, "roles", default=[]))):
                 return user
         return None
 
@@ -2787,6 +3146,18 @@ def console_output_artifact(payload: dict[str, Any]) -> dict[str, Any]:
 
 def console_upsert_mailbox(payload: dict[str, Any]) -> dict[str, Any]:
     return default_api.console_upsert_mailbox(payload)
+
+
+def console_test_mailbox_connection(mailbox_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return default_api.console_test_mailbox_connection(mailbox_id, payload)
+
+
+def console_start_microsoft_auth(payload: dict[str, Any]) -> dict[str, Any]:
+    return default_api.console_start_microsoft_auth(payload)
+
+
+def console_complete_microsoft_auth(payload: dict[str, Any]) -> dict[str, Any]:
+    return default_api.console_complete_microsoft_auth(payload)
 
 
 def console_upsert_tenant_config(payload: dict[str, Any]) -> dict[str, Any]:

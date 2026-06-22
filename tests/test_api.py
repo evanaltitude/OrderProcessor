@@ -543,7 +543,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(mailbox["mailboxAddress"], "pilotorders@example.com")
         self.assertEqual(mailbox["customerId"], "_global")
         self.assertEqual(tenant["name"], "Altitude Distribution")
-        self.assertEqual(connection_test["connectionStatus"]["status"], "notTested")
+        self.assertEqual(connection_test["connectionStatus"]["status"], "needsConsent")
         self.assertIn("platformAdmin", console_user["roles"])
         self.assertEqual(assignment["customerId"], "pilot-customer")
         self.assertEqual(assignment["roles"], ["orderViewer"])

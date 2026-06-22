@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from order_processor.api import OrderProcessorApi
+from order_processor.microsoft_graph import InMemorySecretStore, sign_state
 from order_processor.models import EmailMessage, MatchStatus, OrderLine, OrderRun, ProcessingStatus, to_dict, utc_now
 from order_processor.output_generation import InMemoryOutputArtifactStore
 from order_processor.storage import InMemoryRepository
@@ -31,7 +34,7 @@ class ConsoleBackendTests(unittest.TestCase):
     def _api(self) -> tuple[OrderProcessorApi, InMemoryRepository, InMemoryOutputArtifactStore]:
         repo = InMemoryRepository()
         store = InMemoryOutputArtifactStore()
-        api = OrderProcessorApi(repo, output_artifact_store=store)
+        api = OrderProcessorApi(repo, output_artifact_store=store, secret_store=InMemorySecretStore())
         return api, repo, store
 
     def test_console_session_bootstraps_only_connect_admin(self) -> None:
@@ -149,6 +152,147 @@ class ConsoleBackendTests(unittest.TestCase):
         self.assertEqual(dashboard["summary"]["openExceptionCount"], 1)
         self.assertEqual(dashboard["summary"]["unresolvedLineCount"], 1)
         self.assertEqual({customer["id"] for customer in tenant_dashboard["customers"]}, {"pilot-customer", "other-customer"})
+        self.assertIn("distributorCustomers", tenant_dashboard)
+        self.assertEqual(tenant_dashboard["tenant"]["tenantId"], "altitude")
+
+    def test_console_dashboard_lists_distributor_customers_and_read_only_import_lists(self) -> None:
+        api, repo, _ = self._api()
+        admin_headers = {"x-ms-client-principal": _easy_auth_header("connect@focuseautomate.com")}
+        api.upsert_tenant_config({"tenantId": "altitude", "name": "Altitude Distribution", "environment": "prod"})
+        api.upsert_tenant_config({"tenantId": "beta", "name": "Beta Distribution", "environment": "test"})
+        api.upsert_customer_config(
+            {"tenantId": "altitude", "id": "store-100", "customerCode": "100", "name": "Store 100"}
+        )
+        repo.upsert(
+            "items",
+            {
+                "id": "item-100",
+                "tenantId": "altitude",
+                "customerId": "store-100",
+                "internalItemNumber": "10001",
+                "description": "Test Item",
+                "lastImportedAt": "2026-06-20T10:00:00Z",
+            },
+        )
+
+        dashboard = api.console_dashboard({"tenantId": "altitude", "headers": admin_headers})
+
+        self.assertEqual(
+            [tenant["tenantId"] for tenant in dashboard["distributorCustomers"]],
+            ["altitude", "beta"],
+        )
+        self.assertEqual([customer["id"] for customer in dashboard["customers"]], ["store-100"])
+        self.assertEqual([item["id"] for item in dashboard["items"]], ["item-100"])
+
+    def test_console_microsoft_auth_start_requires_configuration(self) -> None:
+        api, _, _ = self._api()
+        admin_headers = {"x-ms-client-principal": _easy_auth_header("connect@focuseautomate.com")}
+        mailbox = api.upsert_mailbox(
+            {"tenantId": "altitude", "mailboxAddress": "orders@example.com", "connectionId": "m365-orders"}
+        )["mailboxAccount"]
+
+        with patch.dict(os.environ, {"ORDER_PROCESSOR_MICROSOFT_AUTH_CLIENT_ID": ""}, clear=False):
+            result = api.console_start_microsoft_auth(
+                {
+                    "tenantId": "altitude",
+                    "headers": admin_headers,
+                    "mailboxAccountId": mailbox["id"],
+                    "redirectUri": "https://console.example.com/auth/microsoft/callback",
+                }
+            )
+
+        self.assertEqual(result["error"], "microsoftAuthNotConfigured")
+
+    def test_console_microsoft_auth_start_creates_authorization_url_and_connection(self) -> None:
+        api, repo, _ = self._api()
+        admin_headers = {"x-ms-client-principal": _easy_auth_header("connect@focuseautomate.com")}
+        mailbox = api.upsert_mailbox(
+            {"tenantId": "altitude", "mailboxAddress": "orders@example.com", "connectionId": "m365-orders"}
+        )["mailboxAccount"]
+
+        with patch.dict(
+            os.environ,
+            {
+                "ORDER_PROCESSOR_MICROSOFT_AUTH_CLIENT_ID": "client-id",
+                "ORDER_PROCESSOR_MICROSOFT_AUTH_TENANT_ID": "organizations",
+                "ORDER_PROCESSOR_MICROSOFT_AUTH_STATE_SECRET": "state-secret",
+            },
+            clear=False,
+        ):
+            result = api.console_start_microsoft_auth(
+                {
+                    "tenantId": "altitude",
+                    "headers": admin_headers,
+                    "mailboxAccountId": mailbox["id"],
+                    "mailboxAddress": "orders@example.com",
+                    "connectionId": "m365-orders",
+                    "redirectUri": "https://console.example.com/auth/microsoft/callback",
+                }
+            )
+
+        self.assertIn("https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize", result["authorizationUrl"])
+        self.assertIn("Mail.ReadWrite.Shared", result["authorizationUrl"])
+        stored = repo.get("microsoftAuthConnections", "m365-orders")
+        self.assertEqual(stored["status"], "needsConsent")
+        self.assertEqual(stored["metadata"]["mailboxAddress"], "orders@example.com")
+
+    def test_console_microsoft_auth_callback_stores_tokens_and_updates_mailbox(self) -> None:
+        api, repo, _ = self._api()
+        mailbox = api.upsert_mailbox(
+            {"tenantId": "altitude", "mailboxAddress": "orders@example.com", "connectionId": "m365-orders"}
+        )["mailboxAccount"]
+        repo.upsert(
+            "microsoftAuthConnections",
+            {
+                "id": "m365-orders",
+                "tenantId": "altitude",
+                "customerId": "_global",
+                "provider": "microsoft365",
+                "displayName": "Orders",
+                "status": "needsConsent",
+                "metadata": {},
+            },
+        )
+        state = sign_state(
+            {
+                "tenantId": "altitude",
+                "connectionId": "m365-orders",
+                "mailboxAccountId": mailbox["id"],
+                "mailboxAddress": "orders@example.com",
+                "requestedBy": "connect@focuseautomate.com",
+                "redirectUri": "https://console.example.com/auth/microsoft/callback",
+            },
+            "state-secret",
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "ORDER_PROCESSOR_MICROSOFT_AUTH_CLIENT_ID": "client-id",
+                "ORDER_PROCESSOR_MICROSOFT_AUTH_CLIENT_SECRET": "client-secret",
+                "ORDER_PROCESSOR_MICROSOFT_AUTH_TENANT_ID": "organizations",
+                "ORDER_PROCESSOR_MICROSOFT_AUTH_STATE_SECRET": "state-secret",
+            },
+            clear=False,
+        ), patch(
+            "order_processor.api.exchange_authorization_code",
+            return_value={
+                "access_token": "access-token",
+                "refresh_token": "refresh-token",
+                "expires_in": 3600,
+                "scope": "openid profile offline_access User.Read Mail.ReadWrite.Shared Mail.Send.Shared",
+            },
+        ), patch(
+            "order_processor.api.test_shared_mailbox_access",
+            return_value={"canAccess": True, "status": "active", "checkedAt": "2026-06-22T12:00:00Z"},
+        ):
+            result = api.console_complete_microsoft_auth({"state": state, "code": "auth-code"})
+
+        self.assertEqual(result["microsoftAuthConnection"]["status"], "active")
+        self.assertEqual(result["mailboxAccount"]["permissionStatus"], "active")
+        self.assertEqual(repo.get("mailboxAccounts", mailbox["id"])["settings"]["authorizedBy"], "connect@focuseautomate.com")
+        self.assertEqual(api.secret_store.get_secret("msgraph-m365-orders-refresh-token"), "refresh-token")
+        self.assertEqual(api.secret_store.get_secret("msgraph-m365-orders-access-token"), "access-token")
 
     def test_console_upserts_tenant_mailbox_and_customer_identification_rule(self) -> None:
         api, repo, _ = self._api()

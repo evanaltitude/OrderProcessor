@@ -38,6 +38,18 @@ param consoleEntraClientId string = ''
 @description('Initial Microsoft account allowed as the full console administrator.')
 param consoleBootstrapAdminEmail string = 'connect@focuseautomate.com'
 
+@description('Microsoft Entra application client id used for delegated Microsoft Graph mailbox authorization.')
+param microsoftGraphAuthClientId string = ''
+
+@description('Key Vault secret name containing the delegated Microsoft Graph OAuth client secret.')
+param microsoftGraphAuthClientSecretName string = 'microsoft-graph-oauth-client-secret'
+
+@description('Microsoft Entra tenant id or authority segment used for delegated Microsoft Graph OAuth.')
+param microsoftGraphAuthTenantId string = subscription().tenantId
+
+@description('Space-delimited delegated Microsoft Graph OAuth scopes requested for shared mailbox automation.')
+param microsoftGraphAuthScopes string = 'openid profile offline_access User.Read Mail.ReadWrite.Shared Mail.Send.Shared'
+
 @description('Deploy the Azure OpenAI account. Set false when the subscription is not yet enabled for OpenAI S0 quota/features.')
 param deployAzureOpenAI bool = true
 
@@ -69,11 +81,13 @@ var openAiEndpoint = deployAzureOpenAI ? 'https://${openAiName}.openai.azure.com
 var documentIntelligenceEndpoint = 'https://${documentIntelligenceName}.cognitiveservices.azure.com/'
 var aiServicesEndpoint = 'https://${aiServicesName}.cognitiveservices.azure.com/'
 var consoleOpenIdIssuer = '${environment().authentication.loginEndpoint}${subscription().tenantId}/v2.0'
+var microsoftGraphAuthRedirectUri = 'https://${consoleWebAppName}.azurewebsites.net/auth/microsoft/callback'
 
 var storageBlobDataContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
 var storageQueueDataContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')
 var storageTableDataContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3')
 var keyVaultSecretsUserRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')
+var keyVaultSecretsOfficerRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7')
 var cognitiveServicesUserRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'a97b65f3-24c7-4388-baec-2e87135dc908')
 var cognitiveServicesOpenAiUserRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')
 
@@ -419,6 +433,26 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
         {
           name: 'ORDER_PROCESSOR_FUNCTION_SHARED_KEY'
           value: functionSharedKey
+        }
+        {
+          name: 'ORDER_PROCESSOR_MICROSOFT_AUTH_CLIENT_ID'
+          value: microsoftGraphAuthClientId
+        }
+        {
+          name: 'ORDER_PROCESSOR_MICROSOFT_AUTH_CLIENT_SECRET_NAME'
+          value: microsoftGraphAuthClientSecretName
+        }
+        {
+          name: 'ORDER_PROCESSOR_MICROSOFT_AUTH_TENANT_ID'
+          value: microsoftGraphAuthTenantId
+        }
+        {
+          name: 'ORDER_PROCESSOR_MICROSOFT_AUTH_SCOPES'
+          value: microsoftGraphAuthScopes
+        }
+        {
+          name: 'ORDER_PROCESSOR_MICROSOFT_AUTH_REDIRECT_URI'
+          value: microsoftGraphAuthRedirectUri
         }
         {
           name: 'ORDER_PROCESSOR_DEBUG_ERRORS'
@@ -882,6 +916,16 @@ resource functionKeyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@20
   scope: keyVault
   properties: {
     roleDefinitionId: keyVaultSecretsUserRoleId
+    principalId: functionApp.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource functionKeyVaultSecretsOfficer 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(keyVault.id, functionApp.name, 'key-vault-secrets-officer')
+  scope: keyVault
+  properties: {
+    roleDefinitionId: keyVaultSecretsOfficerRoleId
     principalId: functionApp.identity.principalId
     principalType: 'ServicePrincipal'
   }

@@ -19,8 +19,9 @@ class ConsoleFrontendTests(unittest.TestCase):
         self.assertIn('<script src="./app.js" type="module"></script>', index)
         self.assertIn("/console/dashboard", app)
         self.assertIn("/console/mailboxes", app)
+        self.assertIn("/console/microsoft-auth/start", app)
+        self.assertIn("/test-connection", app)
         self.assertIn("/console/tenants", app)
-        self.assertIn("/console/customer-identification-rules", app)
         self.assertIn("/console/customers/", app)
         self.assertIn("/console/exceptions/", app)
         self.assertIn("/console/orders/", app)
@@ -31,13 +32,23 @@ class ConsoleFrontendTests(unittest.TestCase):
         self.assertNotIn('post(`/customers/${value(form, "customerId")}/users`', app)
         self.assertIn("x-ms-client-principal", server)
         self.assertIn("ORDER_PROCESSOR_API_BASE_URL", server)
-        self.assertIn("End Customer Profile", index)
-        self.assertIn("Tenant Mailbox", index)
-        customer_form = index[index.index('<form id="customerForm"') : index.index('<form id="mailboxForm"')]
-        mailbox_form = index[index.index('<form id="mailboxForm"') : index.index('<form id="customerRuleForm"')]
-        self.assertNotIn('name="senderDomains"', customer_form)
-        self.assertNotIn('name="customerId"', mailbox_form)
+        self.assertIn("/auth/microsoft/callback", server)
+        self.assertIn("Distributor Customers", index)
+        self.assertIn("Shared Mailbox", index)
+        self.assertIn("Microsoft Graph Access", index)
+        self.assertIn("Downstream Customer List", index)
+        self.assertIn("Item List", index)
+        self.assertIn("Customer Automation Settings", index)
+        self.assertNotIn('data-view="routing"', index)
+        detail_page = index[index.index('id="distributorDetailPage"') : index.index('id="distributorEditPage"')]
+        edit_page = index[index.index('id="distributorEditPage"') :]
+        self.assertIn("authorizeMicrosoftButton", detail_page)
+        self.assertNotIn("authorizeMicrosoftButton", edit_page)
+        self.assertNotIn('id="customerForm"', index)
+        self.assertNotIn('id="customerRuleForm"', index)
+        mailbox_form = index[index.index('<form id="mailboxForm"') : index.index('<section class="editor">')]
         self.assertNotIn('name="customerId" placeholder="Customer id"', index)
+        self.assertNotIn('name="customerId"', mailbox_form)
 
     def test_console_javascript_parses(self) -> None:
         if shutil.which("node") is None:

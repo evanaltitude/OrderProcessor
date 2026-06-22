@@ -120,6 +120,6 @@ Validated during completion:
 ## Known Follow-Ups
 
 - Live Entra app registration and Easy Auth deployment have not been run from this workspace.
-- Live Microsoft Graph mailbox validation remains a later wiring task; `/mailboxes/{id}/test-connection` still returns `notTested` locally.
+- Later work wired delegated Microsoft Graph mailbox authorization; before consent, `/mailboxes/{id}/test-connection` now returns `needsConsent`.
 - Console UI is intentionally first-pass and operational. It should be expanded during pilot work with richer tables, audit timeline views, and better resolution forms once real pilot data is available.
 - Phase 13 should add deeper Application Insights correlation, dashboard telemetry, and audit timeline views.

@@ -304,13 +304,13 @@ Current CSV clarification: the only active CSV processor reference flow is `orde
       - The dashboard composes scoped views from `orderRuns`, `exceptionTasks`, `mailboxAccounts`, `routingRules`, `customers`, `items`, `processorProfiles`, `outputProfiles`, `microsoftAuthConnections`, and `orderRuns.outputArtifacts`.
       - Human resolution now applies customer match corrections to related email/order records, applies manual item matches to `orderRuns.lines[]`, supports parser/output triage notes, and can trigger manual reprocess requests.
       - Function routes now expose console-prefixed guarded endpoints for session, dashboard, artifact access, mailbox/customer/routing/profile/user edits, customer-user assignment, exception resolution, and order reprocessing.
-      - The static console app was added under `apps/console` with monitor, exceptions, customers, routing, outputs, and users views.
+      - The static console app was added under `apps/console` with monitor, exceptions, customer-profile, outputs, and users views.
       - `apps/console/server.js` provides a dependency-free Node Web App host that serves static files and proxies `/api/*` to APIM while forwarding Easy Auth identity headers.
       - `infra/main.bicep` now provisions a Linux console Web App plan/app, optional App Service Easy Auth when `consoleEntraClientId` is supplied, a console APIM subscription, console app settings, and console Web App outputs.
       - `infra/subscription.bicep` now passes console SKU, Easy Auth client id, and bootstrap admin parameters and returns the console URL.
       - `docs/API_CONTRACTS.md`, `docs/COSMOS_MODEL.md`, `infra/openapi/order-processor-api.yaml`, `apps/functions/README.md`, `apps/console/README.md`, and `README.md` were updated for the Phase 12 console contract.
       - Tests were added or expanded in `tests/test_console_backend.py`, `tests/test_console_frontend.py`, and `tests/test_infra_contract.py` for bootstrap admin access, denied unassigned access, Easy Auth principal precedence, customer-scoped dashboard filtering, guarded mutations, artifact access, exception resolution, reprocess controls, frontend route safety, and console IaC/API contract coverage.
-      - Live Entra app registration, deployed Easy Auth validation, and live Graph mailbox connection testing were not run in this phase. `/mailboxes/{id}/test-connection` remains a local `notTested` scaffold until Microsoft Graph wiring is implemented.
+      - Live Entra app registration, deployed Easy Auth validation, and live Graph mailbox connection testing were not run in this phase. Later work replaced the local `notTested` scaffold with delegated Microsoft Graph authorization and a `needsConsent` pre-authorization status.
 
 13. **Observability and Audit**
     - Use Application Insights correlation IDs across mailbox trigger, Azure APIs, Durable orchestrations, Cosmos records, and Power Automate calls.

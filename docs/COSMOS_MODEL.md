@@ -337,6 +337,8 @@ Routing decisions are stored on the email under `routing`, including `outcome`, 
 - `settings`
 - `lastTestedAt`
 
+The console treats the `tenants` record as the top-level distributor/customer profile. Mailbox configuration, delegated Microsoft auth, routing settings, order conditions, webstore email conditions, extraction rules, subject settings, routing rules, processor profiles, output profiles, imported downstream `customers`, and imported `items` are always shown underneath that profile and queried by its `tenantId`.
+
 `microsoftAuthConnections` stores non-secret connection metadata:
 
 - `provider`
@@ -350,7 +352,7 @@ Routing decisions are stored on the email under `routing`, including `outcome`, 
 - `tenantAuthority`
 - consent/test metadata
 
-Secrets, refresh tokens, client secrets, and certificates stay in Key Vault and are referenced by name only.
+Secrets, refresh tokens, access tokens, client secrets, and certificates stay in Key Vault and are referenced by name only. Delegated Graph mailbox connections use Microsoft authorization-code login with shared-mailbox delegated scopes; the authorized user must have mailbox access in Microsoft 365.
 
 ## Console Authorization Data
 

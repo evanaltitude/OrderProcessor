@@ -137,6 +137,10 @@ textarea {
   display: block;
 }
 
+.hidden {
+  display: none !important;
+}
+
 .band {
   margin-bottom: 16px;
   padding: 14px;
@@ -203,6 +207,14 @@ th {
   text-transform: uppercase;
 }
 
+.click-row {
+  cursor: pointer;
+}
+
+.click-row:hover {
+  background: #edf7fb;
+}
+
 .editor {
   display: grid;
   gap: 8px;
@@ -256,6 +268,15 @@ th {
 .pill.bad {
   background: #f5dddd;
   color: var(--bad);
+}
+
+.summary-list {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
 }
 
 .details {

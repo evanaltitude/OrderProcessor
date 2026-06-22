@@ -231,6 +231,59 @@ paths:
             application/json:
               schema:
                 type: object
+  /console/mailboxes/{id}/test-connection:
+    post:
+      operationId: consoleMailboxesTestConnection
+      summary: Admin console route for testing delegated Microsoft Graph access to a monitored mailbox.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Mailbox connection test result.
+          content:
+            application/json:
+              schema:
+                type: object
+  /console/microsoft-auth/start:
+    post:
+      operationId: consoleMicrosoftAuthStart
+      summary: Start delegated Microsoft OAuth authorization for a tenant-scoped shared mailbox connection.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MicrosoftAuthStartRequest'
+      responses:
+        '200':
+          description: Microsoft authorization redirect details.
+          content:
+            application/json:
+              schema:
+                type: object
+  /console/microsoft-auth/callback:
+    post:
+      operationId: consoleMicrosoftAuthCallback
+      summary: Complete delegated Microsoft OAuth authorization and store Graph tokens for mailbox automation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MicrosoftAuthCallbackRequest'
+      responses:
+        '200':
+          description: Microsoft authorization completion result.
+          content:
+            application/json:
+              schema:
+                type: object
   /console/tenants:
     post:
       operationId: consoleTenantsUpsert
@@ -876,6 +929,9 @@ components:
       properties:
         tenantId:
           type: string
+        targetTenantId:
+          type: string
+          description: Tenant/customer distributor id to create or update when different from the signed-in console tenant context.
         id:
           type: string
         name:
@@ -916,6 +972,44 @@ components:
           type: string
         blobUrl:
           type: string
+    MicrosoftAuthStartRequest:
+      type: object
+      required:
+        - tenantId
+        - mailboxAccountId
+        - redirectUri
+      properties:
+        tenantId:
+          type: string
+        mailboxAccountId:
+          type: string
+        mailboxAddress:
+          type: string
+        connectionId:
+          type: string
+        displayName:
+          type: string
+        redirectUri:
+          type: string
+          format: uri
+        returnTo:
+          type: string
+    MicrosoftAuthCallbackRequest:
+      type: object
+      required:
+        - state
+      properties:
+        code:
+          type: string
+        state:
+          type: string
+        error:
+          type: string
+        errorDescription:
+          type: string
+        redirectUri:
+          type: string
+          format: uri
     RoutingRuleRequest:
       type: object
       required:

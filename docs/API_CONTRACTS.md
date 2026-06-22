@@ -464,15 +464,15 @@ Legacy callers may still send `customerId`; the backend stores mailbox records i
 
 ## `POST /mailboxes/{id}/test-connection`
 
-Checks whether the configured Microsoft connection can access the mailbox and returns connection/permission status.
-
-Current local scaffold returns a `notTested` status until live Microsoft Graph connection wiring is added.
+Checks whether the configured delegated Microsoft Graph connection can access the shared mailbox and returns connection/permission status. The backend refreshes the stored Graph token, probes the shared inbox through Graph, updates `mailboxAccounts.permissionStatus`, and updates the matching `microsoftAuthConnections` status. If no delegated refresh token is stored yet, the route returns `needsConsent`.
 
 ## Console Auth and Dashboard
 
 The console is hosted as an Azure Web App and should be protected by App Service Easy Auth with Microsoft Entra ID. The Web App proxies browser calls from `/api/*` to APIM, forwarding Easy Auth headers such as `x-ms-client-principal`.
 
 Only `connect@focuseautomate.com` is bootstrapped as the initial `platformAdmin`. Other Microsoft users must be created in `consoleUsers`. Tenant-level roles such as `tenantAdmin` can manage the distributor tenant without assigning the user to every downstream customer; downstream customer-specific access can still be represented through `customerUserAssignments`.
+
+Mailbox automation uses a separate delegated Microsoft Graph OAuth flow started from the customer detail page. The authorized user must already have access to the shared mailbox in Microsoft 365. The app requests `offline_access`, `User.Read`, `Mail.ReadWrite.Shared`, and `Mail.Send.Shared`; refresh/access tokens are stored in Key Vault and Cosmos stores only secret names plus consent/test metadata. The console callback path is `/auth/microsoft/callback`.
 
 Console user permissions:
 
@@ -489,10 +489,12 @@ Response includes `authorized`, `consoleUser`, `assignments`, `isPlatformAdmin`,
 
 ## `POST /console/dashboard`
 
-Returns the console dashboard for the signed-in user. Platform admins can see all customers or filter by `customerId`. Customer users only see assigned customers.
+Returns the console dashboard for the signed-in user. Platform admins can see all distributor/customer tenants in `distributorCustomers` and can filter downstream lists by `customerId`. Customer users only see assigned downstream customers inside their tenant.
 
 Response includes:
 
+- `tenant`
+- `distributorCustomers`
 - `summary`
 - `activeRuns`
 - `processedOrders`
@@ -500,6 +502,7 @@ Response includes:
 - `mailboxes`
 - `routingRules`
 - `customers`
+- `items`
 - `customerDataStatus`
 - `itemDataStatus`
 - `processorProfiles`
@@ -520,6 +523,9 @@ Authorizes access to an output artifact by `orderRunId` plus `artifactId`, or by
 The console-prefixed mutation routes require the signed-in user to have the relevant console permission. These routes should be used by the Web App instead of raw service helpers.
 
 - `POST /console/mailboxes`: admin tenant mailbox configuration.
+- `POST /console/mailboxes/{id}/test-connection`: admin delegated Graph mailbox access test.
+- `POST /console/microsoft-auth/start`: admin delegated Graph OAuth authorization start for the selected mailbox.
+- `POST /console/microsoft-auth/callback`: console host callback completion route that exchanges the auth code and stores token secrets.
 - `POST /console/tenants`: admin distribution company/tenant configuration.
 - `POST /console/customers`: admin downstream end-customer/account profile edits.
 - `POST /console/customer-identification-rules`: admin deterministic customer-ID hard-rule edits backed by `customerAliases`.

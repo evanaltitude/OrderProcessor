@@ -37,6 +37,10 @@ class InfraContractTests(unittest.TestCase):
         self.assertIn("location: consoleLocation", bicep)
         self.assertIn("param functionPackageUrl string = ''", bicep)
         self.assertIn("WEBSITE_RUN_FROM_PACKAGE_BLOB_MI_RESOURCE_ID", bicep)
+        self.assertIn("param microsoftGraphAuthClientId string = ''", bicep)
+        self.assertIn("ORDER_PROCESSOR_MICROSOFT_AUTH_CLIENT_ID", bicep)
+        self.assertIn("ORDER_PROCESSOR_MICROSOFT_AUTH_REDIRECT_URI", bicep)
+        self.assertIn("keyVaultSecretsOfficerRoleId", bicep)
 
     def test_function_storage_uses_identity_settings(self) -> None:
         bicep = (ROOT / "infra" / "main.bicep").read_text(encoding="utf-8")
@@ -77,6 +81,9 @@ class InfraContractTests(unittest.TestCase):
             "/console/dashboard",
             "/console/artifacts/download",
             "/console/mailboxes",
+            "/console/mailboxes/{id}/test-connection",
+            "/console/microsoft-auth/start",
+            "/console/microsoft-auth/callback",
             "/console/tenants",
             "/console/customer-identification-rules",
             "/console/routing-rules",
