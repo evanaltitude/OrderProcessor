@@ -38,6 +38,9 @@ param consoleLocation string = location
 @description('Microsoft Entra application client id for App Service Easy Auth. Leave blank to deploy the console app without auth settings.')
 param consoleEntraClientId string = ''
 
+@description('App setting name that contains the App Service Easy Auth client credential. Leave blank only when the configured auth app does not use a credential.')
+param consoleEntraClientCredentialSettingName string = 'ORDER_PROCESSOR_CONSOLE_AUTH_CLIENT_SECRET'
+
 @description('Initial Microsoft account allowed as the full console administrator.')
 param consoleBootstrapAdminEmail string = 'connect@focuseautomate.com'
 
@@ -83,6 +86,7 @@ module foundation 'main.bicep' = {
     consoleAppServiceSkuTier: consoleAppServiceSkuTier
     consoleLocation: consoleLocation
     consoleEntraClientId: consoleEntraClientId
+    consoleEntraClientCredentialSettingName: consoleEntraClientCredentialSettingName
     consoleBootstrapAdminEmail: consoleBootstrapAdminEmail
     microsoftGraphAuthClientId: microsoftGraphAuthClientId
     microsoftGraphAuthClientSecretName: microsoftGraphAuthClientSecretName

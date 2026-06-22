@@ -35,6 +35,9 @@ param consoleLocation string = location
 @description('Microsoft Entra application client id for App Service Easy Auth. Leave blank to deploy the console app without auth settings.')
 param consoleEntraClientId string = ''
 
+@description('App setting name that contains the App Service Easy Auth client credential. Leave blank only when the configured auth app does not use a credential.')
+param consoleEntraClientCredentialSettingName string = 'ORDER_PROCESSOR_CONSOLE_AUTH_CLIENT_SECRET'
+
 @description('Initial Microsoft account allowed as the full console administrator.')
 param consoleBootstrapAdminEmail string = 'connect@focuseautomate.com'
 
@@ -82,6 +85,12 @@ var documentIntelligenceEndpoint = 'https://${documentIntelligenceName}.cognitiv
 var aiServicesEndpoint = 'https://${aiServicesName}.cognitiveservices.azure.com/'
 var consoleOpenIdIssuer = '${environment().authentication.loginEndpoint}${subscription().tenantId}/v2.0'
 var microsoftGraphAuthRedirectUri = 'https://${consoleWebAppName}.azurewebsites.net/auth/microsoft/callback'
+var consoleAadRegistration = union({
+  clientId: consoleEntraClientId
+  openIdIssuer: consoleOpenIdIssuer
+}, empty(consoleEntraClientCredentialSettingName) ? {} : {
+  clientSecretSettingName: consoleEntraClientCredentialSettingName
+})
 
 var storageBlobDataContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
 var storageQueueDataContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')
@@ -771,17 +780,13 @@ resource consoleAuthSettings 'Microsoft.Web/sites/config@2023-12-01' = if (!empt
       runtimeVersion: '~1'
     }
     globalValidation: {
-      requireAuthentication: true
-      unauthenticatedClientAction: 'RedirectToLoginPage'
-      redirectToProvider: 'azureactivedirectory'
+      requireAuthentication: false
+      unauthenticatedClientAction: 'AllowAnonymous'
     }
     identityProviders: {
       azureActiveDirectory: {
         enabled: true
-        registration: {
-          clientId: consoleEntraClientId
-          openIdIssuer: consoleOpenIdIssuer
-        }
+        registration: consoleAadRegistration
         validation: {
           allowedAudiences: [
             consoleEntraClientId

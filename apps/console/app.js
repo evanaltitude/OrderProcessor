@@ -23,12 +23,41 @@ async function post(path, body = {}, options = {}) {
     credentials: "include",
     body: JSON.stringify({ tenantId, ...body })
   });
-  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-  return response.json();
+  const contentType = response.headers.get("content-type") || "";
+  const payload = contentType.includes("application/json") ? await response.json() : null;
+  if (redirectToMicrosoftSignIn(payload, response)) {
+    return new Promise(() => {});
+  }
+  if (!response.ok) {
+    const error = new Error(payload?.message || `${response.status} ${response.statusText}`);
+    error.payload = payload;
+    throw error;
+  }
+  return payload || {};
 }
 
 function actionFailed(result) {
   return Boolean(result?.error || result?.session?.authorized === false);
+}
+
+function isMissingMicrosoftPrincipal(payload) {
+  const session = payload?.session || payload;
+  return session?.authorized === false
+    && session?.reason === "missingMicrosoftPrincipal"
+    && session?.requiredAuthProvider === "microsoft";
+}
+
+function consoleLoginUrl() {
+  const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}` || "/";
+  return `/.auth/login/aad?post_login_redirect_uri=${encodeURIComponent(returnTo)}`;
+}
+
+function redirectToMicrosoftSignIn(payload, response) {
+  if (isMissingMicrosoftPrincipal(payload) || (response?.status === 401 && !payload)) {
+    window.location.replace(consoleLoginUrl());
+    return true;
+  }
+  return false;
 }
 
 function showActionResult(result) {
