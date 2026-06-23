@@ -53,6 +53,9 @@ param microsoftGraphAuthTenantId string = subscription().tenantId
 @description('Space-delimited delegated Microsoft Graph OAuth scopes requested for shared mailbox automation.')
 param microsoftGraphAuthScopes string = 'openid profile offline_access User.Read Mail.ReadWrite.Shared Mail.Send.Shared'
 
+@description('CRON schedule for polling connected Microsoft shared mailboxes. Default is every 5 minutes.')
+param mailboxPollCron string = '0 */5 * * * *'
+
 @description('Deploy the Azure OpenAI account. Set false when the subscription is not yet enabled for OpenAI S0 quota/features.')
 param deployAzureOpenAI bool = true
 
@@ -462,6 +465,10 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
         {
           name: 'ORDER_PROCESSOR_MICROSOFT_AUTH_REDIRECT_URI'
           value: microsoftGraphAuthRedirectUri
+        }
+        {
+          name: 'ORDER_PROCESSOR_MAILBOX_POLL_CRON'
+          value: mailboxPollCron
         }
         {
           name: 'ORDER_PROCESSOR_DEBUG_ERRORS'

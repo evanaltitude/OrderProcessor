@@ -136,6 +136,19 @@ if func is not None:
     def mailboxes_test_connection(req: func.HttpRequest) -> func.HttpResponse:
         return _handle(req, lambda: order_api.test_mailbox_connection(req.route_params["id"], _payload_with_headers(req)))
 
+    @app.route(route="mailboxes/poll", methods=["POST"])
+    def mailboxes_poll(req: func.HttpRequest) -> func.HttpResponse:
+        return _handle(req, lambda: order_api.poll_mailboxes(_payload_with_headers(req)))
+
+    @app.timer_trigger(
+        arg_name="timer",
+        schedule="%ORDER_PROCESSOR_MAILBOX_POLL_CRON%",
+        run_on_startup=False,
+        use_monitor=True,
+    )
+    def mailbox_poll_timer(timer: func.TimerRequest) -> None:
+        order_api.poll_mailboxes({"source": "timer", "pastDue": bool(getattr(timer, "past_due", False))})
+
     @app.route(route="orders/{orderRunId}/timeline", methods=["POST"])
     def orders_timeline(req: func.HttpRequest) -> func.HttpResponse:
         return _handle(

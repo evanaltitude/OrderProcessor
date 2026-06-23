@@ -50,6 +50,7 @@ $routes = @(
     @{ Name = "imports_items"; EntryPoint = "imports_items"; Route = "imports/items" },
     @{ Name = "mailboxes_upsert"; EntryPoint = "mailboxes_upsert"; Route = "mailboxes" },
     @{ Name = "mailboxes_test_connection"; EntryPoint = "mailboxes_test_connection"; Route = "mailboxes/{id}/test-connection" },
+    @{ Name = "mailboxes_poll"; EntryPoint = "mailboxes_poll"; Route = "mailboxes/poll" },
     @{ Name = "orders_timeline"; EntryPoint = "orders_timeline"; Route = "orders/{orderRunId}/timeline" },
     @{ Name = "console_session"; EntryPoint = "console_session"; Route = "console/session" },
     @{ Name = "console_dashboard"; EntryPoint = "console_dashboard"; Route = "console/dashboard" },
@@ -97,6 +98,30 @@ foreach ($route in $routes) {
         )
     } | ConvertTo-Json -Depth 10
     Set-Content -LiteralPath (Join-Path $routeDir "function.json") -Value $metadata -Encoding ASCII
+}
+
+$timers = @(
+    @{ Name = "mailbox_poll_timer"; EntryPoint = "mailbox_poll_timer"; Schedule = "%ORDER_PROCESSOR_MAILBOX_POLL_CRON%" }
+)
+
+foreach ($timer in $timers) {
+    $timerDir = Join-Path $stagingRoot $timer.Name
+    New-Item -ItemType Directory -Path $timerDir | Out-Null
+    $metadata = @{
+        scriptFile = "../function_app.py"
+        entryPoint = $timer.EntryPoint
+        bindings = @(
+            @{
+                type = "timerTrigger"
+                direction = "in"
+                name = "timer"
+                schedule = $timer.Schedule
+                runOnStartup = $false
+                useMonitor = $true
+            }
+        )
+    } | ConvertTo-Json -Depth 10
+    Set-Content -LiteralPath (Join-Path $timerDir "function.json") -Value $metadata -Encoding ASCII
 }
 
 Get-ChildItem -Path $stagingRoot -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force

@@ -349,6 +349,112 @@ class ConsoleBackendTests(unittest.TestCase):
         self.assertEqual(api.secret_store.get_secret("msgraph-m365-orders-refresh-token"), "refresh-token")
         self.assertEqual(api.secret_store.get_secret("msgraph-m365-orders-access-token"), "access-token")
 
+    def test_mailbox_poll_ingests_graph_message_and_skips_duplicates(self) -> None:
+        api, repo, _ = self._api()
+        mailbox = api.upsert_mailbox(
+            {
+                "tenantId": "altitude",
+                "mailboxAddress": "orders@example.com",
+                "connectionId": "m365-orders",
+            }
+        )["mailboxAccount"]
+        repo.upsert(
+            "microsoftAuthConnections",
+            {
+                "id": "m365-orders",
+                "tenantId": "altitude",
+                "customerId": "_global",
+                "provider": "microsoft365",
+                "displayName": "Orders",
+                "status": "active",
+                "keyVaultSecretNames": {"refreshToken": "refresh-secret"},
+                "metadata": {},
+            },
+        )
+        api.secret_store.set_secret("refresh-secret", "refresh-token")
+        api.upsert_customer_config(
+            {
+                "tenantId": "altitude",
+                "id": "frontier-102598",
+                "customerCode": "102598",
+                "name": "Frontier",
+            }
+        )
+        api.upsert_processor_profile(
+            {
+                "tenantId": "altitude",
+                "customerId": "_global",
+                "id": "csv-default",
+                "name": "CSV",
+                "processorType": "csv",
+            }
+        )
+        api.upsert_routing_rule(
+            {
+                "tenantId": "altitude",
+                "customerId": "_global",
+                "name": "Webstore orders",
+                "phase": "webstoreOrder",
+                "outcome": "knownOrder",
+                "mailboxAccountIds": [mailbox["id"]],
+                "subjectRegex": ["Order"],
+                "customerCodeSource": "subject",
+                "customerCodeRegex": r"Order\s*#\s*(?P<customerCode>\d+)",
+                "processorProfileId": "csv-default",
+            }
+        )
+        csv_body = base64.b64encode(b"item_number,quantity,description\nSKU-1,2,Test Item\n").decode("ascii")
+
+        def graph_response(_token: str, url: str) -> dict[str, object]:
+            if url.endswith("/attachments"):
+                return {
+                    "value": [
+                        {
+                            "id": "attachment-1",
+                            "name": "order.csv",
+                            "contentType": "text/csv",
+                            "size": 48,
+                            "isInline": False,
+                            "contentBytes": csv_body,
+                        }
+                    ]
+                }
+            return {
+                "value": [
+                    {
+                        "id": "graph-message-1",
+                        "internetMessageId": "<message-1@example.com>",
+                        "subject": "Frontier Distributing. Purchase Receipt for Order #  102598",
+                        "from": {"emailAddress": {"address": "buyer@example.com"}},
+                        "receivedDateTime": "2026-06-23T12:00:00Z",
+                        "body": {"contentType": "text", "content": "Order attached."},
+                        "hasAttachments": True,
+                        "isRead": False,
+                    }
+                ]
+            }
+
+        with patch.dict(os.environ, {"ORDER_PROCESSOR_MICROSOFT_AUTH_CLIENT_SECRET": "client-secret"}, clear=False), patch(
+            "order_processor.api.refresh_access_token",
+            return_value={"access_token": "access-token", "refresh_token": "next-refresh-token"},
+        ), patch("order_processor.api.graph_get", side_effect=graph_response):
+            first = api.poll_mailboxes({"tenantId": "altitude", "limit": 5})
+            second = api.poll_mailboxes({"tenantId": "altitude", "limit": 5})
+
+        emails = repo.query_by_tenant("emailMessages", "altitude")
+        orders = repo.query_by_tenant("orderRuns", "altitude")
+
+        self.assertEqual(first["mailboxPoll"]["ingestedCount"], 1)
+        self.assertEqual(first["mailboxPoll"]["processedCount"], 1)
+        self.assertEqual(second["mailboxPoll"]["ingestedCount"], 0)
+        self.assertEqual(second["mailboxPoll"]["skippedCount"], 1)
+        self.assertEqual(len(emails), 1)
+        self.assertEqual(emails[0]["mailboxAccountId"], mailbox["id"])
+        self.assertEqual(emails[0]["customerId"], "frontier-102598")
+        self.assertEqual(len(orders), 1)
+        self.assertEqual(orders[0]["customerId"], "frontier-102598")
+        self.assertEqual(orders[0]["sourceFileName"], "order.csv")
+
     def test_console_upserts_tenant_mailbox_and_customer_identification_rule(self) -> None:
         api, repo, _ = self._api()
         admin_headers = {"x-ms-client-principal": _easy_auth_header("connect@focuseautomate.com")}

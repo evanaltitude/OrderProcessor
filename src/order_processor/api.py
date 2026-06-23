@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import base64
 import json
+import os
+import re
 from typing import Any
+from urllib import parse
 
 from .customer_identification import (
     DEFAULT_CUSTOMER_CONFIDENCE_THRESHOLD,
@@ -128,6 +131,23 @@ def _as_float(value: Any) -> float | None:
 
 def _api_value(value: Any) -> Any:
     return keys_to_camel(to_dict(value))
+
+
+def _html_to_text(value: str) -> str:
+    if not value:
+        return ""
+    text = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", value)
+    text = re.sub(r"(?s)<[^>]+>", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _graph_email_address(value: Any) -> str:
+    if not isinstance(value, dict):
+        return ""
+    email_address = value.get("emailAddress")
+    if isinstance(email_address, dict):
+        return str(email_address.get("address", "") or "").strip().lower()
+    return str(value.get("address", "") or "").strip().lower()
 
 
 def _email_from_payload(payload: dict[str, Any]) -> EmailMessage:
@@ -632,6 +652,295 @@ class OrderProcessorApi:
             "exceptionTask": exception_task,
             "observability": observability,
         }
+
+    def poll_mailboxes(self, payload: dict[str, Any]) -> dict[str, Any]:
+        tenant_id = str(_pick(payload, "tenantId", "tenant_id", default="")).strip()
+        limit = int(
+            _pick(
+                payload,
+                "limit",
+                default=os.environ.get("ORDER_PROCESSOR_MAILBOX_POLL_LIMIT", "25"),
+            )
+            or 25
+        )
+        limit = max(1, min(limit, 50))
+        if tenant_id:
+            mailboxes = self.repository.query_by_tenant("mailboxAccounts", tenant_id)
+        else:
+            mailboxes = self.repository.list("mailboxAccounts")
+
+        results = [self._poll_mailbox(mailbox, limit=limit) for mailbox in mailboxes]
+        return {
+            "mailboxPoll": {
+                "tenantId": tenant_id or "*",
+                "mailboxCount": len(mailboxes),
+                "processedCount": sum(int(result.get("processedCount", 0)) for result in results),
+                "ingestedCount": sum(int(result.get("ingestedCount", 0)) for result in results),
+                "skippedCount": sum(int(result.get("skippedCount", 0)) for result in results),
+                "failedCount": sum(1 for result in results if result.get("status") == "failed"),
+                "checkedAt": utc_now(),
+            },
+            "results": results,
+        }
+
+    def _poll_mailbox(self, mailbox: dict[str, Any], *, limit: int) -> dict[str, Any]:
+        mailbox_id = str(_pick(mailbox, "id", default=""))
+        tenant_id = str(_pick(mailbox, "tenantId", "tenant_id", default=""))
+        mailbox_address = str(_pick(mailbox, "mailboxAddress", "mailbox_address", default="")).strip().lower()
+        result: dict[str, Any] = {
+            "mailboxAccountId": mailbox_id,
+            "tenantId": tenant_id,
+            "mailboxAddress": mailbox_address,
+            "status": "skipped",
+            "processedCount": 0,
+            "ingestedCount": 0,
+            "skippedCount": 0,
+            "errors": [],
+        }
+        if not _mailbox_enabled(mailbox):
+            result["reason"] = "mailbox disabled"
+            return result
+        if not tenant_id or not mailbox_id or not mailbox_address:
+            result["reason"] = "mailbox missing tenant, id, or address"
+            return result
+
+        connection_id = str(_pick(mailbox, "connectionId", "connection_id", default=""))
+        connection = self.repository.get("microsoftAuthConnections", connection_id) if connection_id else None
+        if not connection:
+            result["reason"] = "missing Microsoft Graph connection"
+            return result
+
+        secret_names = dict(_pick(connection, "keyVaultSecretNames", "key_vault_secret_names", default={}) or {})
+        refresh_token_value = self.secret_store.get_secret(str(secret_names.get("refreshToken", "")))
+        if not refresh_token_value:
+            result["reason"] = "missing Microsoft Graph refresh token"
+            return result
+
+        config = config_from_environment(str(_pick(connection, "metadata", default={}).get("redirectUri", "")))
+        try:
+            token = refresh_access_token(config, refresh_token_value, self._microsoft_client_secret(config))
+            updated_secret_names = self._store_microsoft_tokens(connection_id, token)
+            if updated_secret_names:
+                connection["keyVaultSecretNames"] = {**secret_names, **updated_secret_names}
+                connection["status"] = AuthConnectionStatus.ACTIVE.value
+                connection["lastTestedAt"] = utc_now()
+                self.repository.upsert("microsoftAuthConnections", connection)
+
+            access_token = str(token.get("access_token", ""))
+            messages = self._graph_recent_messages(access_token, mailbox_address, limit)
+            result["status"] = "active"
+            result["messageCount"] = len(messages)
+            for message in messages:
+                poll_item = self._ingest_graph_message(access_token, mailbox, message)
+                result["processedCount"] += int(poll_item.get("processed", False))
+                if poll_item.get("status") == "ingested":
+                    result["ingestedCount"] += 1
+                elif poll_item.get("status") == "skipped":
+                    result["skippedCount"] += 1
+                if poll_item.get("error"):
+                    result["errors"].append(poll_item)
+        except Exception as exc:
+            result["status"] = "failed"
+            result["reason"] = str(exc)
+
+        settings = dict(_pick(mailbox, "settings", default={}) or {})
+        settings["lastPoll"] = {
+            "status": result["status"],
+            "checkedAt": utc_now(),
+            "messageCount": result.get("messageCount", 0),
+            "ingestedCount": result["ingestedCount"],
+            "processedCount": result["processedCount"],
+            "skippedCount": result["skippedCount"],
+            "reason": result.get("reason", ""),
+        }
+        mailbox.update(
+            {
+                "ingestStatus": "active" if result["status"] == "active" else "needsAttention",
+                "settings": settings,
+                "updatedAt": utc_now(),
+            }
+        )
+        self.repository.upsert("mailboxAccounts", mailbox)
+        self._audit(
+            tenant_id,
+            "mailbox.polled",
+            mailbox_id,
+            mailbox_id,
+            {
+                "mailboxAccountId": mailbox_id,
+                "mailboxAddress": mailbox_address,
+                "status": result["status"],
+                "messageCount": result.get("messageCount", 0),
+                "ingestedCount": result["ingestedCount"],
+                "processedCount": result["processedCount"],
+                "skippedCount": result["skippedCount"],
+                "reason": result.get("reason", ""),
+            },
+        )
+        return result
+
+    def _graph_recent_messages(self, access_token: str, mailbox_address: str, limit: int) -> list[dict[str, Any]]:
+        encoded_mailbox = parse.quote(mailbox_address, safe="")
+        select_fields = ",".join(
+            [
+                "id",
+                "internetMessageId",
+                "subject",
+                "from",
+                "sender",
+                "receivedDateTime",
+                "body",
+                "bodyPreview",
+                "categories",
+                "hasAttachments",
+                "isRead",
+            ]
+        )
+        url = (
+            f"https://graph.microsoft.com/v1.0/users/{encoded_mailbox}/mailFolders/inbox/messages"
+            f"?$top={limit}&$orderby=receivedDateTime desc&$select={select_fields}"
+        )
+        response = graph_get(access_token, url)
+        return [message for message in response.get("value", []) if isinstance(message, dict)]
+
+    def _ingest_graph_message(
+        self,
+        access_token: str,
+        mailbox: dict[str, Any],
+        message: dict[str, Any],
+    ) -> dict[str, Any]:
+        tenant_id = str(_pick(mailbox, "tenantId", "tenant_id", default=""))
+        mailbox_id = str(_pick(mailbox, "id", default=""))
+        mailbox_address = str(_pick(mailbox, "mailboxAddress", "mailbox_address", default="")).strip().lower()
+        graph_message_id = str(_pick(message, "id", default=""))
+        email_id = stable_id(tenant_id, mailbox_id, graph_message_id)
+        if self.repository.get("emailMessages", email_id):
+            return {"status": "skipped", "reason": "already ingested", "emailMessageId": email_id}
+
+        attachments, source_payload = self._graph_message_attachments(
+            access_token,
+            mailbox_address,
+            graph_message_id,
+            bool(message.get("hasAttachments")),
+        )
+        body = dict(message.get("body") or {})
+        body_html = str(body.get("content", "") if str(body.get("contentType", "")).lower() == "html" else "")
+        body_text = (
+            str(body.get("content", "") if str(body.get("contentType", "")).lower() == "text" else "")
+            or _html_to_text(body_html)
+            or str(message.get("bodyPreview", "") or "")
+        )
+        sender = _graph_email_address(message.get("from")) or _graph_email_address(message.get("sender"))
+        ingest_payload = {
+            "tenantId": tenant_id,
+            "id": email_id,
+            "mailboxAccountId": mailbox_id,
+            "mailbox": mailbox_address,
+            "messageId": str(_pick(message, "internetMessageId", default="")) or graph_message_id,
+            "subject": str(_pick(message, "subject", default="")),
+            "sender": sender,
+            "receivedAt": str(_pick(message, "receivedDateTime", default=utc_now())),
+            "bodyText": body_text,
+            "bodyHtml": body_html,
+            "categories": list(_as_list(_pick(message, "categories", default=[]))),
+            "attachments": attachments,
+            "source": {
+                "provider": "microsoftGraph",
+                "graphMessageId": graph_message_id,
+                "mailboxAccountId": mailbox_id,
+                "isRead": bool(message.get("isRead")),
+            },
+        }
+        ingest_result = self.ingest_email(ingest_payload)
+        processed = False
+        order_run = ingest_result.get("orderRun")
+        if order_run and self._should_process_polled_order(order_run, source_payload, body_text):
+            process_payload = {
+                "tenantId": tenant_id,
+                "emailMessageId": email_id,
+                "customerId": order_run.get("customerId"),
+                "processorProfileId": order_run.get("processorProfileId"),
+                "mailbox": mailbox_address,
+                "sender": sender,
+                "subject": ingest_payload["subject"],
+                "receivedAt": ingest_payload["receivedAt"],
+                "bodyText": body_text,
+                "sourceMetadata": {
+                    "provider": "microsoftGraph",
+                    "graphMessageId": graph_message_id,
+                    "mailboxAccountId": mailbox_id,
+                },
+                **source_payload,
+            }
+            self.process_order(order_run["id"], process_payload)
+            processed = True
+        return {
+            "status": "ingested",
+            "emailMessageId": email_id,
+            "graphMessageId": graph_message_id,
+            "orderRunId": order_run.get("id") if order_run else "",
+            "processed": processed,
+        }
+
+    def _graph_message_attachments(
+        self,
+        access_token: str,
+        mailbox_address: str,
+        graph_message_id: str,
+        has_attachments: bool,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        if not has_attachments or not graph_message_id:
+            return [], {}
+        encoded_mailbox = parse.quote(mailbox_address, safe="")
+        encoded_message = parse.quote(graph_message_id, safe="")
+        url = f"https://graph.microsoft.com/v1.0/users/{encoded_mailbox}/messages/{encoded_message}/attachments"
+        response = graph_get(access_token, url)
+        attachments: list[dict[str, Any]] = []
+        source_payload: dict[str, Any] = {}
+        max_bytes = int(os.environ.get("ORDER_PROCESSOR_MAILBOX_POLL_MAX_ATTACHMENT_BYTES", "10000000") or 10000000)
+        for item in response.get("value", []):
+            if not isinstance(item, dict):
+                continue
+            metadata = {
+                "graphAttachmentId": str(item.get("id", "")),
+                "graphODataType": str(item.get("@odata.type", "")),
+                "hasContentBytes": bool(item.get("contentBytes")),
+            }
+            attachments.append(
+                {
+                    "name": str(item.get("name", "")),
+                    "contentType": str(item.get("contentType", "")),
+                    "size": int(item.get("size", 0) or 0),
+                    "contentId": str(item.get("id", "")),
+                    "isInline": bool(item.get("isInline", False)),
+                    "sourceUrl": url,
+                    "metadata": metadata,
+                }
+            )
+            content_bytes = str(item.get("contentBytes", "") or "")
+            if source_payload or not content_bytes or bool(item.get("isInline", False)):
+                continue
+            if int(item.get("size", 0) or 0) > max_bytes:
+                continue
+            source_payload = {
+                "sourceContentBase64": content_bytes,
+                "sourceFileName": str(item.get("name", "")),
+                "contentType": str(item.get("contentType", "")),
+            }
+        return attachments, source_payload
+
+    def _should_process_polled_order(
+        self,
+        order_run: dict[str, Any],
+        source_payload: dict[str, Any],
+        body_text: str,
+    ) -> bool:
+        if source_payload:
+            return True
+        profile_id = str(_pick(order_run, "processorProfileId", "processor_profile_id", default=""))
+        profile = self.repository.get("processorProfiles", profile_id) if profile_id else None
+        processor_type = str(_pick(profile or {}, "processorType", "processor_type", default="")).lower()
+        return bool(body_text.strip() and processor_type in {"emailbody", "customeroverride"})
 
     def _resolve_mailbox_account(self, email: EmailMessage) -> dict[str, Any] | None:
         if email.mailbox_account_id:
