@@ -105,7 +105,13 @@ paths:
               $ref: '#/components/schemas/CustomerImportRequest'
       responses:
         '200':
-          description: Customer import result.
+          description: Inline customer import result when responseMode=inline is used for small debugging calls.
+          content:
+            application/json:
+              schema:
+                type: object
+        '202':
+          description: Customer import was accepted and queued for background processing.
           content:
             application/json:
               schema:
@@ -122,7 +128,13 @@ paths:
               $ref: '#/components/schemas/ItemImportRequest'
       responses:
         '200':
-          description: Item import result.
+          description: Inline item import result when responseMode=inline is used for small debugging calls.
+          content:
+            application/json:
+              schema:
+                type: object
+        '202':
+          description: Item import was accepted and queued for background processing.
           content:
             application/json:
               schema:
@@ -799,6 +811,13 @@ components:
           type: string
         sourceName:
           type: string
+        responseMode:
+          type: string
+          enum:
+            - queued
+            - inline
+          default: queued
+          description: HTTP Functions queue imports by default. Use inline only for small debugging requests.
         contentType:
           type: string
         parserModule:
@@ -826,14 +845,23 @@ components:
       type: object
       required:
         - tenantId
-        - customerId
       properties:
         tenantId:
           type: string
         customerId:
           type: string
+        customerCode:
+          type: string
+          description: Optional downstream customer code for customer-specific item override lists. Omit for the distributor master item catalog.
         sourceName:
           type: string
+        responseMode:
+          type: string
+          enum:
+            - queued
+            - inline
+          default: queued
+          description: HTTP Functions queue imports by default. Use inline only for small debugging requests.
         contentType:
           type: string
         parserModule:

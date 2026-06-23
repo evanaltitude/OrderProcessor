@@ -4,6 +4,7 @@ import json
 import hmac
 import os
 import sys
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -115,6 +116,106 @@ def _plain_text_response(value: str, status_code: int = 200) -> Any:
     return func.HttpResponse(value, status_code=status_code, mimetype="text/plain")
 
 
+def _import_response_mode(req: Any, payload: dict[str, Any]) -> str:
+    params = dict(getattr(req, "params", {}) or {})
+    headers = dict(getattr(req, "headers", {}) or {})
+    return str(
+        payload.get("responseMode")
+        or payload.get("response_mode")
+        or params.get("responseMode")
+        or params.get("response_mode")
+        or headers.get("x-order-processor-response-mode")
+        or headers.get("X-Order-Processor-Response-Mode")
+        or "queued"
+    ).strip().lower()
+
+
+def _import_blob_service_client() -> Any:
+    from azure.identity import DefaultAzureCredential
+    from azure.storage.blob import BlobServiceClient
+
+    account_url = (
+        os.environ.get("IMPORTS_STORAGE_ACCOUNT_URL")
+        or os.environ.get("BLOB_SERVICE_ENDPOINT")
+        or os.environ.get("SOURCE_ROWS_STORAGE_ACCOUNT_URL")
+        or ""
+    ).strip()
+    if not account_url:
+        account_name = os.environ.get("STORAGE_ACCOUNT_NAME", "").strip()
+        if account_name:
+            account_url = f"https://{account_name}.blob.core.windows.net"
+    if not account_url:
+        raise ValueError("IMPORTS_STORAGE_ACCOUNT_URL, BLOB_SERVICE_ENDPOINT, or STORAGE_ACCOUNT_NAME is required.")
+    return BlobServiceClient(account_url.rstrip("/"), credential=DefaultAzureCredential())
+
+
+def _store_import_job_payload(import_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+    from azure.storage.blob import ContentSettings
+
+    tenant_id = str(payload.get("tenantId") or payload.get("tenant_id") or "default").strip() or "default"
+    job_id = uuid.uuid4().hex
+    received_at = datetime.now(UTC).isoformat()
+    container_name = os.environ.get("IMPORTS_CONTAINER_NAME", "imports")
+    blob_name = f"import-jobs/{tenant_id}/{import_type}/{job_id}.json"
+    content = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    blob_client = _import_blob_service_client().get_container_client(container_name).get_blob_client(blob_name)
+    blob_client.upload_blob(
+        content,
+        overwrite=True,
+        content_settings=ContentSettings(content_type="application/json"),
+    )
+    return {
+        "jobId": job_id,
+        "tenantId": tenant_id,
+        "importType": import_type,
+        "blobContainerName": container_name,
+        "blobName": blob_name,
+        "blobUrl": blob_client.url,
+        "receivedAt": received_at,
+        "contentLength": len(content.encode("utf-8")),
+    }
+
+
+def _load_import_job_payload(job: dict[str, Any]) -> dict[str, Any]:
+    container_name = str(job.get("blobContainerName") or os.environ.get("IMPORTS_CONTAINER_NAME", "imports"))
+    blob_name = str(job.get("blobName") or "")
+    if not blob_name:
+        raise ValueError("Import job message did not include blobName.")
+    blob_client = _import_blob_service_client().get_container_client(container_name).get_blob_client(blob_name)
+    raw = blob_client.download_blob().readall()
+    payload = json.loads(raw.decode("utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("Import job payload must be a JSON object.")
+    return payload
+
+
+def _handle_import_request(req: Any, import_type: str, queued: Any, callback: Any) -> Any:
+    unauthorized = _shared_key_response(req)
+    if unauthorized is not None:
+        return unauthorized
+
+    payload = _payload_with_headers_and_query(req)
+    response_mode = _import_response_mode(req, payload)
+    if response_mode in {"inline", "sync", "synchronous", "wait"}:
+        return _handle(req, callback)
+
+    job = _store_import_job_payload(import_type, payload)
+    queued.set(json.dumps(job, separators=(",", ":")))
+    return _response(
+        {
+            "accepted": True,
+            "queued": True,
+            "status": "queued",
+            "importType": import_type,
+            "tenantId": job["tenantId"],
+            "jobId": job["jobId"],
+            "receivedAt": job["receivedAt"],
+            "message": "Import payload was accepted and queued for background processing.",
+        },
+        status_code=202,
+    )
+
+
 if func is not None:
     app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
@@ -135,12 +236,32 @@ if func is not None:
         return _handle(req, lambda: order_api.validate_item(_payload_with_headers(req)))
 
     @app.route(route="imports/customers", methods=["POST"])
-    def imports_customers(req: func.HttpRequest) -> func.HttpResponse:
-        return _handle(req, lambda: order_api.import_customers(_payload_with_headers(req)))
+    @app.queue_output(
+        arg_name="queued",
+        queue_name="%ORDER_PROCESSOR_IMPORT_JOB_QUEUE%",
+        connection="AzureWebJobsStorage",
+    )
+    def imports_customers(req: func.HttpRequest, queued: func.Out[str]) -> func.HttpResponse:
+        return _handle_import_request(
+            req,
+            "customers",
+            queued,
+            lambda: order_api.import_customers(_payload_with_headers(req)),
+        )
 
     @app.route(route="imports/items", methods=["POST"])
-    def imports_items(req: func.HttpRequest) -> func.HttpResponse:
-        return _handle(req, lambda: order_api.import_items(_payload_with_headers(req)))
+    @app.queue_output(
+        arg_name="queued",
+        queue_name="%ORDER_PROCESSOR_IMPORT_JOB_QUEUE%",
+        connection="AzureWebJobsStorage",
+    )
+    def imports_items(req: func.HttpRequest, queued: func.Out[str]) -> func.HttpResponse:
+        return _handle_import_request(
+            req,
+            "items",
+            queued,
+            lambda: order_api.import_items(_payload_with_headers(req)),
+        )
 
     @app.route(route="mailboxes", methods=["POST"])
     def mailboxes_upsert(req: func.HttpRequest) -> func.HttpResponse:
@@ -197,6 +318,23 @@ if func is not None:
     def graph_notifications_queue(msg: func.QueueMessage) -> None:
         payload = json.loads(msg.get_body().decode("utf-8"))
         order_api.process_graph_notifications(payload)
+
+    @app.queue_trigger(
+        arg_name="msg",
+        queue_name="%ORDER_PROCESSOR_IMPORT_JOB_QUEUE%",
+        connection="AzureWebJobsStorage",
+    )
+    def import_jobs_queue(msg: func.QueueMessage) -> None:
+        job = json.loads(msg.get_body().decode("utf-8"))
+        payload = _load_import_job_payload(job)
+        import_type = str(job.get("importType") or "").strip().lower()
+        if import_type == "customers":
+            order_api.import_customers(payload)
+            return
+        if import_type == "items":
+            order_api.import_items(payload)
+            return
+        raise ValueError(f"Unknown import job type: {import_type}")
 
     @app.timer_trigger(
         arg_name="timer",

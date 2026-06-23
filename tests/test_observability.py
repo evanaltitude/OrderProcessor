@@ -7,7 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "apps" / "functions"))
 
-from function_app import _payload_with_headers
+from function_app import _import_response_mode, _payload_with_headers
 from order_processor.api import OrderProcessorApi
 from order_processor.models import OrderRun, ProcessingStatus, to_dict
 from order_processor.storage import InMemoryRepository
@@ -17,9 +17,10 @@ TRACEPARENT = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
 
 
 class FakeRequest:
-    def __init__(self, body: dict, headers: dict) -> None:
+    def __init__(self, body: dict, headers: dict, params: dict | None = None) -> None:
         self._body = body
         self.headers = headers
+        self.params = params or {}
 
     def get_json(self) -> dict:
         return self._body
@@ -44,6 +45,17 @@ class ObservabilityTests(unittest.TestCase):
 
         self.assertEqual(payload["headers"]["traceparent"], TRACEPARENT)
         self.assertEqual(payload["headers"]["x-ms-workflow-run-id"], "flow-run-1")
+
+    def test_import_response_mode_defaults_to_queued_with_inline_override(self) -> None:
+        self.assertEqual(_import_response_mode(FakeRequest({}, {}), {}), "queued")
+        self.assertEqual(_import_response_mode(FakeRequest({}, {}, {"responseMode": "inline"}), {}), "inline")
+        self.assertEqual(
+            _import_response_mode(
+                FakeRequest({}, {"x-order-processor-response-mode": "sync"}),
+                {},
+            ),
+            "sync",
+        )
 
     def test_ingest_persists_correlation_context_to_email_order_and_audit(self) -> None:
         api, repo = self._api()

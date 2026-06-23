@@ -1,24 +1,24 @@
-2026-06-23 14:53:09.903 - Warning	Read-only files will be over-written or deleted.
-2026-06-23 14:53:09.908 - Info
+2026-06-23 15:32:08.041 - Warning	Read-only files will be over-written or deleted.
+2026-06-23 15:32:08.047 - Info
 Packing C:\Users\bedel\OneDrive - Altitude Logistics, Inc\Documents\Work\Focus Automate\Order Processor\power-automate\solutions\OrderProcessor\DataverseProject\src to C:\Users\bedel\OneDrive - Altitude Logistics, Inc\Documents\Work\Focus Automate\Order Processor\power-automate\solutions\OrderProcessor\exports\OrderProcessor_1.0.0.0_unmanaged.zip
 
-2026-06-23 14:53:09.930 - Info	Processing Component: Entities
-2026-06-23 14:53:09.935 - Info	Processing Component: Roles
-2026-06-23 14:53:09.940 - Info	Processing Component: Workflows
-2026-06-23 14:53:09.949 - Info	 - OrderProcessor - Customer Import Adapter Template
-2026-06-23 14:53:09.953 - Info	 - OrderProcessor - Item Import Adapter Template
-2026-06-23 14:53:09.953 - Info	 - OrderProcessor - Mailbox Trigger Template
-2026-06-23 14:53:09.954 - Info	 - OrderProcessor - Output Delivery Adapter Template
-2026-06-23 14:53:09.954 - Info	Processing Component: FieldSecurityProfiles
-2026-06-23 14:53:09.955 - Info	Processing Component: Templates
-2026-06-23 14:53:09.957 - Info	Processing Component: EntityMaps
-2026-06-23 14:53:09.958 - Info	Processing Component: EntityRelationships
-2026-06-23 14:53:09.961 - Info	Processing Component: OrganizationSettings
-2026-06-23 14:53:09.963 - Info	Processing Component: optionsets
-2026-06-23 14:53:09.963 - Info	Processing Component: CustomControls
-2026-06-23 14:53:09.967 - Info	Processing Component: SolutionPluginAssemblies
-2026-06-23 14:53:09.969 - Info	Processing Component: EntityDataProviders
-2026-06-23 14:53:09.971 - Info	Processing Sharded Component Files
-2026-06-23 14:53:10.103 - Info
+2026-06-23 15:32:08.068 - Info	Processing Component: Entities
+2026-06-23 15:32:08.072 - Info	Processing Component: Roles
+2026-06-23 15:32:08.076 - Info	Processing Component: Workflows
+2026-06-23 15:32:08.085 - Info	 - OrderProcessor - Customer Import Adapter Template
+2026-06-23 15:32:08.088 - Info	 - OrderProcessor - Item Import Adapter Template
+2026-06-23 15:32:08.088 - Info	 - OrderProcessor - Mailbox Trigger Template
+2026-06-23 15:32:08.088 - Info	 - OrderProcessor - Output Delivery Adapter Template
+2026-06-23 15:32:08.089 - Info	Processing Component: FieldSecurityProfiles
+2026-06-23 15:32:08.090 - Info	Processing Component: Templates
+2026-06-23 15:32:08.091 - Info	Processing Component: EntityMaps
+2026-06-23 15:32:08.092 - Info	Processing Component: EntityRelationships
+2026-06-23 15:32:08.095 - Info	Processing Component: OrganizationSettings
+2026-06-23 15:32:08.096 - Info	Processing Component: optionsets
+2026-06-23 15:32:08.097 - Info	Processing Component: CustomControls
+2026-06-23 15:32:08.101 - Info	Processing Component: SolutionPluginAssemblies
+2026-06-23 15:32:08.103 - Info	Processing Component: EntityDataProviders
+2026-06-23 15:32:08.104 - Info	Processing Sharded Component Files
+2026-06-23 15:32:08.225 - Info
 Unmanaged Pack complete.
 

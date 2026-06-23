@@ -46,8 +46,8 @@ $routes = @(
     @{ Name = "orders_process"; EntryPoint = "orders_process"; Route = "orders/{orderRunId}/process" },
     @{ Name = "customers_identify"; EntryPoint = "customers_identify"; Route = "customers/identify" },
     @{ Name = "items_validate"; EntryPoint = "items_validate"; Route = "items/validate" },
-    @{ Name = "imports_customers"; EntryPoint = "imports_customers"; Route = "imports/customers" },
-    @{ Name = "imports_items"; EntryPoint = "imports_items"; Route = "imports/items" },
+    @{ Name = "imports_customers"; EntryPoint = "imports_customers"; Route = "imports/customers"; QueueOutput = "%ORDER_PROCESSOR_IMPORT_JOB_QUEUE%" },
+    @{ Name = "imports_items"; EntryPoint = "imports_items"; Route = "imports/items"; QueueOutput = "%ORDER_PROCESSOR_IMPORT_JOB_QUEUE%" },
     @{ Name = "mailboxes_upsert"; EntryPoint = "mailboxes_upsert"; Route = "mailboxes" },
     @{ Name = "mailboxes_test_connection"; EntryPoint = "mailboxes_test_connection"; Route = "mailboxes/{id}/test-connection" },
     @{ Name = "mailboxes_poll"; EntryPoint = "mailboxes_poll"; Route = "mailboxes/poll" },
@@ -137,7 +137,8 @@ foreach ($timer in $timers) {
 }
 
 $queueTriggers = @(
-    @{ Name = "graph_notifications_queue"; EntryPoint = "graph_notifications_queue"; QueueName = "%ORDER_PROCESSOR_GRAPH_NOTIFICATION_QUEUE%" }
+    @{ Name = "graph_notifications_queue"; EntryPoint = "graph_notifications_queue"; QueueName = "%ORDER_PROCESSOR_GRAPH_NOTIFICATION_QUEUE%" },
+    @{ Name = "import_jobs_queue"; EntryPoint = "import_jobs_queue"; QueueName = "%ORDER_PROCESSOR_IMPORT_JOB_QUEUE%" }
 )
 
 foreach ($queueTrigger in $queueTriggers) {

@@ -41,6 +41,8 @@ class InfraContractTests(unittest.TestCase):
         self.assertIn("ORDER_PROCESSOR_MICROSOFT_AUTH_CLIENT_ID", bicep)
         self.assertIn("ORDER_PROCESSOR_MICROSOFT_AUTH_REDIRECT_URI", bicep)
         self.assertIn("keyVaultSecretsOfficerRoleId", bicep)
+        self.assertIn("param importJobQueueName string = 'import-jobs'", bicep)
+        self.assertIn("ORDER_PROCESSOR_IMPORT_JOB_QUEUE", bicep)
 
     def test_function_storage_uses_identity_settings(self) -> None:
         bicep = (ROOT / "infra" / "main.bicep").read_text(encoding="utf-8")
@@ -103,6 +105,12 @@ class InfraContractTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertIn(path, openapi)
 
+        self.assertIn("'202':\n          description: Customer import was accepted", openapi)
+        self.assertIn("'202':\n          description: Item import was accepted", openapi)
+        item_schema = openapi[openapi.index("ItemImportRequest:") : openapi.index("ItemValidateRequest:")]
+        self.assertNotIn("- customerId", item_schema)
+        self.assertIn("responseMode:", item_schema)
+
     def test_apim_policy_uses_key_vault_backed_shared_key(self) -> None:
         bicep = (ROOT / "infra" / "main.bicep").read_text(encoding="utf-8")
 
@@ -122,6 +130,16 @@ class InfraContractTests(unittest.TestCase):
 
         self.assertEqual(host["extensions"]["durableTask"]["hubName"], "OrderProcessorLocal")
         self.assertIn("azure-functions-durable", requirements)
+
+    def test_function_package_includes_import_job_queue_bindings(self) -> None:
+        package_script = (ROOT / "tools" / "Build-FunctionAppPackage.ps1").read_text(encoding="utf-8")
+        local_settings = json.loads((ROOT / "apps" / "functions" / "local.settings.sample.json").read_text(encoding="utf-8"))
+
+        self.assertIn("ORDER_PROCESSOR_IMPORT_JOB_QUEUE", local_settings["Values"])
+        self.assertIn("imports_customers", package_script)
+        self.assertIn("imports_items", package_script)
+        self.assertIn("import_jobs_queue", package_script)
+        self.assertIn("%ORDER_PROCESSOR_IMPORT_JOB_QUEUE%", package_script)
 
     def test_subscription_template_creates_resource_group(self) -> None:
         subscription_bicep = (ROOT / "infra" / "subscription.bicep").read_text(encoding="utf-8")

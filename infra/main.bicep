@@ -67,6 +67,9 @@ param graphSubscriptionAuthMode string = 'auto'
 @description('Azure Storage queue used to hand off Microsoft Graph webhook notifications for mailbox processing.')
 param graphNotificationQueueName string = 'graph-mailbox-notifications'
 
+@description('Azure Storage queue used to hand off customer/item import jobs for background processing.')
+param importJobQueueName string = 'import-jobs'
+
 @description('CRON schedule for manual fallback mailbox polling. The recurring poll timer is no longer deployed by default.')
 param mailboxPollCron string = '0 */5 * * * *'
 
@@ -505,6 +508,10 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
         {
           name: 'ORDER_PROCESSOR_GRAPH_NOTIFICATION_QUEUE'
           value: graphNotificationQueueName
+        }
+        {
+          name: 'ORDER_PROCESSOR_IMPORT_JOB_QUEUE'
+          value: importJobQueueName
         }
         {
           name: 'ORDER_PROCESSOR_DEBUG_ERRORS'

@@ -20,7 +20,9 @@ Call the API through APIM, not Cosmos DB directly.
 - Auth header: `Ocp-Apim-Subscription-Key`
 - Content type: `application/json`
 
-Customer lists should run daily. Item lists should run weekly unless a customer needs a different cadence.
+Customer lists should run daily. Item lists should run weekly unless a customer needs a different cadence. Import calls are asynchronous by default: the API stores the submitted payload in Blob Storage, queues a background import job, and returns `202 Accepted` quickly. For small debugging calls only, pass `responseMode=inline` as a query/body value to wait for the full import result.
+
+The Power Automate adapter templates also send their HTTP response first and then post to APIM in the background. That keeps the upstream parsing flow from timing out on large customer/item payloads.
 
 ## Customer List Payload
 

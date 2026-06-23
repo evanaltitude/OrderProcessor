@@ -69,9 +69,28 @@
                                                                       }
                                                        },
                                           "actions":  {
+                                                          "Respond_Accepted":  {
+                                                                                   "runAfter":  {
+
+                                                                                                },
+                                                                                   "type":  "Response",
+                                                                                   "kind":  "Http",
+                                                                                   "inputs":  {
+                                                                                                  "statusCode":  202,
+                                                                                                  "body":  {
+                                                                                                               "accepted":  true,
+                                                                                                               "queued":  true,
+                                                                                                               "endpoint":  "/imports/customers",
+                                                                                                               "tenantId":  "@{triggerBody()?[\u0027tenantId\u0027]}",
+                                                                                                               "message":  "Import accepted by adapter flow and will be posted to Order Processor in the background."
+                                                                                                           }
+                                                                                              }
+                                                                               },
                                                           "Post_To_Order_Processor_Customer_Import":  {
                                                                                                           "runAfter":  {
-
+                                                                                                                           "Respond_Accepted":  [
+                                                                                                                                                    "Succeeded"
+                                                                                                                                                ]
                                                                                                                        },
                                                                                                           "type":  "Http",
                                                                                                           "inputs":  {
@@ -84,23 +103,6 @@
                                                                                                                          "body":  "@triggerBody()"
                                                                                                                      }
                                                                                                       },
-                                                          "Respond_Accepted":  {
-                                                                                   "runAfter":  {
-                                                                                                    "Post_To_Order_Processor_Customer_Import":  [
-                                                                                                                                                    "Succeeded"
-                                                                                                                                                ]
-                                                                                                },
-                                                                                   "type":  "Response",
-                                                                                   "kind":  "Http",
-                                                                                   "inputs":  {
-                                                                                                  "statusCode":  202,
-                                                                                                  "body":  {
-                                                                                                               "accepted":  true,
-                                                                                                               "endpoint":  "/imports/customers",
-                                                                                                               "backendResponse":  "@{body(\u0027Post_To_Order_Processor_Customer_Import\u0027)}"
-                                                                                                           }
-                                                                                              }
-                                                                               },
                                                           "Stop_On_Backend_Failure":  {
                                                                                           "runAfter":  {
                                                                                                            "Post_To_Order_Processor_Customer_Import":  [

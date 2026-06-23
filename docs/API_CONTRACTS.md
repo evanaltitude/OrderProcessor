@@ -313,7 +313,7 @@ If the best candidate is below `confidenceThreshold`, ambiguous, missing, or unr
 
 ## `POST /imports/customers`
 
-Imports normalized customer profiles into Cosmos and archives original source rows for audit/debug. The endpoint accepts direct `rows` or `sourceContent` parsed by a configured parser module.
+Queues normalized customer profile imports into Cosmos and archives original source rows for audit/debug. The HTTP endpoint accepts direct `rows` or `sourceContent`, writes the incoming import payload to Blob Storage, queues a background import job, and returns `202 Accepted` quickly. Use `responseMode=inline` only for small debugging calls when the caller needs to wait for the full import result.
 
 Request shape:
 
@@ -340,7 +340,7 @@ Request shape:
 
 Supported parsers: `rows`, `csv`, `json`, `jsonl`, `genericCustomerCsv`, and `genericItemCsv`. Parser selection can be supplied directly as `parserModule` or through `importProfile.parserModule`. Field maps can be supplied directly or through `importProfile.fieldMap`.
 
-Response includes import type, import run id, source rows blob URL/checksum, parser module, imported/created/updated/skipped/error counts, row errors, refresh policy, normalized customers, and generated customer aliases.
+The immediate response includes `accepted`, `queued`, `status`, `importType`, `tenantId`, `jobId`, and `receivedAt`. The queued worker performs the actual import and writes the normal import audit event with import type, import run id, source rows blob URL/checksum, parser module, imported/created/updated/skipped/error counts, row errors, refresh policy, normalized customers, and generated customer aliases.
 
 Customer imports default to a daily refresh cadence. Override with `refreshIntervalDays`, `importProfile.refreshIntervalDays`, or `customerConfig.customerRefreshIntervalDays`.
 
@@ -372,7 +372,7 @@ Customer alias records are generated for customer code, sender email, sender dom
 
 ## `POST /imports/items`
 
-Imports normalized item records into Cosmos and archives original source rows for audit/debug. When `customerId` and `customerCode` are omitted, rows are stored as the distributor master item catalog under `customerId: "_global"` and are available for all downstream customers in that distributor tenant. Provide `customerCode` only for customer-specific override lists.
+Queues normalized item imports into Cosmos and archives original source rows for audit/debug. The HTTP endpoint writes the incoming import payload to Blob Storage, queues a background import job, and returns `202 Accepted` quickly. Use `responseMode=inline` only for small debugging calls. When `customerId` and `customerCode` are omitted, rows are stored as the distributor master item catalog under `customerId: "_global"` and are available for all downstream customers in that distributor tenant. Provide `customerCode` only for customer-specific override lists.
 
 Request shape:
 

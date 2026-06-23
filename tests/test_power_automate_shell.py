@@ -82,6 +82,23 @@ class PowerAutomateShellTests(unittest.TestCase):
         self.assertIn("Post_Email_Metadata_To_Order_Processor", actions)
         self.assertEqual(actions["Post_Email_Metadata_To_Order_Processor"]["type"], "Http")
 
+    def test_import_templates_respond_before_posting_to_backend(self) -> None:
+        for slug, post_action in [
+            ("orderprocessor-customer-import-adapter-template", "Post_To_Order_Processor_Customer_Import"),
+            ("orderprocessor-item-import-adapter-template", "Post_To_Order_Processor_Item_Import"),
+        ]:
+            with self.subTest(slug=slug):
+                definition = json.loads(
+                    (SHELL_ROOT / "flow-templates" / slug / "definition.json").read_text(encoding="utf-8")
+                )
+                actions = definition["properties"]["definition"]["actions"]
+
+                self.assertEqual(actions["Respond_Accepted"]["type"], "Response")
+                self.assertEqual(actions["Respond_Accepted"]["runAfter"], {})
+                self.assertEqual(actions["Respond_Accepted"]["inputs"]["statusCode"], 202)
+                self.assertEqual(actions[post_action]["runAfter"], {"Respond_Accepted": ["Succeeded"]})
+                self.assertNotIn("backendResponse", actions["Respond_Accepted"]["inputs"]["body"])
+
     def test_packaged_solution_contains_all_shell_workflows(self) -> None:
         zip_path = SHELL_ROOT / "exports" / "OrderProcessor_1.0.0.0_unmanaged.zip"
         with zipfile.ZipFile(zip_path) as archive:

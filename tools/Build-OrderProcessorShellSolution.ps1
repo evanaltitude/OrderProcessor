@@ -191,29 +191,31 @@ function New-RequestAdapterDefinition {
                     }
                 }
                 actions = [ordered]@{
-                    "Post_To_Order_Processor_$OperationName" = [ordered]@{
-                        runAfter = [ordered]@{}
-                        type = 'Http'
-                        inputs = [ordered]@{
-                            method = 'POST'
-                            uri = "@{concat(parameters('OrderProcessorApiBaseUrl'), '$Endpoint')}"
-                            headers = New-HttpHeaders
-                            body = $BodyExpression
-                        }
-                    }
                     Respond_Accepted = [ordered]@{
-                        runAfter = [ordered]@{
-                            "Post_To_Order_Processor_$OperationName" = @('Succeeded')
-                        }
+                        runAfter = [ordered]@{}
                         type = 'Response'
                         kind = 'Http'
                         inputs = [ordered]@{
                             statusCode = 202
                             body = [ordered]@{
                                 accepted = $true
+                                queued = $true
                                 endpoint = $Endpoint
-                                backendResponse = "@{body('Post_To_Order_Processor_$OperationName')}"
+                                tenantId = "@{triggerBody()?['tenantId']}"
+                                message = 'Import accepted by adapter flow and will be posted to Order Processor in the background.'
                             }
+                        }
+                    }
+                    "Post_To_Order_Processor_$OperationName" = [ordered]@{
+                        runAfter = [ordered]@{
+                            Respond_Accepted = @('Succeeded')
+                        }
+                        type = 'Http'
+                        inputs = [ordered]@{
+                            method = 'POST'
+                            uri = "@{concat(parameters('OrderProcessorApiBaseUrl'), '$Endpoint')}"
+                            headers = New-HttpHeaders
+                            body = $BodyExpression
                         }
                     }
                     Stop_On_Backend_Failure = [ordered]@{
