@@ -2179,7 +2179,11 @@ class OrderProcessorApi:
 
     def import_items(self, payload: dict[str, Any]) -> dict[str, Any]:
         tenant_id = _pick(payload, "tenantId", "tenant_id", default="default")
-        customer_id = _pick(payload, "customerId", "customer_id", default="")
+        customer_id = self._resolve_item_import_customer_id(
+            tenant_id,
+            _pick(payload, "customerId", "customer_id", default=""),
+            _pick(payload, "customerCode", "customer_code", "accountNumber", "account_number", default=""),
+        )
         profile = import_profile_from_payload(payload, ITEM_IMPORT_TYPE, "rows")
         parsed = parse_import_rows(payload, profile)
         validation = validate_item_rows(parsed.rows, profile.field_map)
@@ -2220,6 +2224,7 @@ class OrderProcessorApi:
             "importType": ITEM_IMPORT_TYPE,
             "importRunId": archive.import_run_id,
             "customerId": customer_id,
+            "customerCode": _pick(payload, "customerCode", "customer_code", "accountNumber", "account_number", default=""),
             "sourceRowsBlobUrl": archive.blob_url,
             "sourceRowsChecksum": archive.checksum,
             "sourceRowCount": archive.row_count,
@@ -2244,6 +2249,29 @@ class OrderProcessorApi:
             customer_id=customer_id,
         )
         return result
+
+    def _resolve_item_import_customer_id(self, tenant_id: str, customer_id: Any, customer_code: Any) -> str:
+        requested_customer_id = str(customer_id or "").strip()
+        requested_customer_code = str(customer_code or "").strip()
+        if requested_customer_id and self.repository.get("customers", requested_customer_id):
+            return requested_customer_id
+
+        normalized_requested_id = normalize_identifier(requested_customer_id)
+        normalized_requested_code = normalize_identifier(requested_customer_code)
+        for customer in self.repository.query_by_tenant("customers", tenant_id):
+            stored_id = str(_pick(customer, "id", default=""))
+            stored_code = str(_pick(customer, "customerCode", "customer_code", default=""))
+            normalized_stored_code = normalize_identifier(stored_code)
+            if requested_customer_id and stored_id == requested_customer_id:
+                return stored_id
+            if normalized_requested_code and normalized_stored_code == normalized_requested_code:
+                return stored_id
+            if normalized_requested_id and normalized_stored_code == normalized_requested_id:
+                return stored_id
+
+        if requested_customer_code:
+            return stable_id(tenant_id, requested_customer_code)
+        return requested_customer_id
 
     @staticmethod
     def _import_source_metadata(
@@ -3974,7 +4002,7 @@ class OrderProcessorApi:
                 "apiUrl": api_url("/imports/items"),
                 "minimumBody": {
                     "tenantId": tenant_id,
-                    "customerId": "<downstream customer id>",
+                    "customerCode": "102914",
                     "sourceName": "item-list.json",
                     "rows": [
                         {

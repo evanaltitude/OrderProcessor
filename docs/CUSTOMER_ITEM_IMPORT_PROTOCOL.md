@@ -9,7 +9,7 @@ The console customer profile shows the current target metadata beside **Downstre
 - Downstream customers: Cosmos container `customers`, partition `/tenantId`
 - Items: Cosmos container `items`, partition `/tenantId` + `/customerId`
 
-The selected distributor customer is the `tenantId`. Item imports also require the downstream customer `customerId` from the downstream customer list.
+The selected distributor customer is the `tenantId`. Item imports can use the downstream `customerCode`; the API resolves it to the internal downstream customer id used by order processing.
 
 ## Power Automate Flow Pattern
 
@@ -47,7 +47,7 @@ Accepted customer fields include `customerCode`, `name`, `storeNumber`, `routeNu
 ```json
 {
   "tenantId": "test-customer",
-  "customerId": "102914",
+  "customerCode": "102914",
   "sourceName": "item-list.json",
   "rows": [
     {

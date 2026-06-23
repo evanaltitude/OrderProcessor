@@ -160,6 +160,30 @@ class ImportsOutputTests(unittest.TestCase):
         self.assertIn("senderDomain", {alias["aliasType"] for alias in aliases})
         self.assertIn("knownSubjectPattern", {alias["aliasType"] for alias in aliases})
 
+    def test_import_items_resolves_customer_code_to_imported_customer_id(self) -> None:
+        repo = InMemoryRepository()
+        api = OrderProcessorApi(repo, source_archive=InMemorySourceRowArchive())
+        customers = api.import_customers(
+            {
+                "tenantId": "altitude",
+                "rows": [{"customerCode": "102914", "name": "Hollywood Feed"}],
+            }
+        )
+        customer_id = customers["customers"][0]["id"]
+
+        items = api.import_items(
+            {
+                "tenantId": "altitude",
+                "customerCode": "102914",
+                "rows": [{"internalItemNumber": "10001", "description": "Test Item"}],
+            }
+        )
+
+        self.assertEqual(items["customerId"], customer_id)
+        self.assertEqual(items["customerCode"], "102914")
+        self.assertEqual(items["items"][0]["customerId"], customer_id)
+        self.assertEqual(repo.get("items", items["items"][0]["id"])["customerId"], customer_id)
+
     def test_import_items_honors_customer_refresh_override_and_incremental_updates(self) -> None:
         repo = InMemoryRepository()
         api = OrderProcessorApi(repo, source_archive=InMemorySourceRowArchive())
