@@ -38,7 +38,7 @@ All four flows are disabled templates. Customer-specific instances should be tur
 - Initial full console admin: `connect@focuseautomate.com`.
 - Tenant mailbox address, delegated Microsoft Graph connection status, and ingest behavior are managed from the distributor/customer detail page in the backend console. An authorized Microsoft user signs in to grant shared-mailbox Graph access; token secrets stay in Key Vault.
 - Downstream customer and item lists are read-only in the console and come from the scheduled import automations.
-- Customer/item import adapter templates send `202 Accepted` back to the calling flow before posting to APIM. The backend also returns `202` after storing the payload in Blob and queuing an import job, so large list refreshes do not block on Cosmos writes.
+- Customer/item import adapter templates post to APIM and wait only for the API's quick `202 Accepted` queue acknowledgement before responding to the calling flow. The backend then processes the import through a queue worker, so large list refreshes do not block on Cosmos writes.
 - Downstream customer identification is configured separately through tenant-scoped profiles, aliases, hard rules, AI/vector fallback, and exception resolution.
 - Customer user management accepts a Microsoft email address, assigns customer/role access, and relies on Microsoft login for authentication.
 

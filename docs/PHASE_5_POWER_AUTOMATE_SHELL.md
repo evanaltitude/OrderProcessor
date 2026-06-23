@@ -44,7 +44,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\Build-OrderProcessor
 
 The mailbox trigger sends mailbox address, mailbox account id, optional customer id, message id, sender, subject, received date, body preview/body content, and attachment references. It does not parse orders or branch by customer.
 
-Customer and item import templates respond to their HTTP caller with `202 Accepted` before posting to APIM. APIM then queues the import in Azure Functions, so large customer and item refreshes are not held open while Cosmos writes complete.
+Customer and item import templates post to APIM and wait only for the API's quick `202 Accepted` queue acknowledgement before responding to their HTTP caller. APIM then processes the import through an Azure Functions queue worker, so large customer and item refreshes are not held open while Cosmos writes complete.
 
 ## Connection Reference
 

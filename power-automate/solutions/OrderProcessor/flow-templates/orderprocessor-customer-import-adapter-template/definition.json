@@ -69,9 +69,29 @@
                                                                       }
                                                        },
                                           "actions":  {
+                                                          "Post_To_Order_Processor_Customer_Import":  {
+                                                                                                          "runAfter":  {
+
+                                                                                                                       },
+                                                                                                          "type":  "Http",
+                                                                                                          "inputs":  {
+                                                                                                                         "method":  "POST",
+                                                                                                                         "uri":  "@{concat(parameters(\u0027OrderProcessorApiBaseUrl\u0027), \u0027/imports/customers\u0027)}",
+                                                                                                                         "headers":  {
+                                                                                                                                         "Content-Type":  "application/json",
+                                                                                                                                         "Ocp-Apim-Subscription-Key":  "@parameters(\u0027OrderProcessorApimSubscriptionKey\u0027)"
+                                                                                                                                     },
+                                                                                                                         "body":  "@triggerBody()",
+                                                                                                                         "retryPolicy":  {
+                                                                                                                                             "type":  "none"
+                                                                                                                                         }
+                                                                                                                     }
+                                                                                                      },
                                                           "Respond_Accepted":  {
                                                                                    "runAfter":  {
-
+                                                                                                    "Post_To_Order_Processor_Customer_Import":  [
+                                                                                                                                                    "Succeeded"
+                                                                                                                                                ]
                                                                                                 },
                                                                                    "type":  "Response",
                                                                                    "kind":  "Http",
@@ -82,43 +102,31 @@
                                                                                                                "queued":  true,
                                                                                                                "endpoint":  "/imports/customers",
                                                                                                                "tenantId":  "@{triggerBody()?[\u0027tenantId\u0027]}",
-                                                                                                               "message":  "Import accepted by adapter flow and will be posted to Order Processor in the background."
+                                                                                                               "backendResponse":  "@{body(\u0027Post_To_Order_Processor_Customer_Import\u0027)}",
+                                                                                                               "message":  "Import accepted by Order Processor and queued for background processing."
                                                                                                            }
                                                                                               }
                                                                                },
-                                                          "Post_To_Order_Processor_Customer_Import":  {
-                                                                                                          "runAfter":  {
-                                                                                                                           "Respond_Accepted":  [
-                                                                                                                                                    "Succeeded"
-                                                                                                                                                ]
-                                                                                                                       },
-                                                                                                          "type":  "Http",
-                                                                                                          "inputs":  {
-                                                                                                                         "method":  "POST",
-                                                                                                                         "uri":  "@{concat(parameters(\u0027OrderProcessorApiBaseUrl\u0027), \u0027/imports/customers\u0027)}",
-                                                                                                                         "headers":  {
-                                                                                                                                         "Content-Type":  "application/json",
-                                                                                                                                         "Ocp-Apim-Subscription-Key":  "@parameters(\u0027OrderProcessorApimSubscriptionKey\u0027)"
-                                                                                                                                     },
-                                                                                                                         "body":  "@triggerBody()"
-                                                                                                                     }
+                                                          "Respond_Backend_Failed":  {
+                                                                                         "runAfter":  {
+                                                                                                          "Post_To_Order_Processor_Customer_Import":  [
+                                                                                                                                                          "Failed",
+                                                                                                                                                          "TimedOut"
+                                                                                                                                                      ]
                                                                                                       },
-                                                          "Stop_On_Backend_Failure":  {
-                                                                                          "runAfter":  {
-                                                                                                           "Post_To_Order_Processor_Customer_Import":  [
-                                                                                                                                                           "Failed",
-                                                                                                                                                           "TimedOut"
-                                                                                                                                                       ]
-                                                                                                       },
-                                                                                          "type":  "Terminate",
-                                                                                          "inputs":  {
-                                                                                                         "runStatus":  "Failed",
-                                                                                                         "runError":  {
-                                                                                                                          "code":  "orderProcessorAdapterFailed",
-                                                                                                                          "message":  "APIM /imports/customers call failed."
-                                                                                                                      }
-                                                                                                     }
-                                                                                      }
+                                                                                         "type":  "Response",
+                                                                                         "kind":  "Http",
+                                                                                         "inputs":  {
+                                                                                                        "statusCode":  502,
+                                                                                                        "body":  {
+                                                                                                                     "accepted":  false,
+                                                                                                                     "queued":  false,
+                                                                                                                     "endpoint":  "/imports/customers",
+                                                                                                                     "code":  "orderProcessorAdapterFailed",
+                                                                                                                     "message":  "APIM /imports/customers call failed. Check OrderProcessorApiBaseUrl and OrderProcessorApimSubscriptionKey."
+                                                                                                                 }
+                                                                                                    }
+                                                                                     }
                                                       },
                                           "outputs":  {
 

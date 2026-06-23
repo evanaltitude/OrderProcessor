@@ -36,7 +36,7 @@ class PowerAutomateShellTests(unittest.TestCase):
         self.assertEqual(import_status["environment"]["id"], "abbd708f-4eaf-e875-a282-e1207f4e370c")
         self.assertEqual(import_status["solution"]["uniqueName"], "OrderProcessor")
         self.assertEqual(import_status["solution"]["solutionId"], "660bea3d-196c-f111-a826-7c1e5281c285")
-        self.assertEqual(import_status["import"]["importId"], "74e34f63-cb6c-f111-ab0d-7c1e5281c285")
+        self.assertEqual(import_status["import"]["importId"], "f50db3d5-3f6f-f111-ab0d-000d3a8c7071")
         self.assertEqual(len(import_status["components"]["workflows"]), 4)
         self.assertEqual(
             import_status["components"]["connectionReferences"][0]["logicalName"],
@@ -82,7 +82,7 @@ class PowerAutomateShellTests(unittest.TestCase):
         self.assertIn("Post_Email_Metadata_To_Order_Processor", actions)
         self.assertEqual(actions["Post_Email_Metadata_To_Order_Processor"]["type"], "Http")
 
-    def test_import_templates_respond_before_posting_to_backend(self) -> None:
+    def test_import_templates_wait_only_for_queued_backend_acceptance(self) -> None:
         for slug, post_action in [
             ("orderprocessor-customer-import-adapter-template", "Post_To_Order_Processor_Customer_Import"),
             ("orderprocessor-item-import-adapter-template", "Post_To_Order_Processor_Item_Import"),
@@ -93,11 +93,19 @@ class PowerAutomateShellTests(unittest.TestCase):
                 )
                 actions = definition["properties"]["definition"]["actions"]
 
+                self.assertEqual(actions[post_action]["type"], "Http")
+                self.assertEqual(actions[post_action]["runAfter"], {})
+                self.assertEqual(actions[post_action]["inputs"]["retryPolicy"], {"type": "none"})
                 self.assertEqual(actions["Respond_Accepted"]["type"], "Response")
-                self.assertEqual(actions["Respond_Accepted"]["runAfter"], {})
+                self.assertEqual(actions["Respond_Accepted"]["runAfter"], {post_action: ["Succeeded"]})
                 self.assertEqual(actions["Respond_Accepted"]["inputs"]["statusCode"], 202)
-                self.assertEqual(actions[post_action]["runAfter"], {"Respond_Accepted": ["Succeeded"]})
-                self.assertNotIn("backendResponse", actions["Respond_Accepted"]["inputs"]["body"])
+                self.assertIn("backendResponse", actions["Respond_Accepted"]["inputs"]["body"])
+                self.assertEqual(actions["Respond_Backend_Failed"]["type"], "Response")
+                self.assertEqual(
+                    actions["Respond_Backend_Failed"]["runAfter"],
+                    {post_action: ["Failed", "TimedOut"]},
+                )
+                self.assertEqual(actions["Respond_Backend_Failed"]["inputs"]["statusCode"], 502)
 
     def test_packaged_solution_contains_all_shell_workflows(self) -> None:
         zip_path = SHELL_ROOT / "exports" / "OrderProcessor_1.0.0.0_unmanaged.zip"

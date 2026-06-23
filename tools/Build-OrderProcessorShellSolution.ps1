@@ -191,8 +191,23 @@ function New-RequestAdapterDefinition {
                     }
                 }
                 actions = [ordered]@{
-                    Respond_Accepted = [ordered]@{
+                    "Post_To_Order_Processor_$OperationName" = [ordered]@{
                         runAfter = [ordered]@{}
+                        type = 'Http'
+                        inputs = [ordered]@{
+                            method = 'POST'
+                            uri = "@{concat(parameters('OrderProcessorApiBaseUrl'), '$Endpoint')}"
+                            headers = New-HttpHeaders
+                            body = $BodyExpression
+                            retryPolicy = [ordered]@{
+                                type = 'none'
+                            }
+                        }
+                    }
+                    Respond_Accepted = [ordered]@{
+                        runAfter = [ordered]@{
+                            "Post_To_Order_Processor_$OperationName" = @('Succeeded')
+                        }
                         type = 'Response'
                         kind = 'Http'
                         inputs = [ordered]@{
@@ -202,32 +217,25 @@ function New-RequestAdapterDefinition {
                                 queued = $true
                                 endpoint = $Endpoint
                                 tenantId = "@{triggerBody()?['tenantId']}"
-                                message = 'Import accepted by adapter flow and will be posted to Order Processor in the background.'
+                                backendResponse = "@{body('Post_To_Order_Processor_$OperationName')}"
+                                message = 'Import accepted by Order Processor and queued for background processing.'
                             }
                         }
                     }
-                    "Post_To_Order_Processor_$OperationName" = [ordered]@{
-                        runAfter = [ordered]@{
-                            Respond_Accepted = @('Succeeded')
-                        }
-                        type = 'Http'
-                        inputs = [ordered]@{
-                            method = 'POST'
-                            uri = "@{concat(parameters('OrderProcessorApiBaseUrl'), '$Endpoint')}"
-                            headers = New-HttpHeaders
-                            body = $BodyExpression
-                        }
-                    }
-                    Stop_On_Backend_Failure = [ordered]@{
+                    Respond_Backend_Failed = [ordered]@{
                         runAfter = [ordered]@{
                             "Post_To_Order_Processor_$OperationName" = @('Failed', 'TimedOut')
                         }
-                        type = 'Terminate'
+                        type = 'Response'
+                        kind = 'Http'
                         inputs = [ordered]@{
-                            runStatus = 'Failed'
-                            runError = [ordered]@{
+                            statusCode = 502
+                            body = [ordered]@{
+                                accepted = $false
+                                queued = $false
+                                endpoint = $Endpoint
                                 code = 'orderProcessorAdapterFailed'
-                                message = "APIM $Endpoint call failed."
+                                message = "APIM $Endpoint call failed. Check OrderProcessorApiBaseUrl and OrderProcessorApimSubscriptionKey."
                             }
                         }
                     }
