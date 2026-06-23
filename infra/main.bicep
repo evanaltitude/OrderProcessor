@@ -56,6 +56,14 @@ param microsoftGraphAuthScopes string = 'openid profile offline_access User.Read
 @description('CRON schedule for renewing Microsoft Graph mailbox webhook subscriptions. Default is every 6 hours.')
 param graphSubscriptionRenewalCron string = '0 0 */6 * * *'
 
+@allowed([
+  'auto'
+  'app'
+  'delegated'
+])
+@description('Microsoft Graph authorization mode used when creating mailbox webhook subscriptions.')
+param graphSubscriptionAuthMode string = 'auto'
+
 @description('Azure Storage queue used to hand off Microsoft Graph webhook notifications for mailbox processing.')
 param graphNotificationQueueName string = 'graph-mailbox-notifications'
 
@@ -102,8 +110,10 @@ var consoleAadRegistration = union({
 })
 
 var storageBlobDataContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
+var storageBlobDataOwnerRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b')
 var storageQueueDataContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')
 var storageTableDataContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3')
+var storageAccountContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '17d1049b-9a84-46fb-8f53-869881c3d3ab')
 var keyVaultSecretsUserRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')
 var keyVaultSecretsOfficerRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7')
 var cognitiveServicesUserRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'a97b65f3-24c7-4388-baec-2e87135dc908')
@@ -479,6 +489,10 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
         {
           name: 'ORDER_PROCESSOR_GRAPH_SUBSCRIPTION_RENEWAL_CRON'
           value: graphSubscriptionRenewalCron
+        }
+        {
+          name: 'ORDER_PROCESSOR_GRAPH_SUBSCRIPTION_AUTH_MODE'
+          value: graphSubscriptionAuthMode
         }
         {
           name: 'ORDER_PROCESSOR_GRAPH_NOTIFICATION_QUEUE'
@@ -917,6 +931,16 @@ resource functionStorageBlobContributor 'Microsoft.Authorization/roleAssignments
   }
 }
 
+resource functionStorageBlobOwner 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storageAccount.id, functionApp.name, 'blob-data-owner')
+  scope: storageAccount
+  properties: {
+    roleDefinitionId: storageBlobDataOwnerRoleId
+    principalId: functionApp.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
 resource functionStorageQueueContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(storageAccount.id, functionApp.name, 'queue-data-contributor')
   scope: storageAccount
@@ -932,6 +956,16 @@ resource functionStorageTableContributor 'Microsoft.Authorization/roleAssignment
   scope: storageAccount
   properties: {
     roleDefinitionId: storageTableDataContributorRoleId
+    principalId: functionApp.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource functionStorageAccountContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storageAccount.id, functionApp.name, 'storage-account-contributor')
+  scope: storageAccount
+  properties: {
+    roleDefinitionId: storageAccountContributorRoleId
     principalId: functionApp.identity.principalId
     principalType: 'ServicePrincipal'
   }
