@@ -141,11 +141,65 @@
           <section class="band">
             <form id="automationSettingsForm" class="editor">
               <h2>Customer Automation Settings</h2>
-              <textarea name="routingSettings" placeholder='{"routingPhases":["webstoreOrder","previouslyProcessed","orderCandidate","nonOrder","general"]}'></textarea>
-              <textarea name="orderConditions" placeholder='{"requiredAttachments":true}'></textarea>
-              <textarea name="webstoreEmailConditions" placeholder='{"senderDomains":[],"subjectPatterns":[]}'></textarea>
-              <textarea name="extractionRules" placeholder='{"customerCodeRegex":"Cust:\\s*(?<customerCode>\\\\d+)"}'></textarea>
-              <textarea name="emailSubjectSettings" placeholder='{"template":"Cust: {customerCode} Rte: {routeNumber} - {originalSubject}"}'></textarea>
+              <div class="form-grid three">
+                <label>Order attachment types
+                  <input name="acceptedAttachmentExtensions" placeholder="csv, xlsx, pdf">
+                </label>
+                <label>Webstore sender domains
+                  <input name="webstoreSenderDomains" placeholder="shopify.com, customer.com">
+                </label>
+                <label>Webstore subject patterns
+                  <input name="webstoreSubjectPatterns" placeholder="web order, online order">
+                </label>
+                <label>Customer code source
+                  <select name="customerCodeSource">
+                    <option value="combined">Subject and body</option>
+                    <option value="subject">Subject</option>
+                    <option value="bodyText">Email body</option>
+                    <option value="attachmentName">Attachment name</option>
+                  </select>
+                </label>
+                <label>Customer code pattern
+                  <input name="customerCodeRegex" placeholder="Customer:\\s*(?P<customerCode>\\d+)">
+                </label>
+                <label>Subject after processing
+                  <input name="subjectTemplate" placeholder="Cust: {customerCode} - {originalSubject}">
+                </label>
+                <label>CSR category tags
+                  <input name="categoryTemplates" placeholder="CSR: {csrName}, Route: {routeNumber}">
+                </label>
+                <label>Processed orders
+                  <select name="processedMoveMode">
+                    <option value="none">Leave in place</option>
+                    <option value="staticFolder">Move to folder</option>
+                    <option value="customerField">Use customer CSR folder</option>
+                  </select>
+                </label>
+                <label>Processed folder or field
+                  <input name="processedMoveTarget" placeholder="Completed Orders or csrFolder">
+                </label>
+                <label>Failed orders
+                  <select name="failedMoveMode">
+                    <option value="none">Leave in place</option>
+                    <option value="staticFolder">Move to folder</option>
+                    <option value="customerField">Use customer CSR folder</option>
+                  </select>
+                </label>
+                <label>Failed folder or field
+                  <input name="failedMoveTarget" placeholder="Needs Review or csrFolder">
+                </label>
+                <label>Non-order emails
+                  <select name="nonOrderMoveMode">
+                    <option value="none">Leave in place</option>
+                    <option value="staticFolder">Move to folder</option>
+                    <option value="customerField">Use customer CSR folder</option>
+                  </select>
+                </label>
+                <label>Non-order folder or field
+                  <input name="nonOrderMoveTarget" placeholder="CSR Review or csrFolder">
+                </label>
+                <label class="checkline"><input name="requiredAttachments" type="checkbox"> Require attachment for order rules</label>
+              </div>
               <button type="submit">Save Settings</button>
             </form>
           </section>
@@ -153,48 +207,232 @@
           <section class="band split">
             <form id="routingForm" class="editor">
               <h2>Routing Rule</h2>
-              <input name="id" placeholder="Rule id">
-              <input name="name" placeholder="Rule name">
-              <select name="phase">
-                <option value="general">General</option>
-                <option value="webstoreOrder">Webstore order</option>
-                <option value="previouslyProcessed">Previously processed</option>
-                <option value="orderCandidate">Order candidate</option>
-                <option value="nonOrder">Non-order</option>
-              </select>
-              <select name="outcome">
-                <option value="knownOrder">knownOrder</option>
-                <option value="knownCustomerNonOrder">knownCustomerNonOrder</option>
-                <option value="needsCustomerIdentification">needsCustomerIdentification</option>
-                <option value="needsHumanReview">needsHumanReview</option>
-                <option value="ignored">ignored</option>
-              </select>
-              <input name="priority" placeholder="Priority">
-              <input name="processorProfileId" placeholder="Processor profile id">
-              <input name="senderEquals" placeholder="Sender emails">
-              <input name="senderDomains" placeholder="Sender domains">
-              <input name="subjectRegex" placeholder="Subject regex">
-              <input name="bodyRegex" placeholder="Body regex">
-              <input name="knownWebstorePatterns" placeholder="Webstore patterns">
-              <input name="priorProcessedSubjectRegex" placeholder="Processed subject regex">
-              <input name="attachmentExtensions" placeholder="Attachment extensions">
-              <input name="attachmentNameRegex" placeholder="Attachment name regex">
-              <input name="customerCodeRegex" placeholder="Customer code extraction regex">
-              <input name="subjectTemplate" placeholder="Subject template">
-              <input name="categoryTemplates" placeholder="Category templates">
-              <button type="submit">Save Rule</button>
+              <div class="form-grid two">
+                <label>Rule id
+                  <input name="id" placeholder="auto-generated if blank">
+                </label>
+                <label>Rule name
+                  <input name="name" placeholder="Webstore orders">
+                </label>
+                <label>When to check
+                  <select name="phase">
+                    <option value="webstoreOrder">Webstore order</option>
+                    <option value="previouslyProcessed">Previously processed</option>
+                    <option value="orderCandidate">Order candidate</option>
+                    <option value="nonOrder">Non-order</option>
+                    <option value="general">General</option>
+                  </select>
+                </label>
+                <label>Action
+                  <select name="outcome">
+                    <option value="knownOrder">Create order</option>
+                    <option value="knownCustomerNonOrder">Tag CSR follow-up</option>
+                    <option value="needsCustomerIdentification">Find customer first</option>
+                    <option value="needsHumanReview">Send to review</option>
+                    <option value="ignored">Ignore</option>
+                  </select>
+                </label>
+                <label>Priority
+                  <input name="priority" type="number" min="1" step="1" placeholder="100">
+                </label>
+                <label>Processor profile
+                  <select name="processorProfileId"></select>
+                </label>
+                <label>Sender emails
+                  <input name="senderEquals" placeholder="buyer@example.com">
+                </label>
+                <label>Sender domains
+                  <input name="senderDomains" placeholder="customer.com">
+                </label>
+                <label>Subject patterns
+                  <input name="subjectRegex" placeholder="PO|Purchase Order">
+                </label>
+                <label>Body patterns
+                  <input name="bodyRegex" placeholder="Order total|Ship to">
+                </label>
+                <label>Attachment types
+                  <input name="attachmentExtensions" placeholder="csv, xlsx, pdf">
+                </label>
+                <label>Attachment name patterns
+                  <input name="attachmentNameRegex" placeholder="order|po">
+                </label>
+                <label>Customer code source
+                  <select name="customerCodeSource">
+                    <option value="combined">Subject and body</option>
+                    <option value="subject">Subject</option>
+                    <option value="bodyText">Email body</option>
+                    <option value="attachmentName">Attachment name</option>
+                  </select>
+                </label>
+                <label>Customer code pattern
+                  <input name="customerCodeRegex" placeholder="Customer:\\s*(?P<customerCode>\\d+)">
+                </label>
+                <label>Processed subject pattern
+                  <input name="priorProcessedSubjectRegex" placeholder="Cust:\\s*(?P<customerCode>\\d+)">
+                </label>
+                <label>Updated subject
+                  <input name="subjectTemplate" placeholder="Cust: {customerCode} - {originalSubject}">
+                </label>
+                <label>CSR category tags
+                  <input name="categoryTemplates" placeholder="CSR: {csrName}">
+                </label>
+                <label>Processed order move
+                  <select name="processedMoveMode">
+                    <option value="none">Leave in place</option>
+                    <option value="staticFolder">Move to folder</option>
+                    <option value="customerField">Use customer CSR folder</option>
+                  </select>
+                </label>
+                <label>Move folder or field
+                  <input name="processedMoveTarget" placeholder="Completed Orders or csrFolder">
+                </label>
+                <label class="checkline"><input name="requiredAttachment" type="checkbox"> Requires an attachment</label>
+                <label class="checkline"><input name="enabled" type="checkbox" checked> Enabled</label>
+              </div>
+              <div class="button-row">
+                <button type="submit">Save Rule</button>
+                <button id="clearRoutingFormButton" class="secondary" type="button">Clear</button>
+              </div>
             </form>
-            <form id="profileForm" class="editor">
-              <h2>Processor / Output Profile</h2>
-              <input name="name" placeholder="Profile name">
-              <select name="kind">
-                <option value="processor">Processor</option>
-                <option value="output">Output</option>
-              </select>
-              <input name="type" placeholder="Type">
-              <textarea name="settings" placeholder='{"fieldMap":{}}'></textarea>
-              <button type="submit">Save Profile</button>
-            </form>
+            <section class="editor">
+              <form id="processorProfileForm" class="editor">
+                <h2>Processor Profile</h2>
+                <div class="form-grid two">
+                  <label>Profile id
+                    <input name="id" placeholder="auto-generated if blank">
+                  </label>
+                  <label>Profile name
+                    <input name="name" placeholder="CSV order parser">
+                  </label>
+                  <label>Input type
+                    <select name="processorType">
+                      <option value="csv">CSV</option>
+                      <option value="xlsx">Excel XLSX</option>
+                      <option value="xls">Excel XLS</option>
+                      <option value="pdf">PDF</option>
+                      <option value="emailBody">Email body</option>
+                      <option value="customerOverride">Customer override</option>
+                    </select>
+                  </label>
+                  <label>Default output
+                    <select name="outputProfileId"></select>
+                  </label>
+                  <label>Delimiter
+                    <select name="delimiter">
+                      <option value="">Auto</option>
+                      <option value=",">Comma</option>
+                      <option value="|">Pipe</option>
+                      <option value="	">Tab</option>
+                      <option value=";">Semicolon</option>
+                    </select>
+                  </label>
+                  <label>Headerless columns
+                    <input name="headerlessColumns" placeholder="item_number, upc, quantity, description">
+                  </label>
+                  <label>Item number column
+                    <input name="itemNumberField" placeholder="Item, SKU, Product Code">
+                  </label>
+                  <label>UPC column
+                    <input name="upcField" placeholder="UPC, Barcode">
+                  </label>
+                  <label>Quantity column
+                    <input name="quantityField" placeholder="Qty, Quantity">
+                  </label>
+                  <label>Description column
+                    <input name="descriptionField" placeholder="Description, Product">
+                  </label>
+                  <label>PO column
+                    <input name="poNumberField" placeholder="PO, Purchase Order">
+                  </label>
+                  <label>Order number column
+                    <input name="orderNumberField" placeholder="Order Number">
+                  </label>
+                  <label>Line pattern
+                    <input name="linePattern" placeholder="(?P<provided_upc>\\d{12})-(?P<quantity>\\d+)">
+                  </label>
+                  <label>Base parser
+                    <select name="baseProcessorType">
+                      <option value="">Same as input type</option>
+                      <option value="csv">CSV</option>
+                      <option value="xlsx">Excel XLSX</option>
+                      <option value="emailBody">Email body</option>
+                      <option value="pdf">PDF</option>
+                    </select>
+                  </label>
+                  <label>Document model id
+                    <input name="documentIntelligenceModelId" placeholder="prebuilt-layout or custom model">
+                  </label>
+                  <label class="checkline"><input name="hasHeader" type="checkbox" checked> First row has headers</label>
+                </div>
+                <button type="submit">Save Processor</button>
+              </form>
+              <form id="outputProfileForm" class="editor">
+                <h2>Output Profile</h2>
+                <div class="form-grid two">
+                  <label>Profile id
+                    <input name="id" placeholder="auto-generated if blank">
+                  </label>
+                  <label>Profile name
+                    <input name="name" placeholder="ERP order file">
+                  </label>
+                  <label>Output type
+                    <select name="outputType">
+                      <option value="csv">CSV</option>
+                      <option value="xlsx">Excel XLSX</option>
+                      <option value="text">Text</option>
+                      <option value="json">Universal JSON</option>
+                      <option value="api">API payload</option>
+                      <option value="multi">Multiple formats</option>
+                    </select>
+                  </label>
+                  <label>File name template
+                    <input name="fileNameTemplate" placeholder="{customerId}-{poNumber}-order-lines.csv">
+                  </label>
+                  <label>Delimiter
+                    <select name="delimiter">
+                      <option value=",">Comma</option>
+                      <option value="|">Pipe</option>
+                      <option value="	">Tab</option>
+                      <option value=";">Semicolon</option>
+                    </select>
+                  </label>
+                  <label>Encoding
+                    <select name="encoding">
+                      <option value="utf-8">UTF-8</option>
+                      <option value="utf-8-sig">UTF-8 with BOM</option>
+                      <option value="cp1252">Windows 1252</option>
+                    </select>
+                  </label>
+                  <label>Text line template
+                    <input name="textTemplate" placeholder="{line_number}|{matched_internal_item_number}|{quantity}">
+                  </label>
+                  <label>Multi formats
+                    <input name="formats" placeholder="csv, xlsx, json">
+                  </label>
+                  <label>Delivery adapter
+                    <select name="destinationAdapter">
+                      <option value="blob">Blob/file</option>
+                      <option value="m365">Microsoft 365</option>
+                      <option value="api">API</option>
+                      <option value="shadowBlob">Shadow only</option>
+                    </select>
+                  </label>
+                  <label>Destination folder
+                    <input name="destinationFolder" placeholder="outbound/orders">
+                  </label>
+                  <label>API URL
+                    <input name="destinationUrl" placeholder="https://customer.example/orders">
+                  </label>
+                  <label class="checkline"><input name="includeHeader" type="checkbox" checked> Include header row</label>
+                  <label class="checkline"><input name="productionDeliveryEnabled" type="checkbox"> Production delivery enabled</label>
+                </div>
+                <div>
+                  <h3>Output Fields</h3>
+                  <div id="outputFieldChoices" class="checkbox-grid"></div>
+                </div>
+                <button type="submit">Save Output</button>
+              </form>
+            </section>
           </section>
 
           <section class="band">
@@ -210,11 +448,51 @@
                     <th>Phase</th>
                     <th>Outcome</th>
                     <th>Enabled</th>
+                    <th></th>
                   </tr>
                 </thead>
                 <tbody id="routingRulesBody"></tbody>
               </table>
             </div>
+          </section>
+
+          <section class="band split">
+            <section>
+              <div class="section-title">
+                <h2>Processor Profiles</h2>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Input</th>
+                      <th>Output</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="processorProfilesBody"></tbody>
+                </table>
+              </div>
+            </section>
+            <section>
+              <div class="section-title">
+                <h2>Output Profiles</h2>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Type</th>
+                      <th>Destination</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="outputProfilesBody"></tbody>
+                </table>
+              </div>
+            </section>
           </section>
 
           <section class="band">

@@ -49,6 +49,14 @@ class ConsoleFrontendTests(unittest.TestCase):
         self.assertIn("Downstream Customer List", index)
         self.assertIn("Item List", index)
         self.assertIn("Customer Automation Settings", index)
+        self.assertIn("Order attachment types", index)
+        self.assertIn("Processor Profile", index)
+        self.assertIn("Output Profile", index)
+        self.assertIn("outputFieldChoices", index)
+        self.assertIn("processorProfileForm", app)
+        self.assertIn("outputProfileForm", app)
+        self.assertIn("automationSettingsFromForm", app)
+        self.assertIn("loadRoutingRule", app)
         self.assertNotIn('data-view="routing"', index)
         detail_page = index[index.index('id="distributorDetailPage"') : index.index('id="distributorEditPage"')]
         edit_page = index[index.index('id="distributorEditPage"') :]

@@ -14,6 +14,34 @@ const state = {
 const el = (id) => document.getElementById(id);
 const value = (form, name) => new FormData(form).get(name)?.toString().trim() || "";
 const split = (text) => text.split(",").map((part) => part.trim()).filter(Boolean);
+const checked = (form, name) => Boolean(form.elements[name]?.checked);
+
+const DEFAULT_ROUTING_PHASES = ["webstoreOrder", "previouslyProcessed", "orderCandidate", "nonOrder", "general"];
+const DEFAULT_OUTPUT_FIELDS = [
+  "po_number",
+  "order_number",
+  "line_number",
+  "quantity",
+  "provided_item_number",
+  "provided_upc",
+  "description",
+  "matched_internal_item_number",
+  "validation_status"
+];
+const OUTPUT_FIELD_LABELS = {
+  po_number: "PO",
+  order_number: "Order #",
+  line_number: "Line",
+  quantity: "Quantity",
+  provided_item_number: "Customer item",
+  provided_upc: "UPC",
+  description: "Description",
+  matched_internal_item_number: "ERP item",
+  validation_status: "Status",
+  validation_confidence: "Confidence",
+  customer_id: "Customer ID",
+  order_run_id: "Run ID"
+};
 
 function slugifyId(text) {
   return String(text || "")
@@ -27,6 +55,71 @@ function slugifyId(text) {
 function connectionIdFor(tenantId, mailboxAddress) {
   const mailboxKey = slugifyId(String(mailboxAddress || "").split("@")[0] || "mailbox") || "mailbox";
   return `m365-${slugifyId(tenantId) || "customer"}-${mailboxKey}`;
+}
+
+function setValue(form, name, nextValue) {
+  if (!form.elements[name]) return;
+  form.elements[name].value = nextValue ?? "";
+}
+
+function setChecked(form, name, nextValue) {
+  if (!form.elements[name]) return;
+  form.elements[name].checked = Boolean(nextValue);
+}
+
+function listText(values) {
+  return (values || []).filter(Boolean).join(", ");
+}
+
+function moveTarget(move = {}) {
+  return move.mode === "customerField" ? move.field || "" : move.folder || "";
+}
+
+function moveFromForm(form, prefix) {
+  const mode = value(form, `${prefix}MoveMode`) || "none";
+  const target = value(form, `${prefix}MoveTarget`);
+  return {
+    mode,
+    folder: mode === "staticFolder" ? target : "",
+    field: mode === "customerField" ? target : ""
+  };
+}
+
+function compactObject(object) {
+  return Object.fromEntries(
+    Object.entries(object).filter(([, nextValue]) => {
+      if (Array.isArray(nextValue)) return nextValue.length > 0;
+      if (nextValue && typeof nextValue === "object") return Object.keys(nextValue).length > 0;
+      return nextValue !== "" && nextValue !== null && nextValue !== undefined;
+    })
+  );
+}
+
+function fillSelect(select, options, selectedValue = "") {
+  select.innerHTML = options
+    .map((option) => `<option value="${escapeHtml(option.value)}">${escapeHtml(option.label)}</option>`)
+    .join("");
+  select.value = selectedValue || "";
+}
+
+function outputProfileOptions(selectedValue = "") {
+  return [
+    { value: "", label: "None" },
+    ...(state.dashboard?.outputProfiles || []).map((profile) => ({
+      value: profile.id,
+      label: profile.name || profile.id
+    }))
+  ].map((option) => ({ ...option, selected: option.value === selectedValue }));
+}
+
+function processorProfileOptions(selectedValue = "") {
+  return [
+    { value: "", label: "None" },
+    ...(state.dashboard?.processorProfiles || []).map((profile) => ({
+      value: profile.id,
+      label: profile.name || profile.id
+    }))
+  ].map((option) => ({ ...option, selected: option.value === selectedValue }));
 }
 
 async function post(path, body = {}, options = {}) {
@@ -128,6 +221,199 @@ function primaryConnection() {
     return connections.find((connection) => connection.id === mailbox.connectionId) || null;
   }
   return connections[0] || null;
+}
+
+function populateProfileSelects() {
+  fillSelect(el("routingForm").elements.processorProfileId, processorProfileOptions(), "");
+  fillSelect(el("processorProfileForm").elements.outputProfileId, outputProfileOptions(), "");
+}
+
+function populateAutomationSettings(settings = {}) {
+  const form = el("automationSettingsForm");
+  const routingSettings = settings.routingSettings || {};
+  const orderConditions = settings.orderConditions || {};
+  const webstore = settings.webstoreEmailConditions || {};
+  const extraction = settings.extractionRules || {};
+  const subject = settings.emailSubjectSettings || {};
+  const moves = subject.moves || {};
+
+  setValue(form, "acceptedAttachmentExtensions", listText(orderConditions.acceptedAttachmentExtensions || routingSettings.acceptedAttachmentExtensions || []));
+  setValue(form, "webstoreSenderDomains", listText(webstore.senderDomains || []));
+  setValue(form, "webstoreSubjectPatterns", listText(webstore.subjectPatterns || []));
+  setValue(form, "customerCodeSource", extraction.customerCodeSource || extraction.source || "combined");
+  setValue(form, "customerCodeRegex", extraction.customerCodeRegex || extraction.regex || "");
+  setValue(form, "subjectTemplate", subject.template || "");
+  setValue(form, "categoryTemplates", listText(subject.categoryTemplates || []));
+  setChecked(form, "requiredAttachments", Boolean(orderConditions.requiredAttachments || orderConditions.requiredAttachment));
+
+  for (const [prefix, key] of [["processed", "processedOrder"], ["failed", "failedOrder"], ["nonOrder", "nonOrder"]]) {
+    const move = moves[key] || {};
+    setValue(form, `${prefix}MoveMode`, move.mode || "none");
+    setValue(form, `${prefix}MoveTarget`, moveTarget(move));
+  }
+}
+
+function automationSettingsFromForm(form) {
+  const acceptedAttachmentExtensions = split(value(form, "acceptedAttachmentExtensions")).map((item) => item.replace(/^\./, ""));
+  const moves = {
+    processedOrder: moveFromForm(form, "processed"),
+    failedOrder: moveFromForm(form, "failed"),
+    nonOrder: moveFromForm(form, "nonOrder")
+  };
+  return {
+    routingSettings: compactObject({
+      routingPhases: DEFAULT_ROUTING_PHASES,
+      acceptedAttachmentExtensions
+    }),
+    orderConditions: compactObject({
+      requiredAttachments: checked(form, "requiredAttachments"),
+      acceptedAttachmentExtensions
+    }),
+    webstoreEmailConditions: compactObject({
+      senderDomains: split(value(form, "webstoreSenderDomains")),
+      subjectPatterns: split(value(form, "webstoreSubjectPatterns"))
+    }),
+    extractionRules: compactObject({
+      customerCodeSource: value(form, "customerCodeSource"),
+      customerCodeRegex: value(form, "customerCodeRegex"),
+      customerCodeGroup: "customerCode"
+    }),
+    emailSubjectSettings: compactObject({
+      template: value(form, "subjectTemplate"),
+      categoryTemplates: split(value(form, "categoryTemplates")),
+      moves
+    })
+  };
+}
+
+function outputFieldValues(settings = {}) {
+  return settings.fields || settings.columns || DEFAULT_OUTPUT_FIELDS;
+}
+
+function renderOutputFieldChoices(selectedFields = DEFAULT_OUTPUT_FIELDS) {
+  const selected = new Set(selectedFields);
+  const fields = [...new Set([...DEFAULT_OUTPUT_FIELDS, "validation_confidence", "customer_id", "order_run_id"])];
+  el("outputFieldChoices").innerHTML = fields
+    .map((field) => `
+      <label class="checkline">
+        <input name="outputFields" type="checkbox" value="${escapeHtml(field)}" ${selected.has(field) ? "checked" : ""}>
+        ${escapeHtml(OUTPUT_FIELD_LABELS[field] || field)}
+      </label>
+    `)
+    .join("");
+}
+
+function selectedOutputFields() {
+  return [...document.querySelectorAll('input[name="outputFields"]:checked')].map((input) => input.value);
+}
+
+function clearRoutingForm() {
+  const form = el("routingForm");
+  form.reset();
+  setValue(form, "phase", "webstoreOrder");
+  setValue(form, "outcome", "knownOrder");
+  setValue(form, "priority", "100");
+  setValue(form, "customerCodeSource", "combined");
+  setValue(form, "processedMoveMode", "none");
+  setChecked(form, "enabled", true);
+  fillSelect(form.elements.processorProfileId, processorProfileOptions(), "");
+}
+
+function loadRoutingRule(ruleId) {
+  const rule = (state.dashboard?.routingRules || []).find((item) => item.id === ruleId);
+  if (!rule) return;
+  const form = el("routingForm");
+  setValue(form, "id", rule.id);
+  setValue(form, "name", rule.name || "");
+  setValue(form, "phase", rule.phase || "general");
+  setValue(form, "outcome", rule.outcome || "needsHumanReview");
+  setValue(form, "priority", rule.priority ?? 100);
+  fillSelect(form.elements.processorProfileId, processorProfileOptions(), rule.processorProfileId || "");
+  setValue(form, "senderEquals", listText(rule.senderEquals || []));
+  setValue(form, "senderDomains", listText(rule.senderDomains || []));
+  setValue(form, "subjectRegex", listText(rule.subjectRegex || []));
+  setValue(form, "bodyRegex", listText(rule.bodyRegex || []));
+  setValue(form, "attachmentExtensions", listText(rule.attachmentExtensions || []));
+  setValue(form, "attachmentNameRegex", listText(rule.attachmentNameRegex || []));
+  setValue(form, "priorProcessedSubjectRegex", listText(rule.priorProcessedSubjectRegex || []));
+  setValue(form, "customerCodeSource", rule.customerCodeExtraction?.source || "combined");
+  setValue(form, "customerCodeRegex", rule.customerCodeExtraction?.regex || "");
+  setValue(form, "subjectTemplate", rule.subjectUpdate?.template || "");
+  setValue(form, "categoryTemplates", listText(rule.emailActions?.categoryTemplates || []));
+  const processedMove = rule.emailActions?.moves?.processedOrder || {};
+  setValue(form, "processedMoveMode", processedMove.mode || "none");
+  setValue(form, "processedMoveTarget", moveTarget(processedMove));
+  setChecked(form, "requiredAttachment", rule.requiredAttachment);
+  setChecked(form, "enabled", rule.enabled !== false);
+  form.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function clearProcessorProfileForm() {
+  const form = el("processorProfileForm");
+  form.reset();
+  setValue(form, "processorType", "csv");
+  setValue(form, "delimiter", "");
+  setChecked(form, "hasHeader", true);
+  fillSelect(form.elements.outputProfileId, outputProfileOptions(), "");
+}
+
+function loadProcessorProfile(profileId) {
+  const profile = (state.dashboard?.processorProfiles || []).find((item) => item.id === profileId);
+  if (!profile) return;
+  const form = el("processorProfileForm");
+  const settings = profile.settings || {};
+  const fieldMap = settings.fieldMap || {};
+  setValue(form, "id", profile.id);
+  setValue(form, "name", profile.name || "");
+  setValue(form, "processorType", profile.processorType || "csv");
+  fillSelect(form.elements.outputProfileId, outputProfileOptions(), profile.outputProfileId || "");
+  setValue(form, "delimiter", settings.delimiter || "");
+  setValue(form, "headerlessColumns", listText(settings.headerlessColumns || settings.columns || []));
+  setValue(form, "itemNumberField", fieldMap.provided_item_number || "");
+  setValue(form, "upcField", fieldMap.provided_upc || "");
+  setValue(form, "quantityField", fieldMap.quantity || "");
+  setValue(form, "descriptionField", fieldMap.description || "");
+  setValue(form, "poNumberField", fieldMap.po_number || "");
+  setValue(form, "orderNumberField", fieldMap.order_number || "");
+  setValue(form, "linePattern", settings.linePattern || "");
+  setValue(form, "baseProcessorType", settings.baseProcessorType || "");
+  setValue(form, "documentIntelligenceModelId", settings.documentIntelligenceModelId || "");
+  setChecked(form, "hasHeader", settings.hasHeader !== false);
+  form.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function clearOutputProfileForm() {
+  const form = el("outputProfileForm");
+  form.reset();
+  setValue(form, "outputType", "csv");
+  setValue(form, "delimiter", ",");
+  setValue(form, "encoding", "utf-8");
+  setValue(form, "destinationAdapter", "blob");
+  setChecked(form, "includeHeader", true);
+  renderOutputFieldChoices(DEFAULT_OUTPUT_FIELDS);
+}
+
+function loadOutputProfile(profileId) {
+  const profile = (state.dashboard?.outputProfiles || []).find((item) => item.id === profileId);
+  if (!profile) return;
+  const form = el("outputProfileForm");
+  const settings = profile.settings || {};
+  const destination = profile.destination || {};
+  setValue(form, "id", profile.id);
+  setValue(form, "name", profile.name || "");
+  setValue(form, "outputType", profile.outputType || "csv");
+  setValue(form, "fileNameTemplate", settings.fileNameTemplate || "");
+  setValue(form, "delimiter", settings.delimiter || ",");
+  setValue(form, "encoding", settings.encoding || "utf-8");
+  setValue(form, "textTemplate", settings.template || "");
+  setValue(form, "formats", listText(settings.formats || settings.outputTypes || []));
+  setValue(form, "destinationAdapter", destination.adapter || "blob");
+  setValue(form, "destinationFolder", destination.folder || "");
+  setValue(form, "destinationUrl", destination.url || settings.url || "");
+  setChecked(form, "includeHeader", settings.includeHeader !== false);
+  setChecked(form, "productionDeliveryEnabled", destination.productionDeliveryEnabled === true);
+  renderOutputFieldChoices(outputFieldValues(settings));
+  form.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function latestDate(values) {
@@ -289,14 +575,14 @@ function renderDistributorDetail() {
     <div><strong>Last tested</strong> ${escapeHtml(mailbox?.lastTestedAt || connection?.lastTestedAt || "")}</div>
   `;
 
-  const automationForm = el("automationSettingsForm");
-  automationForm.elements.routingSettings.value = JSON.stringify(settings.routingSettings || {}, null, 2);
-  automationForm.elements.orderConditions.value = JSON.stringify(settings.orderConditions || {}, null, 2);
-  automationForm.elements.webstoreEmailConditions.value = JSON.stringify(settings.webstoreEmailConditions || {}, null, 2);
-  automationForm.elements.extractionRules.value = JSON.stringify(settings.extractionRules || {}, null, 2);
-  automationForm.elements.emailSubjectSettings.value = JSON.stringify(settings.emailSubjectSettings || {}, null, 2);
+  populateProfileSelects();
+  populateAutomationSettings(settings);
+  if (!el("routingForm").elements.id.value) clearRoutingForm();
+  if (!el("processorProfileForm").elements.id.value) clearProcessorProfileForm();
+  if (!el("outputProfileForm").elements.id.value) clearOutputProfileForm();
 
   renderRoutingRules();
+  renderProfiles();
   renderReadOnlyLists();
 }
 
@@ -308,6 +594,26 @@ function renderRoutingRules() {
       <td>${escapeHtml(rule.phase || "general")}</td>
       <td>${escapeHtml(rule.outcome || "")}</td>
       <td>${rule.enabled ? "Yes" : "No"}</td>
+      <td><button class="secondary" data-action="edit-routing-rule" data-rule="${escapeHtml(rule.id)}" type="button">Edit</button></td>
+    </tr>
+  `).join("");
+}
+
+function renderProfiles() {
+  el("processorProfilesBody").innerHTML = (state.dashboard?.processorProfiles || []).map((profile) => `
+    <tr>
+      <td>${escapeHtml(profile.name || profile.id)}</td>
+      <td>${escapeHtml(profile.processorType || "")}</td>
+      <td>${escapeHtml(profile.outputProfileId || "")}</td>
+      <td><button class="secondary" data-action="edit-processor-profile" data-profile="${escapeHtml(profile.id)}" type="button">Edit</button></td>
+    </tr>
+  `).join("");
+  el("outputProfilesBody").innerHTML = (state.dashboard?.outputProfiles || []).map((profile) => `
+    <tr>
+      <td>${escapeHtml(profile.name || profile.id)}</td>
+      <td>${escapeHtml(profile.outputType || "")}</td>
+      <td>${escapeHtml(profile.destination?.adapter || "")}</td>
+      <td><button class="secondary" data-action="edit-output-profile" data-profile="${escapeHtml(profile.id)}" type="button">Edit</button></td>
     </tr>
   `).join("");
 }
@@ -448,13 +754,7 @@ function wireForms() {
       name: selectedDistributor().name || state.tenantId,
       environment: selectedDistributor().environment || "",
       status: selectedDistributor().status || "active",
-      settings: {
-        routingSettings: parseJsonField(form, "routingSettings"),
-        orderConditions: parseJsonField(form, "orderConditions"),
-        webstoreEmailConditions: parseJsonField(form, "webstoreEmailConditions"),
-        extractionRules: parseJsonField(form, "extractionRules"),
-        emailSubjectSettings: parseJsonField(form, "emailSubjectSettings")
-      }
+      settings: automationSettingsFromForm(form)
     });
     if (!showActionResult(result)) return;
     await refresh({ includeCustomerFilter: false });
@@ -478,31 +778,87 @@ function wireForms() {
       senderDomains: split(value(form, "senderDomains")),
       subjectRegex: split(value(form, "subjectRegex")),
       bodyRegex: split(value(form, "bodyRegex")),
-      knownWebstorePatterns: split(value(form, "knownWebstorePatterns")),
       priorProcessedSubjectRegex: split(value(form, "priorProcessedSubjectRegex")),
       attachmentExtensions: split(value(form, "attachmentExtensions")),
       attachmentNameRegex: split(value(form, "attachmentNameRegex")),
-      customerCodeSource: "combined",
+      requiredAttachment: checked(form, "requiredAttachment"),
+      enabled: checked(form, "enabled"),
+      customerCodeSource: value(form, "customerCodeSource"),
       customerCodeRegex: value(form, "customerCodeRegex"),
       customerCodeGroup: "customerCode",
       subjectTemplate: value(form, "subjectTemplate"),
       categoryCsrField: "csrFolder",
-      categoryTemplates: split(value(form, "categoryTemplates"))
+      categoryTemplates: split(value(form, "categoryTemplates")),
+      processedMoveMode: value(form, "processedMoveMode"),
+      processedMoveFolder: value(form, "processedMoveMode") === "staticFolder" ? value(form, "processedMoveTarget") : "",
+      processedMoveCustomerField: value(form, "processedMoveMode") === "customerField" ? value(form, "processedMoveTarget") : ""
     });
     if (!showActionResult(result)) return;
+    clearRoutingForm();
     await refresh({ includeCustomerFilter: false });
   });
 
-  el("profileForm").addEventListener("submit", async (event) => {
+  el("processorProfileForm").addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
-    const settings = value(form, "settings") ? JSON.parse(value(form, "settings")) : {};
-    const body = { customerId: "_global", name: value(form, "name"), settings };
-    const path = value(form, "kind") === "processor" ? "/console/processor-profiles" : "/console/output-profiles";
-    if (value(form, "kind") === "processor") body.processorType = value(form, "type");
-    else body.outputType = value(form, "type");
-    const result = await post(path, body);
+    const fieldMap = compactObject({
+      provided_item_number: value(form, "itemNumberField"),
+      provided_upc: value(form, "upcField"),
+      quantity: value(form, "quantityField"),
+      description: value(form, "descriptionField"),
+      po_number: value(form, "poNumberField"),
+      order_number: value(form, "orderNumberField")
+    });
+    const settings = compactObject({
+      hasHeader: checked(form, "hasHeader"),
+      delimiter: value(form, "delimiter"),
+      headerlessColumns: split(value(form, "headerlessColumns")),
+      fieldMap,
+      linePattern: value(form, "linePattern"),
+      baseProcessorType: value(form, "baseProcessorType"),
+      documentIntelligenceModelId: value(form, "documentIntelligenceModelId")
+    });
+    const result = await post("/console/processor-profiles", {
+      id: value(form, "id"),
+      customerId: "_global",
+      name: value(form, "name"),
+      processorType: value(form, "processorType"),
+      outputProfileId: value(form, "outputProfileId"),
+      settings
+    });
     if (!showActionResult(result)) return;
+    clearProcessorProfileForm();
+    await refresh({ includeCustomerFilter: false });
+  });
+
+  el("outputProfileForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const settings = compactObject({
+      fileNameTemplate: value(form, "fileNameTemplate"),
+      delimiter: value(form, "delimiter"),
+      includeHeader: checked(form, "includeHeader"),
+      encoding: value(form, "encoding"),
+      template: value(form, "textTemplate"),
+      formats: split(value(form, "formats")),
+      fields: selectedOutputFields()
+    });
+    const destination = compactObject({
+      adapter: value(form, "destinationAdapter"),
+      folder: value(form, "destinationFolder"),
+      url: value(form, "destinationUrl"),
+      productionDeliveryEnabled: checked(form, "productionDeliveryEnabled")
+    });
+    const result = await post("/console/output-profiles", {
+      id: value(form, "id"),
+      customerId: "_global",
+      name: value(form, "name"),
+      outputType: value(form, "outputType"),
+      destination,
+      settings
+    });
+    if (!showActionResult(result)) return;
+    clearOutputProfileForm();
     await refresh({ includeCustomerFilter: false });
   });
 
@@ -595,6 +951,10 @@ document.addEventListener("click", async (event) => {
   }
   if (target.id === "authorizeMicrosoftButton") await authorizeMicrosoft();
   if (target.id === "testMailboxButton") await testMailbox();
+  if (target.id === "clearRoutingFormButton") clearRoutingForm();
+  if (target.dataset.action === "edit-routing-rule") loadRoutingRule(target.dataset.rule);
+  if (target.dataset.action === "edit-processor-profile") loadProcessorProfile(target.dataset.profile);
+  if (target.dataset.action === "edit-output-profile") loadOutputProfile(target.dataset.profile);
   if (target.dataset.action === "inspect") showDetails(JSON.parse(target.dataset.payload));
   if (target.dataset.action === "resolve") await resolveTask(target.dataset.id, target.dataset.type);
   if (target.dataset.action === "reprocess") {

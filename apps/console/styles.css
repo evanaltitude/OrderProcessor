@@ -48,6 +48,12 @@ h2 {
   font-size: 16px;
 }
 
+h3 {
+  margin: 2px 0 0;
+  font-size: 13px;
+  font-weight: 650;
+}
+
 p {
   margin: 4px 0 0;
   color: var(--muted);
@@ -221,6 +227,62 @@ th {
   align-content: start;
 }
 
+.editor label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.editor label input,
+.editor label select,
+.editor label textarea {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.form-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.form-grid.two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.form-grid.three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.checkline {
+  display: flex !important;
+  min-height: 34px;
+  align-items: center;
+  gap: 8px !important;
+  color: var(--ink) !important;
+  font-size: 14px !important;
+  font-weight: 400 !important;
+}
+
+.checkline input {
+  width: auto;
+  min-height: 0;
+}
+
+.checkbox-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px 10px;
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .task-list,
 .artifact-grid {
   display: grid;
@@ -307,7 +369,10 @@ pre {
 @media (max-width: 820px) {
   .app-header,
   .header-actions,
-  .split {
+  .split,
+  .form-grid.two,
+  .form-grid.three,
+  .checkbox-grid {
     display: grid;
     grid-template-columns: 1fr;
   }
