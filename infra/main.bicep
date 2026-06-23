@@ -407,6 +407,10 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
           value: 'cosmos'
         }
         {
+          name: 'ORDER_PROCESSOR_SOURCE_ARCHIVE_BACKEND'
+          value: 'blob'
+        }
+        {
           name: 'COSMOS_DATABASE_NAME'
           value: cosmosDatabase.name
         }
@@ -416,6 +420,10 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
         }
         {
           name: 'BLOB_SERVICE_ENDPOINT'
+          value: storageAccount.properties.primaryEndpoints.blob
+        }
+        {
+          name: 'SOURCE_ROWS_STORAGE_ACCOUNT_URL'
           value: storageAccount.properties.primaryEndpoints.blob
         }
         {
