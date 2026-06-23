@@ -796,10 +796,15 @@ class OrderProcessorApi:
                 "isRead",
             ]
         )
-        url = (
-            f"https://graph.microsoft.com/v1.0/users/{encoded_mailbox}/mailFolders/inbox/messages"
-            f"?$top={limit}&$orderby=receivedDateTime desc&$select={select_fields}"
+        query = parse.urlencode(
+            {
+                "$top": str(limit),
+                "$orderby": "receivedDateTime desc",
+                "$select": select_fields,
+            },
+            safe=",",
         )
+        url = f"https://graph.microsoft.com/v1.0/users/{encoded_mailbox}/mailFolders/inbox/messages?{query}"
         response = graph_get(access_token, url)
         return [message for message in response.get("value", []) if isinstance(message, dict)]
 
