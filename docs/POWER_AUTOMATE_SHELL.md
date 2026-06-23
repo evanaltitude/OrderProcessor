@@ -10,7 +10,7 @@ Power Automate should stay intentionally small: it handles tenant mailbox/event 
 | --- | --- | --- | --- | --- |
 | `OrderProcessor - Mailbox Trigger Template` | `7f52d9d6-8eb1-4ad7-b2f6-89dd55dc4e01` | New email in configured shared mailbox | `POST /emails/ingest` | Sends message metadata, mailbox identity, customer scope when known, and attachment references. No parsing branches in the flow. |
 | `OrderProcessor - Customer Import Adapter Template` | `06b7f4fc-5f13-4a6f-8742-03f19c301902` | Customer-specific file/source adapter request | `POST /imports/customers` | Use only when the source must be received through M365 or another Power Automate-owned source. |
-| `OrderProcessor - Item Import Adapter Template` | `7aa4ab3f-d509-4866-98a0-fcce8dc79b03` | Item source adapter request | `POST /imports/items` | Replaces SharePoint item list maintenance flows. |
+| `OrderProcessor - Item Import Adapter Template` | `7aa4ab3f-d509-4866-98a0-fcce8dc79b03` | Distributor item source adapter request | `POST /imports/items` | Replaces SharePoint item list maintenance flows; omit customer scope for the master item catalog. |
 | `OrderProcessor - Output Delivery Adapter Template` | `92df442b-2360-42dd-b787-ce339813d877` | Azure completion callback or scheduled adapter poll | Customer-specific M365 delivery | Optional; use only when output must be sent through M365/Power Automate. |
 
 All four flows are disabled templates. Customer-specific instances should be turned on only after APIM deployment values, mailbox/backend configuration, and required connection references are configured.

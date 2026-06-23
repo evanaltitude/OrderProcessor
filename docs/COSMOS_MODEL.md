@@ -281,7 +281,7 @@ Attachment records store `name`, `contentType`, `size`, `blobUrl`, `sourceUrl`, 
 
 Universal customer imports can use distributor-customer fields such as `cust_code`, `customer_name`, `customer_store_number`, `location_address1`, `location_city`, `location_state`, `location_zip`, `phone`, `customer_website`, and `customer_email` without a field map. These normalize into `CustomerProfile` fields while preserving the original source row in `rawSource`.
 
-Universal item imports can use `part_code`, `upc_code`, `alt_parts_combined`, and `part_desc` without a field map. `alt_parts_combined` is stored as an array on `items.altPartsCombined` and also feeds normalized searchable item numbers for `items.customerItemNumbers`, so the item validator can match UPCs and alternate item identifiers.
+Universal item imports can use `part_code`, `upc_code`, `alt_parts_combined`, and `part_desc` without a field map. `alt_parts_combined` may be an array of `{ "alt_part": "..." }` objects, an array of strings, or delimited text. It is stored as an array on `items.altPartsCombined` and also feeds normalized searchable item numbers for `items.customerItemNumbers`, so the item validator can match UPCs and alternate item identifiers. Distributor master item lists omit customer scope and store under `customerId: "_global"`; customer-specific override lists can still use a downstream `customerCode`.
 
 `routingRules` are data-driven and support tenant-wide distributor rules through `customerId: "_global"` plus customer-specific rules through the customer partition. Routing rules include an ordered `phase`:
 

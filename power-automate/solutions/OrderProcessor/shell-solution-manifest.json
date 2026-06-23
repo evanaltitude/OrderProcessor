@@ -40,7 +40,7 @@
                       "name":  "OrderProcessor - Item Import Adapter Template",
                       "slug":  "orderprocessor-item-import-adapter-template",
                       "workflowId":  "7aa4ab3f-d509-4866-98a0-fcce8dc79b03",
-                      "trigger":  "HTTP request from customer-specific file/source adapter",
+                      "trigger":  "HTTP request from distributor item file/source adapter",
                       "endpoint":  "POST /imports/items",
                       "status":  "disabled template",
                       "connectionReferences":  [
@@ -59,5 +59,5 @@
                                                ]
                   }
               ],
-    "generatedAt":  "2026-06-22T14:53:54.5675608-04:00"
+    "generatedAt":  "2026-06-23T14:53:04.1550872-04:00"
 }

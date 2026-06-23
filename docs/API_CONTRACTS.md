@@ -372,15 +372,14 @@ Customer alias records are generated for customer code, sender email, sender dom
 
 ## `POST /imports/items`
 
-Imports normalized item records for one customer into Cosmos and archives original source rows for audit/debug.
+Imports normalized item records into Cosmos and archives original source rows for audit/debug. When `customerId` and `customerCode` are omitted, rows are stored as the distributor master item catalog under `customerId: "_global"` and are available for all downstream customers in that distributor tenant. Provide `customerCode` only for customer-specific override lists.
 
 Request shape:
 
 ```json
 {
   "tenantId": "altitude",
-  "customerId": "customer-1",
-  "sourceName": "customer-1-items.json",
+  "sourceName": "itemNumbers.json",
   "contentType": "application/json",
   "fieldMap": {
     "internal_item_number": "Item",
@@ -400,17 +399,17 @@ Item imports default to a weekly refresh cadence. A customer can override with `
 
 Item rows require at least one identifier: internal item number, UPC, customer item number, or alternate item id. Missing-identifier rows are skipped and returned in `errors`.
 
-The universal item row shape is accepted without a field map. `alt_parts_combined` can arrive as an array or a pipe/comma/semicolon/newline-delimited string and is normalized into an array while also feeding item validation aliases:
+The universal item row shape is accepted without a field map. `alt_parts_combined` can arrive as an array of `{ "alt_part": "..." }` objects, an array of strings, or a pipe/comma/semicolon/newline-delimited string. It is normalized into an array while also feeding item validation aliases:
 
 ```json
 {
-  "part_code": "200510610",
-  "upc_code": "849910140402",
+  "part_code": "100510100",
+  "upc_code": "031865BRN4R",
   "alt_parts_combined": [
-    "849910140402",
-    "CLR LG TCT BK"
+    { "alt_part": "031865BRN4R" },
+    { "alt_part": "10004120" }
   ],
-  "part_desc": "ALCOTT LARGE DOG SOLID BLACK TACTICAL COLLAR EA"
+  "part_desc": "Bed-r Nest Kraft Irradiated 4 gram 1600 per case"
 }
 ```
 

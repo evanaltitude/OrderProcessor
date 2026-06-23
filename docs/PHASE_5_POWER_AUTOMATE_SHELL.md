@@ -39,7 +39,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\Build-OrderProcessor
 | --- | --- | --- | --- | --- |
 | `OrderProcessor - Mailbox Trigger Template` | `7f52d9d6-8eb1-4ad7-b2f6-89dd55dc4e01` | Disabled template | Office 365 Outlook shared mailbox new-email trigger | Calls APIM `POST /emails/ingest`. |
 | `OrderProcessor - Customer Import Adapter Template` | `06b7f4fc-5f13-4a6f-8742-03f19c301902` | Disabled template | HTTP request from a customer-specific file/source adapter | Calls APIM `POST /imports/customers`. |
-| `OrderProcessor - Item Import Adapter Template` | `7aa4ab3f-d509-4866-98a0-fcce8dc79b03` | Disabled template | HTTP request from a customer-specific file/source adapter | Calls APIM `POST /imports/items`. |
+| `OrderProcessor - Item Import Adapter Template` | `7aa4ab3f-d509-4866-98a0-fcce8dc79b03` | Disabled template | HTTP request from a distributor item file/source adapter | Calls APIM `POST /imports/items`. |
 | `OrderProcessor - Output Delivery Adapter Template` | `92df442b-2360-42dd-b787-ce339813d877` | Disabled optional template | HTTP request from Azure completion callback or scheduled adapter poll | Placeholder for M365 delivery only when required. |
 
 The mailbox trigger sends mailbox address, mailbox account id, optional customer id, message id, sender, subject, received date, body preview/body content, and attachment references. It does not parse orders or branch by customer.

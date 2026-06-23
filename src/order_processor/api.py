@@ -2271,7 +2271,7 @@ class OrderProcessorApi:
 
         if requested_customer_code:
             return stable_id(tenant_id, requested_customer_code)
-        return requested_customer_id
+        return requested_customer_id or GLOBAL_CUSTOMER_ID
 
     @staticmethod
     def _import_source_metadata(
@@ -2417,6 +2417,7 @@ class OrderProcessorApi:
             self.repository.query_by_tenant("items", tenant_id),
             customer_filter,
             session,
+            include_global=True,
         )
         audit_events = self._filter_audit_events_for_console(
             self.repository.query_by_tenant("auditEvents", tenant_id),
@@ -3975,13 +3976,19 @@ class OrderProcessorApi:
                 "apiUrl": api_url("/imports/customers"),
                 "minimumBody": {
                     "tenantId": tenant_id,
-                    "sourceName": "customer-list.json",
+                    "sourceName": "customers.json",
                     "rows": [
                         {
-                            "customerCode": "102914",
-                            "name": "Hollywood Feed",
-                            "routeNumber": "400",
-                            "csrFolder": "CSR Name or Folder",
+                            "cust_code": "100022",
+                            "customer_name": "CHOW HOUND STORES - MASTER A/R",
+                            "customer_store_number": None,
+                            "location_address1": "734 28TH STREET SE",
+                            "location_city": "GRAND RAPIDS",
+                            "location_state": "MI",
+                            "location_zip": "49548",
+                            "phone": "616-452-7877",
+                            "customer_website": "WWW.CHOWHOUNDPET.COM",
+                            "customer_email": None,
                         }
                     ],
                 },
@@ -3996,20 +4003,22 @@ class OrderProcessorApi:
                 ],
                 "partitionKeyValue": [
                     tenant_id,
-                    "<downstream customer id>",
+                    GLOBAL_CUSTOMER_ID,
                 ],
                 "apiPath": "/imports/items",
                 "apiUrl": api_url("/imports/items"),
                 "minimumBody": {
                     "tenantId": tenant_id,
-                    "customerCode": "102914",
-                    "sourceName": "item-list.json",
+                    "sourceName": "itemNumbers.json",
                     "rows": [
                         {
-                            "internalItemNumber": "10001",
-                            "description": "Item description",
-                            "upc": "000000000000",
-                            "customerItemNumbers": "customer item number",
+                            "part_code": "100510100",
+                            "upc_code": "031865BRN4R",
+                            "alt_parts_combined": [
+                                {"alt_part": "031865BRN4R"},
+                                {"alt_part": "10004120"},
+                            ],
+                            "part_desc": "Bed-r Nest Kraft Irradiated 4 gram 1600 per case",
                         }
                     ],
                 },

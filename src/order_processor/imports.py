@@ -27,8 +27,31 @@ def stable_id(*parts: str) -> str:
 def split_multi(value: Any) -> list[str]:
     if value is None:
         return []
+    if isinstance(value, dict):
+        values: list[str] = []
+        preferred_keys = (
+            "value",
+            "alias",
+            "domain",
+            "email",
+            "customerCode",
+            "cust_code",
+            "storeNumber",
+            "routeNumber",
+        )
+        for key in preferred_keys:
+            if key in value:
+                values.extend(split_multi(value[key]))
+        if values:
+            return values
+        for item in value.values():
+            values.extend(split_multi(item))
+        return values
     if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
+        values: list[str] = []
+        for item in value:
+            values.extend(split_multi(item))
+        return values
     normalized = str(value).replace("\r", "\n")
     parts: list[str] = []
     for chunk in normalized.split("\n"):
@@ -91,6 +114,17 @@ def _pick_field(row: dict[str, Any], field_map: dict[str, str], name: str, defau
     return "" if value is None else str(value).strip()
 
 
+def _pick_raw_field(row: dict[str, Any], field_map: dict[str, str], name: str, default: Any = None) -> Any:
+    source = field_map.get(name, name)
+    value = _first_row_value(row, source, default=None)
+    if value is None and name not in field_map:
+        for alias in FIELD_ALIASES.get(name, ()):
+            value = _first_row_value(row, alias, default=None)
+            if value is not None:
+                break
+    return default if value is None else value
+
+
 def _first_row_value(row: dict[str, Any], key: str, default: Any = None) -> Any:
     if key in row:
         return row[key]
@@ -108,6 +142,29 @@ def _normalize_field_name(value: str) -> str:
 def split_item_identifiers(value: Any) -> list[str]:
     if value is None:
         return []
+    if isinstance(value, dict):
+        values: list[str] = []
+        preferred_keys = (
+            "alt_part",
+            "altPart",
+            "part_code",
+            "partCode",
+            "itemNumber",
+            "item_number",
+            "item",
+            "sku",
+            "upc",
+            "upc_code",
+            "value",
+        )
+        for key in preferred_keys:
+            if key in value:
+                values.extend(split_item_identifiers(value[key]))
+        if values:
+            return values
+        for item in value.values():
+            values.extend(split_item_identifiers(item))
+        return values
     if isinstance(value, list):
         values: list[str] = []
         for item in value:
@@ -470,8 +527,8 @@ def validate_item_rows(rows: list[dict[str, Any]], field_map: dict[str, str]) ->
     for index, row in enumerate(rows):
         internal_item_number = _pick_field(row, field_map, "internal_item_number")
         upc = _pick_field(row, field_map, "upc")
-        customer_item_numbers = _pick_field(row, field_map, "customer_item_numbers")
-        alt_parts_combined = _pick_field(row, field_map, "alt_parts_combined")
+        customer_item_numbers = split_multi(_pick_raw_field(row, field_map, "customer_item_numbers"))
+        alt_parts_combined = split_item_identifiers(_pick_raw_field(row, field_map, "alt_parts_combined"))
         if not internal_item_number and not upc and not customer_item_numbers and not alt_parts_combined:
             errors.append(
                 {
@@ -603,8 +660,8 @@ def normalize_item_row(
 ) -> ItemRecord:
     internal_item_number = _pick_field(row, field_map, "internal_item_number")
     upc = _pick_field(row, field_map, "upc")
-    alt_parts_combined = split_item_identifiers(_pick_field(row, field_map, "alt_parts_combined"))
-    customer_item_number_values = split_multi(_pick_field(row, field_map, "customer_item_numbers"))
+    alt_parts_combined = split_item_identifiers(_pick_raw_field(row, field_map, "alt_parts_combined"))
+    customer_item_number_values = split_multi(_pick_raw_field(row, field_map, "customer_item_numbers"))
     fallback_values = [*customer_item_number_values, *alt_parts_combined]
     fallback_item_number = normalize_item_token(fallback_values[0]) if fallback_values else ""
     canonical_item_number = internal_item_number or upc or fallback_item_number
@@ -613,7 +670,7 @@ def normalize_item_row(
         for value in [*customer_item_number_values, *alt_parts_combined]
         if value.strip()
     ])
-    aliases = _unique_preserve_order(split_multi(_pick_field(row, field_map, "aliases")))
+    aliases = _unique_preserve_order(split_multi(_pick_raw_field(row, field_map, "aliases")))
     metadata = dict(import_metadata or {})
 
     return ItemRecord(

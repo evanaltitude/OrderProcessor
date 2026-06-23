@@ -4,6 +4,7 @@ from difflib import SequenceMatcher
 import re
 from typing import Any
 
+from .data_model import GLOBAL_CUSTOMER_ID
 from .models import ItemRecord, ItemValidationResult, MatchStatus
 
 
@@ -169,13 +170,15 @@ def validate_item(
         )
 
     scoped_items = [
-        item for item in items if item.tenant_id == tenant_id and item.customer_id == customer_id
+        item
+        for item in items
+        if item.tenant_id == tenant_id and item.customer_id in {customer_id, GLOBAL_CUSTOMER_ID}
     ]
     if not scoped_items:
         return ItemValidationResult(
             status=MatchStatus.UNRESOLVED,
             candidates=[],
-            unresolved_reason="no candidate items in customer item list",
+            unresolved_reason="no candidate items in customer or master item list",
         )
 
     candidates = [

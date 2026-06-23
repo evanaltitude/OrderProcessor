@@ -189,8 +189,13 @@ class ConsoleBackendTests(unittest.TestCase):
         self.assertEqual(dashboard["importTargets"]["customerList"]["apiPath"], "/imports/customers")
         self.assertEqual(dashboard["importTargets"]["itemList"]["containerName"], "items")
         self.assertEqual(dashboard["importTargets"]["itemList"]["partitionKeyValue"][0], "altitude")
+        self.assertEqual(dashboard["importTargets"]["itemList"]["partitionKeyValue"][1], "_global")
         self.assertEqual(dashboard["importTargets"]["itemList"]["apiPath"], "/imports/items")
-        self.assertEqual(dashboard["importTargets"]["itemList"]["minimumBody"]["customerCode"], "102914")
+        self.assertNotIn("customerCode", dashboard["importTargets"]["itemList"]["minimumBody"])
+        self.assertEqual(
+            dashboard["importTargets"]["itemList"]["minimumBody"]["rows"][0]["alt_parts_combined"][0]["alt_part"],
+            "031865BRN4R",
+        )
 
     def test_platform_admin_can_manage_new_distributor_tenant_after_create(self) -> None:
         api, repo, _ = self._api()

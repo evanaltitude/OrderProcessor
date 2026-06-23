@@ -6,6 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from order_processor.data_model import GLOBAL_CUSTOMER_ID
 from order_processor.item_validation import normalize_item_token, validate_item
 from order_processor.models import ItemRecord, MatchStatus
 
@@ -64,6 +65,30 @@ class ItemValidationTests(unittest.TestCase):
 
         self.assertEqual(result.status, MatchStatus.MATCHED)
         self.assertEqual(result.candidates[0]["altPartsCombined"], ["PILOT 123"])
+
+    def test_matches_master_catalog_item_for_any_downstream_customer(self) -> None:
+        result = validate_item(
+            tenant_id="altitude",
+            customer_id="other-customer",
+            provided_item_number="10004120",
+            provided_upc="",
+            description="",
+            items=[
+                ItemRecord(
+                    id="item-1",
+                    tenant_id="altitude",
+                    customer_id=GLOBAL_CUSTOMER_ID,
+                    internal_item_number="100510100",
+                    description="Bed-r Nest Kraft Irradiated 4 gram 1600 per case",
+                    upc="031865BRN4R",
+                    alt_parts_combined=["031865BRN4R", "10004120"],
+                    customer_item_numbers=["031865BRN4R", "10004120"],
+                )
+            ],
+        )
+
+        self.assertEqual(result.status, MatchStatus.MATCHED)
+        self.assertEqual(result.matched_internal_item_number, "100510100")
 
     def test_uses_row_context_when_explicit_fields_are_missing(self) -> None:
         result = validate_item(

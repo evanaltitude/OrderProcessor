@@ -6,7 +6,7 @@ The OrderProcessor Power Automate solution intentionally contains only mailbox/c
 | --- | --- | --- | --- | --- |
 | OrderProcessor - Mailbox Trigger Template | disabled template | Office 365 Outlook shared mailbox new-email trigger | POST /emails/ingest | shared_office365 |
 | OrderProcessor - Customer Import Adapter Template | disabled template | HTTP request from customer-specific file/source adapter | POST /imports/customers |  |
-| OrderProcessor - Item Import Adapter Template | disabled template | HTTP request from customer-specific file/source adapter | POST /imports/items |  |
+| OrderProcessor - Item Import Adapter Template | disabled template | HTTP request from distributor item file/source adapter | POST /imports/items |  |
 | OrderProcessor - Output Delivery Adapter Template | disabled optional template | HTTP request from Azure completion callback or scheduled adapter poll | customer-specific M365 delivery |  |
 
 ## Guardrails

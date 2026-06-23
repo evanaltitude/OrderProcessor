@@ -38,7 +38,7 @@ Use this checklist for every distributor/customer package before moving from sha
 ## 5. Data Refresh
 
 - Define customer list source, owner, refresh cadence, parser, and field map or emit the universal customer shape with `cust_code`, `customer_name`, `customer_store_number`, address/contact fields, and CSR fields.
-- Define item list source, owner, refresh cadence, parser, and field map or emit the universal item shape with `part_code`, `upc_code`, `alt_parts_combined` as an array, and `part_desc`.
+- Define item list source, owner, refresh cadence, parser, and field map or emit the universal item shape with `part_code`, `upc_code`, `alt_parts_combined` as an array of `{ "alt_part": "..." }` objects, and `part_desc`.
 - Preserve original source rows in Blob Storage during real imports.
 - Confirm duplicate/missing/malformed rows are covered by tests.
 

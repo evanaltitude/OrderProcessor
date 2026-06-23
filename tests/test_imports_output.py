@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from order_processor.imports import normalize_customer_row, normalize_item_row
 from order_processor.imports import InMemorySourceRowArchive
+from order_processor.data_model import GLOBAL_CUSTOMER_ID
 from order_processor.models import ItemRecord, OrderRun, ProcessingStatus
 from order_processor.order_processing import CsvOrderProcessor, validate_order_lines
 from order_processor.output_generation import order_to_json, order_to_line_csv
@@ -70,10 +71,13 @@ class ImportsOutputTests(unittest.TestCase):
             "altitude",
             customer.id,
             {
-                "part_code": "200510610",
-                "upc_code": "849910140402",
-                "alt_parts_combined": "849910140402|CLR LG TCT BK",
-                "part_desc": "ALCOTT LARGE DOG SOLID BLACK TACTICAL COLLAR EA",
+                "part_code": "100510100",
+                "upc_code": "031865BRN4R",
+                "alt_parts_combined": [
+                    {"alt_part": "031865BRN4R"},
+                    {"alt_part": "10004120"},
+                ],
+                "part_desc": "Bed-r Nest Kraft Irradiated 4 gram 1600 per case",
             },
             {},
         )
@@ -85,10 +89,11 @@ class ImportsOutputTests(unittest.TestCase):
         self.assertEqual(customer.city, "GRAND RAPIDS")
         self.assertEqual(customer.postal_code, "49548")
         self.assertEqual(customer.customer_email, "GREGC@CHOWHOUNDPET.COM")
-        self.assertEqual(item.internal_item_number, "200510610")
-        self.assertEqual(item.upc, "849910140402")
-        self.assertEqual(item.alt_parts_combined, ["849910140402", "CLR LG TCT BK"])
-        self.assertIn("CLRLGTCTBK", item.customer_item_numbers)
+        self.assertEqual(item.internal_item_number, "100510100")
+        self.assertEqual(item.upc, "031865BRN4R")
+        self.assertEqual(item.alt_parts_combined, ["031865BRN4R", "10004120"])
+        self.assertIn("10004120", item.customer_item_numbers)
+        self.assertEqual(item.raw_source["alt_parts_combined"][0]["alt_part"], "031865BRN4R")
 
     def test_csv_processor_outputs_universal_formats(self) -> None:
         order = OrderRun(
@@ -183,6 +188,33 @@ class ImportsOutputTests(unittest.TestCase):
         self.assertEqual(items["customerCode"], "102914")
         self.assertEqual(items["items"][0]["customerId"], customer_id)
         self.assertEqual(repo.get("items", items["items"][0]["id"])["customerId"], customer_id)
+
+    def test_import_items_without_customer_scope_uses_master_catalog(self) -> None:
+        repo = InMemoryRepository()
+        api = OrderProcessorApi(repo, source_archive=InMemorySourceRowArchive())
+
+        items = api.import_items(
+            {
+                "tenantId": "altitude",
+                "sourceName": "itemNumbers.json",
+                "rows": [
+                    {
+                        "part_code": "100510100",
+                        "upc_code": "031865BRN4R",
+                        "alt_parts_combined": [
+                            {"alt_part": "031865BRN4R"},
+                            {"alt_part": "10004120"},
+                        ],
+                        "part_desc": "Bed-r Nest Kraft Irradiated 4 gram 1600 per case",
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(items["customerId"], GLOBAL_CUSTOMER_ID)
+        self.assertEqual(items["customerCode"], "")
+        self.assertEqual(items["items"][0]["customerId"], GLOBAL_CUSTOMER_ID)
+        self.assertEqual(items["items"][0]["altPartsCombined"], ["031865BRN4R", "10004120"])
 
     def test_import_items_honors_customer_refresh_override_and_incremental_updates(self) -> None:
         repo = InMemoryRepository()

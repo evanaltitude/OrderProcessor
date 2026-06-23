@@ -1,14 +1,15 @@
 # OrderProcessor - Item Import Adapter Template
 
 - Status: disabled template
-- Trigger: HTTP request from customer-specific file/source adapter
+- Trigger: HTTP request from distributor item file/source adapter
 - Azure/APIM target: POST /imports/items
 - Workflow ID: 7aa4ab3f-d509-4866-98a0-fcce8dc79b03
 
 ## Notes
 
 - Use only when item refresh input must originate in Power Automate.
-- Flow forwards normalized rows/source metadata to APIM; Azure owns parsing, item normalization, embeddings, and Cosmos writes.
+- Omit customerId/customerCode for the distributor master item catalog; provide customerCode only for a customer-specific override list.
+- Flow forwards source rows/metadata to APIM; Azure owns parsing, item normalization, embeddings, and Cosmos writes.
 
 ## Configuration
 
