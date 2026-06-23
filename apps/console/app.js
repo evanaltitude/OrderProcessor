@@ -42,6 +42,37 @@ const OUTPUT_FIELD_LABELS = {
   customer_id: "Customer ID",
   order_run_id: "Run ID"
 };
+const CUSTOMER_LIST_BASE_COLUMNS = [
+  { key: "customerCode", label: "Account" },
+  { key: "name", label: "Name" },
+  { key: "storeNumber", label: "Store" },
+  { key: "routeNumber", label: "Route" },
+  { key: "csrEmail", label: "CSR Email" },
+  { key: "csrFolder", label: "CSR Folder" },
+  { key: "address1", label: "Address" },
+  { key: "city", label: "City" },
+  { key: "state", label: "State" },
+  { key: "postalCode", label: "Zip" },
+  { key: "phone", label: "Phone" },
+  { key: "website", label: "Website" },
+  { key: "customerEmail", label: "Customer Email" },
+  { key: "lastImportedAt", label: "Last Update" },
+  { key: "sourceName", label: "Source" },
+  { key: "id", label: "Record ID" }
+];
+const ITEM_LIST_BASE_COLUMNS = [
+  { key: "customerId", label: "Customer" },
+  { key: "internalItemNumber", label: "Item" },
+  { key: "description", label: "Description" },
+  { key: "upc", label: "UPC" },
+  { key: "alternateIds", label: "Alternate IDs" },
+  { key: "customerItemNumbers", label: "Customer Item Numbers" },
+  { key: "altPartsCombined", label: "Alt Parts Combined" },
+  { key: "aliases", label: "Aliases" },
+  { key: "lastImportedAt", label: "Last Update" },
+  { key: "sourceName", label: "Source" },
+  { key: "id", label: "Record ID" }
+];
 
 function slugifyId(text) {
   return String(text || "")
@@ -595,7 +626,13 @@ function renderDistributors() {
 }
 
 function renderCustomerPage() {
-  ["distributorListPage", "distributorDetailPage", "distributorEditPage"].forEach((id) => {
+  [
+    "distributorListPage",
+    "distributorDetailPage",
+    "downstreamCustomerListPage",
+    "itemListPage",
+    "distributorEditPage"
+  ].forEach((id) => {
     el(id).classList.add("hidden");
   });
   if (state.customerPage === "edit") {
@@ -606,6 +643,16 @@ function renderCustomerPage() {
   if (state.customerPage === "detail") {
     renderDistributorDetail();
     el("distributorDetailPage").classList.remove("hidden");
+    return;
+  }
+  if (state.customerPage === "customer-list") {
+    renderCustomerDataList("customers");
+    el("downstreamCustomerListPage").classList.remove("hidden");
+    return;
+  }
+  if (state.customerPage === "item-list") {
+    renderCustomerDataList("items");
+    el("itemListPage").classList.remove("hidden");
     return;
   }
   renderDistributors();
@@ -688,32 +735,183 @@ function renderProfiles() {
   `).join("");
 }
 
+function rawSourceRow(record = {}) {
+  const source = record.rawSource || record.raw_source || {};
+  if (source?.row && typeof source.row === "object" && !Array.isArray(source.row)) return source.row;
+  if (source && typeof source === "object" && !Array.isArray(source)) return source;
+  return {};
+}
+
+function preferredObjectValue(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const keys = ["alt_part", "altPart", "value", "code", "id", "name", "email", "domain"];
+  for (const key of keys) {
+    if (value[key] !== undefined && value[key] !== null && value[key] !== "") return value[key];
+  }
+  return null;
+}
+
+function flattenCellValue(value, delimiter = " | ") {
+  if (value === null || value === undefined) return "";
+  if (Array.isArray(value)) return value.map((item) => flattenCellValue(item, delimiter)).filter(Boolean).join(delimiter);
+  const preferred = preferredObjectValue(value);
+  if (preferred !== null) return flattenCellValue(preferred, delimiter);
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+function uniqueValues(values) {
+  const seen = new Set();
+  return values
+    .map((value) => flattenCellValue(value).trim())
+    .filter((value) => {
+      const key = value.toLowerCase();
+      if (!value || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function asList(value) {
+  if (value === null || value === undefined || value === "") return [];
+  return Array.isArray(value) ? value : [value];
+}
+
+function itemAlternateIds(item = {}) {
+  return uniqueValues([
+    ...asList(item.altPartsCombined),
+    ...asList(item.customerItemNumbers),
+    ...asList(item.aliases)
+  ]).join(" | ");
+}
+
+function listRecords(kind) {
+  return kind === "items" ? state.dashboard?.items || [] : state.dashboard?.customers || [];
+}
+
+function listBaseColumns(kind) {
+  return kind === "items" ? ITEM_LIST_BASE_COLUMNS : CUSTOMER_LIST_BASE_COLUMNS;
+}
+
+function listPrefix(kind) {
+  return kind === "items" ? "itemList" : "downstreamCustomer";
+}
+
+function rawColumnKeys(records) {
+  const keys = new Set();
+  records.forEach((record) => {
+    Object.keys(rawSourceRow(record)).forEach((key) => keys.add(key));
+  });
+  return [...keys].sort((left, right) => left.localeCompare(right));
+}
+
+function listColumns(kind, records) {
+  const base = listBaseColumns(kind);
+  const existing = new Set(base.map((column) => column.key.toLowerCase()));
+  const raw = rawColumnKeys(records)
+    .filter((key) => !existing.has(key.toLowerCase()))
+    .map((key) => ({ key: `raw:${key}`, label: key }));
+  return [...base, ...raw];
+}
+
+function listCellValue(record, column, kind) {
+  if (column.key.startsWith("raw:")) {
+    return flattenCellValue(rawSourceRow(record)[column.key.slice(4)]);
+  }
+  if (kind === "items" && column.key === "alternateIds") return itemAlternateIds(record);
+  return flattenCellValue(record[column.key]);
+}
+
+function updateFilterFieldOptions(select, columns) {
+  const selected = select.value;
+  select.innerHTML = [
+    '<option value="">Any field</option>',
+    ...columns.map((column) => `<option value="${escapeHtml(column.key)}">${escapeHtml(column.label)}</option>`)
+  ].join("");
+  select.value = columns.some((column) => column.key === selected) ? selected : "";
+}
+
+function filteredListRows(kind, records, columns) {
+  const prefix = listPrefix(kind);
+  const search = el(`${prefix}Search`).value.trim().toLowerCase();
+  const filterField = el(`${prefix}FilterField`).value;
+  const filterValue = el(`${prefix}FilterValue`).value.trim().toLowerCase();
+  return records.filter((record) => {
+    const values = columns.map((column) => listCellValue(record, column, kind));
+    const haystack = values.join(" ").toLowerCase();
+    if (search && !haystack.includes(search)) return false;
+    if (filterField && filterValue) {
+      const column = columns.find((item) => item.key === filterField);
+      if (!column || !listCellValue(record, column, kind).toLowerCase().includes(filterValue)) return false;
+    }
+    return true;
+  });
+}
+
+function renderListTable(kind, records, columns) {
+  const ids = kind === "items"
+    ? { head: "itemListHead", body: "itemListBody" }
+    : { head: "downstreamCustomerListHead", body: "downstreamCustomerListBody" };
+  el(ids.head).innerHTML = `
+    <tr>${columns.map((column) => `<th>${escapeHtml(column.label)}</th>`).join("")}</tr>
+  `;
+  el(ids.body).innerHTML = records.length ? records.map((record) => `
+    <tr>${columns.map((column) => `<td>${escapeHtml(listCellValue(record, column, kind))}</td>`).join("")}</tr>
+  `).join("") : `<tr><td colspan="${columns.length}">No records match the current filters.</td></tr>`;
+}
+
+function renderCustomerDataList(kind) {
+  const records = listRecords(kind);
+  const columns = listColumns(kind, records);
+  const prefix = listPrefix(kind);
+  updateFilterFieldOptions(el(`${prefix}FilterField`), columns);
+  const filtered = filteredListRows(kind, records, columns);
+  const latest = latestDate(records);
+  const metaId = kind === "items" ? "fullItemListMeta" : "downstreamCustomerListMeta";
+  el(metaId).textContent = `${filtered.length} of ${records.length} records${latest ? ` - last update ${latest}` : ""}`;
+  renderListTable(kind, filtered, columns);
+}
+
+function csvEscape(value) {
+  const text = flattenCellValue(value);
+  return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+}
+
+function exportCustomerDataList(kind) {
+  const records = listRecords(kind);
+  const columns = listColumns(kind, records);
+  const filtered = filteredListRows(kind, records, columns);
+  const rows = [
+    columns.map((column) => csvEscape(column.label)).join(","),
+    ...filtered.map((record) => columns.map((column) => csvEscape(listCellValue(record, column, kind))).join(","))
+  ].join("\n");
+  const blob = new Blob([rows], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${state.tenantId}-${kind === "items" ? "items" : "downstream-customers"}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 function renderReadOnlyLists() {
   const customers = state.dashboard?.customers || [];
   const items = state.dashboard?.items || [];
   el("customerListUpdated").textContent = `Last update ${latestDate(customers) || "not yet imported"}`;
   el("itemListUpdated").textContent = `Last update ${latestDate(items) || "not yet imported"}`;
   renderImportTargets();
-  el("downstreamCustomersBody").innerHTML = customers.map((customer) => `
-    <tr>
-      <td>${escapeHtml(customer.customerCode || "")}</td>
-      <td>${escapeHtml(customer.name || customer.id)}</td>
-      <td>${escapeHtml(customer.storeNumber || "")}</td>
-      <td>${escapeHtml(customer.routeNumber || "")}</td>
-      <td>${escapeHtml(customer.csrFolder || customer.csrEmail || "")}</td>
-      <td>${escapeHtml(customer.lastImportedAt || "")}</td>
-    </tr>
-  `).join("");
-  el("itemListBody").innerHTML = items.map((item) => `
-    <tr>
-      <td>${escapeHtml(item.customerId || "")}</td>
-      <td>${escapeHtml(item.internalItemNumber || "")}</td>
-      <td>${escapeHtml(item.description || "")}</td>
-      <td>${escapeHtml(item.upc || "")}</td>
-      <td>${escapeHtml([...(item.altPartsCombined || []), ...(item.customerItemNumbers || [])].join(", "))}</td>
-      <td>${escapeHtml(item.lastImportedAt || "")}</td>
-    </tr>
-  `).join("");
+  el("downstreamCustomerPreview").innerHTML = `
+    <div><strong>Records</strong><span>${customers.length}</span></div>
+    <div><strong>Fields</strong><span>${listColumns("customers", customers).length}</span></div>
+    <div><strong>Last Update</strong><span>${escapeHtml(latestDate(customers) || "not yet imported")}</span></div>
+  `;
+  el("itemListPreview").innerHTML = `
+    <div><strong>Records</strong><span>${items.length}</span></div>
+    <div><strong>Fields</strong><span>${listColumns("items", items).length}</span></div>
+    <div><strong>Last Update</strong><span>${escapeHtml(latestDate(items) || "not yet imported")}</span></div>
+  `;
 }
 
 function renderSession() {
@@ -1028,6 +1226,20 @@ document.addEventListener("click", async (event) => {
     state.customerPage = "edit";
     renderCustomerPage();
   }
+  if (target.id === "openDownstreamCustomerListButton") {
+    state.customerPage = "customer-list";
+    renderCustomerPage();
+  }
+  if (target.id === "openItemListButton") {
+    state.customerPage = "item-list";
+    renderCustomerPage();
+  }
+  if (target.id === "backFromDownstreamCustomerListButton" || target.id === "backFromItemListButton") {
+    state.customerPage = "detail";
+    renderCustomerPage();
+  }
+  if (target.id === "exportDownstreamCustomersButton") exportCustomerDataList("customers");
+  if (target.id === "exportItemsButton") exportCustomerDataList("items");
   if (target.id === "cancelDistributorEditButton") {
     state.customerPage = state.selectedDistributorId ? "detail" : "list";
     renderCustomerPage();
@@ -1058,6 +1270,20 @@ document.addEventListener("click", async (event) => {
 el("refreshButton").addEventListener("click", refresh);
 el("distributorSelector").addEventListener("change", async (event) => {
   await switchDistributor(event.target.value);
+});
+[
+  "downstreamCustomerSearch",
+  "downstreamCustomerFilterField",
+  "downstreamCustomerFilterValue"
+].forEach((id) => {
+  el(id).addEventListener(id.endsWith("Field") ? "change" : "input", () => renderCustomerDataList("customers"));
+});
+[
+  "itemListSearch",
+  "itemListFilterField",
+  "itemListFilterValue"
+].forEach((id) => {
+  el(id).addEventListener(id.endsWith("Field") ? "change" : "input", () => renderCustomerDataList("items"));
 });
 wireForms();
 if (params.get("authStatus")) {

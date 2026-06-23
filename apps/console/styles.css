@@ -324,6 +324,42 @@ p {
   border-radius: 8px;
 }
 
+.list-controls {
+  display: grid;
+  grid-template-columns: minmax(220px, 2fr) minmax(180px, 1fr) minmax(180px, 1fr);
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.list-controls label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.list-table-wrap {
+  max-height: calc(100vh - 260px);
+  overflow: auto;
+}
+
+.wide-table {
+  min-width: 1120px;
+}
+
+.wide-table thead {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.wide-table td {
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .data-target {
   margin: 8px 0 14px;
   padding: 12px;
@@ -589,6 +625,7 @@ pre {
   .brand-lockup,
   .header-actions,
   .split,
+  .list-controls,
   .form-grid.two,
   .form-grid.three,
   .checkbox-grid {

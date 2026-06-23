@@ -513,23 +513,10 @@
                 <h2>Downstream Customer List</h2>
                 <p id="customerListUpdated"></p>
               </div>
+              <button id="openDownstreamCustomerListButton" type="button">View List</button>
             </div>
             <div id="customerListTarget" class="data-target"></div>
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Account</th>
-                    <th>Name</th>
-                    <th>Store</th>
-                    <th>Route</th>
-                    <th>CSR</th>
-                    <th>Last Update</th>
-                  </tr>
-                </thead>
-                <tbody id="downstreamCustomersBody"></tbody>
-              </table>
-            </div>
+            <div id="downstreamCustomerPreview" class="summary-list"></div>
           </section>
 
           <section class="band">
@@ -538,20 +525,71 @@
                 <h2>Item List</h2>
                 <p id="itemListUpdated"></p>
               </div>
+              <button id="openItemListButton" type="button">View List</button>
             </div>
             <div id="itemListTarget" class="data-target"></div>
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Customer</th>
-                    <th>Item</th>
-                    <th>Description</th>
-                    <th>UPC</th>
-                    <th>Alternate IDs</th>
-                    <th>Last Update</th>
-                  </tr>
-                </thead>
+            <div id="itemListPreview" class="summary-list"></div>
+          </section>
+        </section>
+
+        <section id="downstreamCustomerListPage" class="customer-page hidden">
+          <section class="band">
+            <div class="section-title">
+              <div>
+                <h2>Downstream Customer List</h2>
+                <p id="downstreamCustomerListMeta"></p>
+              </div>
+              <div class="header-actions">
+                <button id="backFromDownstreamCustomerListButton" class="secondary" type="button">Back</button>
+                <button id="exportDownstreamCustomersButton" type="button">Export CSV</button>
+              </div>
+            </div>
+            <div class="list-controls">
+              <label>Search
+                <input id="downstreamCustomerSearch" placeholder="Search all columns">
+              </label>
+              <label>Filter field
+                <select id="downstreamCustomerFilterField"></select>
+              </label>
+              <label>Filter value
+                <input id="downstreamCustomerFilterValue" placeholder="Value contains">
+              </label>
+            </div>
+            <div class="table-wrap list-table-wrap">
+              <table class="wide-table">
+                <thead id="downstreamCustomerListHead"></thead>
+                <tbody id="downstreamCustomerListBody"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
+        <section id="itemListPage" class="customer-page hidden">
+          <section class="band">
+            <div class="section-title">
+              <div>
+                <h2>Item List</h2>
+                <p id="fullItemListMeta"></p>
+              </div>
+              <div class="header-actions">
+                <button id="backFromItemListButton" class="secondary" type="button">Back</button>
+                <button id="exportItemsButton" type="button">Export CSV</button>
+              </div>
+            </div>
+            <div class="list-controls">
+              <label>Search
+                <input id="itemListSearch" placeholder="Search all columns">
+              </label>
+              <label>Filter field
+                <select id="itemListFilterField"></select>
+              </label>
+              <label>Filter value
+                <input id="itemListFilterValue" placeholder="Value contains">
+              </label>
+            </div>
+            <div class="table-wrap list-table-wrap">
+              <table class="wide-table">
+                <thead id="itemListHead"></thead>
                 <tbody id="itemListBody"></tbody>
               </table>
             </div>
