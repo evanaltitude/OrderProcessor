@@ -183,6 +183,13 @@ class ConsoleBackendTests(unittest.TestCase):
         )
         self.assertEqual([customer["id"] for customer in dashboard["customers"]], ["store-100"])
         self.assertEqual([item["id"] for item in dashboard["items"]], ["item-100"])
+        self.assertEqual(dashboard["importTargets"]["tenantId"], "altitude")
+        self.assertEqual(dashboard["importTargets"]["customerList"]["containerName"], "customers")
+        self.assertEqual(dashboard["importTargets"]["customerList"]["partitionKeyValue"], "altitude")
+        self.assertEqual(dashboard["importTargets"]["customerList"]["apiPath"], "/imports/customers")
+        self.assertEqual(dashboard["importTargets"]["itemList"]["containerName"], "items")
+        self.assertEqual(dashboard["importTargets"]["itemList"]["partitionKeyValue"][0], "altitude")
+        self.assertEqual(dashboard["importTargets"]["itemList"]["apiPath"], "/imports/items")
 
     def test_platform_admin_can_manage_new_distributor_tenant_after_create(self) -> None:
         api, repo, _ = self._api()

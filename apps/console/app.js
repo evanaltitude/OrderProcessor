@@ -424,6 +424,60 @@ function latestDate(values) {
     .at(-1) || "";
 }
 
+function compactJson(value) {
+  return JSON.stringify(value || {});
+}
+
+function partitionText(target = {}) {
+  const paths = Array.isArray(target.partitionKeyPath) ? target.partitionKeyPath : [target.partitionKeyPath];
+  const values = Array.isArray(target.partitionKeyValue) ? target.partitionKeyValue : [target.partitionKeyValue];
+  return paths.map((path, index) => `${path}: ${values[index] ?? ""}`).join(" + ");
+}
+
+function importTargetHtml(target = {}, targets = {}) {
+  const cosmos = targets.cosmos || {};
+  const auth = targets.authentication || {};
+  const cosmosLocation = [
+    cosmos.accountName || cosmos.endpoint || "Cosmos account",
+    cosmos.databaseName || "database",
+    target.containerName || "container"
+  ].filter(Boolean).join(" / ");
+  return `
+    <dl>
+      <div>
+        <dt>Power Automate POST</dt>
+        <dd>${escapeHtml(target.apiUrl || target.apiPath || "")}</dd>
+      </div>
+      <div>
+        <dt>Cosmos location</dt>
+        <dd>${escapeHtml(cosmosLocation)}</dd>
+      </div>
+      <div>
+        <dt>Partition</dt>
+        <dd>${escapeHtml(partitionText(target))}</dd>
+      </div>
+      <div>
+        <dt>Cadence</dt>
+        <dd>${escapeHtml(target.cadence || "")}</dd>
+      </div>
+      <div>
+        <dt>Auth header</dt>
+        <dd>${escapeHtml(auth.header || "")}</dd>
+      </div>
+      <div>
+        <dt>Minimum body</dt>
+        <dd>${escapeHtml(compactJson(target.minimumBody))}</dd>
+      </div>
+    </dl>
+  `;
+}
+
+function renderImportTargets() {
+  const targets = state.dashboard?.importTargets || {};
+  el("customerListTarget").innerHTML = importTargetHtml(targets.customerList, targets);
+  el("itemListTarget").innerHTML = importTargetHtml(targets.itemList, targets);
+}
+
 function renderMetrics(summary = {}) {
   const metrics = [
     ["Active", summary.activeRunCount ?? 0],
@@ -639,6 +693,7 @@ function renderReadOnlyLists() {
   const items = state.dashboard?.items || [];
   el("customerListUpdated").textContent = `Last update ${latestDate(customers) || "not yet imported"}`;
   el("itemListUpdated").textContent = `Last update ${latestDate(items) || "not yet imported"}`;
+  renderImportTargets();
   el("downstreamCustomersBody").innerHTML = customers.map((customer) => `
     <tr>
       <td>${escapeHtml(customer.customerCode || "")}</td>

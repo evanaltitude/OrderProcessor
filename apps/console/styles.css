@@ -324,6 +324,46 @@ p {
   border-radius: 8px;
 }
 
+.data-target {
+  margin: 8px 0 14px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f7f9fc;
+}
+
+.data-target:empty {
+  display: none;
+}
+
+.data-target dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px 14px;
+  margin: 0;
+}
+
+.data-target div {
+  min-width: 0;
+}
+
+.data-target dt {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.data-target dd {
+  margin: 3px 0 0;
+  color: var(--ink);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -615,6 +655,10 @@ pre {
 
   .metric strong {
     font-size: 21px;
+  }
+
+  .data-target dl {
+    grid-template-columns: 1fr;
   }
 
   .section-title {

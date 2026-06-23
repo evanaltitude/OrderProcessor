@@ -2457,6 +2457,7 @@ class OrderProcessorApi:
             "items": sorted(items, key=lambda item: str(_pick(item, "internalItemNumber", "id", default="")).lower()),
             "customerDataStatus": self._customer_data_status(customers),
             "itemDataStatus": self._item_data_status(items),
+            "importTargets": self._console_import_targets(tenant_id),
             "processorProfiles": self._filter_customer_documents(
                 self.repository.query_by_tenant("processorProfiles", tenant_id),
                 customer_filter,
@@ -3903,6 +3904,88 @@ class OrderProcessorApi:
             "openExceptionCount": len(open_exceptions),
             "unresolvedLineCount": unresolved_lines,
             "itemRecordCount": len(items),
+        }
+
+    @staticmethod
+    def _console_import_targets(tenant_id: str) -> dict[str, Any]:
+        endpoint = os.environ.get("COSMOS_ACCOUNT_ENDPOINT", "").rstrip("/")
+        database_name = os.environ.get("COSMOS_DATABASE_NAME", "orderProcessor")
+        api_base_url = (
+            os.environ.get("APIM_API_BASE_URL")
+            or os.environ.get("ORDER_PROCESSOR_API_BASE_URL")
+            or os.environ.get("ORDER_PROCESSOR_FUNCTION_BASE_URL")
+            or ""
+        ).rstrip("/")
+        account_name = ""
+        if endpoint:
+            parsed = parse.urlparse(endpoint)
+            account_name = parsed.hostname.split(".")[0] if parsed.hostname else ""
+
+        def api_url(path: str) -> str:
+            return f"{api_base_url}{path}" if api_base_url else path
+
+        return {
+            "tenantId": tenant_id,
+            "recommendedWriter": "importApi",
+            "authentication": {
+                "type": "apimSubscriptionKey",
+                "header": "Ocp-Apim-Subscription-Key",
+                "note": "Use an APIM subscription key for automation flows; do not grant customer flows direct Cosmos writes.",
+            },
+            "cosmos": {
+                "accountName": account_name,
+                "endpoint": endpoint,
+                "databaseName": database_name,
+            },
+            "customerList": {
+                "displayName": "Downstream Customer List",
+                "cadence": "daily",
+                "containerName": "customers",
+                "partitionKeyPath": "/tenantId",
+                "partitionKeyValue": tenant_id,
+                "apiPath": "/imports/customers",
+                "apiUrl": api_url("/imports/customers"),
+                "minimumBody": {
+                    "tenantId": tenant_id,
+                    "sourceName": "customer-list.json",
+                    "rows": [
+                        {
+                            "customerCode": "102914",
+                            "name": "Hollywood Feed",
+                            "routeNumber": "400",
+                            "csrFolder": "CSR Name or Folder",
+                        }
+                    ],
+                },
+            },
+            "itemList": {
+                "displayName": "Item List",
+                "cadence": "weekly",
+                "containerName": "items",
+                "partitionKeyPath": [
+                    "/tenantId",
+                    "/customerId",
+                ],
+                "partitionKeyValue": [
+                    tenant_id,
+                    "<downstream customer id>",
+                ],
+                "apiPath": "/imports/items",
+                "apiUrl": api_url("/imports/items"),
+                "minimumBody": {
+                    "tenantId": tenant_id,
+                    "customerId": "<downstream customer id>",
+                    "sourceName": "item-list.json",
+                    "rows": [
+                        {
+                            "internalItemNumber": "10001",
+                            "description": "Item description",
+                            "upc": "000000000000",
+                            "customerItemNumbers": "customer item number",
+                        }
+                    ],
+                },
+            },
         }
 
     @staticmethod
