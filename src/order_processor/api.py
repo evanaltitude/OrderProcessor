@@ -107,6 +107,7 @@ from .storage import InMemoryRepository, repository_from_environment
 
 
 BOOTSTRAP_CONSOLE_ADMIN_EMAIL = "connect@focuseautomate.com"
+SYSTEM_TENANT_ID = "__system__"
 
 
 def _pick(payload: dict[str, Any], *names: str, default: Any = None) -> Any:
@@ -2465,11 +2466,20 @@ class OrderProcessorApi:
             "status": "active",
             "settings": {},
         }
+        system_tenant = self.repository.get("tenants", SYSTEM_TENANT_ID) or {
+            "id": SYSTEM_TENANT_ID,
+            "tenantId": SYSTEM_TENANT_ID,
+            "name": "System Settings",
+            "environment": "system",
+            "status": "active",
+            "settings": {},
+        }
         distributor_customers = self._distributor_customers_for_console(session, tenant)
 
         return {
             "session": session,
             "tenant": tenant,
+            "systemSettings": dict(_pick(system_tenant, "settings", default={}) or {}),
             "distributorCustomers": distributor_customers,
             "summary": summary,
             "observabilityMetrics": observability_metrics,
@@ -3631,7 +3641,7 @@ class OrderProcessorApi:
         by_id: dict[str, dict[str, Any]] = {}
         for tenant in tenants + [current_tenant]:
             tenant_id = str(_pick(tenant, "tenantId", "tenant_id", "id", default=""))
-            if not tenant_id:
+            if not tenant_id or tenant_id == SYSTEM_TENANT_ID:
                 continue
             by_id[tenant_id] = {
                 "id": str(_pick(tenant, "id", default=tenant_id)),

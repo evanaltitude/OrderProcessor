@@ -77,6 +77,11 @@ button:active {
   transform: translateY(1px);
 }
 
+button:disabled {
+  cursor: progress;
+  opacity: 0.72;
+}
+
 button.secondary {
   background: #ffffff;
   border-color: var(--line-strong);
@@ -87,6 +92,21 @@ button.secondary:hover {
   background: #eef5ff;
   border-color: rgba(45, 83, 190, 0.38);
   color: var(--brand-indigo);
+}
+
+.icon-button {
+  min-width: 30px;
+  min-height: 30px;
+  padding: 0;
+  border-radius: 999px;
+  background: #f3f7fc;
+  border-color: var(--line);
+  color: var(--muted);
+}
+
+.icon-button:hover {
+  background: #e8f2ff;
+  color: var(--brand-blue);
 }
 
 input,
@@ -593,6 +613,54 @@ th {
   text-transform: uppercase;
 }
 
+.busy-overlay {
+  position: fixed;
+  top: 18px;
+  left: 50%;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 9px 14px;
+  border: 1px solid rgba(37, 149, 219, 0.28);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 12px 34px rgba(37, 41, 47, 0.14);
+  color: var(--charcoal-2);
+  font-weight: 800;
+  transform: translateX(-50%);
+}
+
+.busy-overlay.hidden {
+  display: none;
+}
+
+.busy-mark {
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background:
+    conic-gradient(from 0deg, var(--brand-cyan), var(--brand-blue), var(--brand-indigo), var(--brand-cyan));
+  animation: busy-spin 0.9s linear infinite;
+}
+
+.busy-mark::after {
+  display: block;
+  width: 12px;
+  height: 12px;
+  margin: 6px;
+  border-radius: 999px;
+  background: #ffffff;
+  content: "";
+}
+
+@keyframes busy-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .details {
   position: fixed;
   right: 16px;
@@ -608,6 +676,14 @@ th {
   border-radius: 8px;
   background: #ffffff;
   box-shadow: var(--shadow);
+}
+
+.details-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 10px;
 }
 
 .details.open {

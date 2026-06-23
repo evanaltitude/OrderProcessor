@@ -8,7 +8,8 @@ const state = {
   tenantId: initialTenantId,
   dashboard: null,
   selectedDistributorId: initialTenantId,
-  customerPage: "list"
+  customerPage: "list",
+  pendingRequests: 0
 };
 
 const el = (id) => document.getElementById(id);
@@ -17,6 +18,17 @@ const split = (text) => text.split(",").map((part) => part.trim()).filter(Boolea
 const checked = (form, name) => Boolean(form.elements[name]?.checked);
 
 const DEFAULT_ROUTING_PHASES = ["webstoreOrder", "previouslyProcessed", "orderCandidate", "nonOrder", "general"];
+const SYSTEM_TENANT_ID = "__system__";
+const SUPPORTED_FILE_TYPE_OPTIONS = [
+  { value: "csv", label: "CSV" },
+  { value: "xlsx", label: "Excel XLSX" },
+  { value: "xls", label: "Excel XLS" },
+  { value: "xlt", label: "Excel XLT" },
+  { value: "pdf", label: "PDF" },
+  { value: "txt", label: "Text" },
+  { value: "emailBody", label: "Email Body" }
+];
+const DEFAULT_SUPPORTED_FILE_TYPES = SUPPORTED_FILE_TYPE_OPTIONS.map((option) => option.value);
 const DEFAULT_OUTPUT_FIELDS = [
   "po_number",
   "order_number",
@@ -153,25 +165,45 @@ function processorProfileOptions(selectedValue = "") {
   ].map((option) => ({ ...option, selected: option.value === selectedValue }));
 }
 
+function beginBusy(label = "Working") {
+  state.pendingRequests += 1;
+  el("busyText").textContent = label;
+  el("busyOverlay").classList.remove("hidden");
+  document.body.classList.add("is-busy");
+}
+
+function endBusy() {
+  state.pendingRequests = Math.max(0, state.pendingRequests - 1);
+  if (state.pendingRequests === 0) {
+    el("busyOverlay").classList.add("hidden");
+    document.body.classList.remove("is-busy");
+  }
+}
+
 async function post(path, body = {}, options = {}) {
   const tenantId = options.tenantId || state.tenantId;
-  const response = await fetch(`${apiBase}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ tenantId, ...body })
-  });
-  const contentType = response.headers.get("content-type") || "";
-  const payload = contentType.includes("application/json") ? await response.json() : null;
-  if (redirectToMicrosoftSignIn(payload, response)) {
-    return new Promise(() => {});
+  beginBusy(options.busyText || "Working");
+  try {
+    const response = await fetch(`${apiBase}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ tenantId, ...body })
+    });
+    const contentType = response.headers.get("content-type") || "";
+    const payload = contentType.includes("application/json") ? await response.json() : null;
+    if (redirectToMicrosoftSignIn(payload, response)) {
+      return new Promise(() => {});
+    }
+    if (!response.ok) {
+      const error = new Error(payload?.message || `${response.status} ${response.statusText}`);
+      error.payload = payload;
+      throw error;
+    }
+    return payload || {};
+  } finally {
+    endBusy();
   }
-  if (!response.ok) {
-    const error = new Error(payload?.message || `${response.status} ${response.statusText}`);
-    error.payload = payload;
-    throw error;
-  }
-  return payload || {};
 }
 
 function actionFailed(result) {
@@ -207,10 +239,37 @@ function activeConsoleView() {
   return document.querySelector(".tab.active")?.dataset.view || "monitor";
 }
 
-function showDetails(payload) {
+let detailsTimer = null;
+
+function clearDetails() {
   const pane = el("detailsPane");
-  pane.innerHTML = `<pre>${escapeHtml(JSON.stringify(payload, null, 2))}</pre>`;
+  pane.classList.remove("open");
+  pane.innerHTML = "";
+  if (detailsTimer) {
+    window.clearTimeout(detailsTimer);
+    detailsTimer = null;
+  }
+}
+
+function payloadForError(error) {
+  if (error?.payload) return error.payload;
+  return { error: "actionFailed", message: error?.message || String(error || "Unknown error") };
+}
+
+function showDetails(payload, options = {}) {
+  const pane = el("detailsPane");
+  const title = options.title || (actionFailed(payload) ? "Needs Attention" : "Done");
+  pane.innerHTML = `
+    <div class="details-header">
+      <strong>${escapeHtml(title)}</strong>
+      <button id="closeDetailsButton" class="icon-button" type="button" aria-label="Close details">x</button>
+    </div>
+    <pre>${escapeHtml(JSON.stringify(payload, null, 2))}</pre>
+  `;
   pane.classList.add("open");
+  if (detailsTimer) window.clearTimeout(detailsTimer);
+  const autoCloseMs = options.autoCloseMs ?? (actionFailed(payload) ? 14000 : 7000);
+  detailsTimer = window.setTimeout(clearDetails, autoCloseMs);
 }
 
 function escapeHtml(text) {
@@ -261,14 +320,12 @@ function populateProfileSelects() {
 
 function populateAutomationSettings(settings = {}) {
   const form = el("automationSettingsForm");
-  const routingSettings = settings.routingSettings || {};
   const orderConditions = settings.orderConditions || {};
   const webstore = settings.webstoreEmailConditions || {};
   const extraction = settings.extractionRules || {};
   const subject = settings.emailSubjectSettings || {};
   const moves = subject.moves || {};
 
-  setValue(form, "acceptedAttachmentExtensions", listText(orderConditions.acceptedAttachmentExtensions || routingSettings.acceptedAttachmentExtensions || []));
   setValue(form, "webstoreSenderDomains", listText(webstore.senderDomains || []));
   setValue(form, "webstoreSubjectPatterns", listText(webstore.subjectPatterns || []));
   setValue(form, "customerCodeSource", extraction.customerCodeSource || extraction.source || "combined");
@@ -285,7 +342,6 @@ function populateAutomationSettings(settings = {}) {
 }
 
 function automationSettingsFromForm(form) {
-  const acceptedAttachmentExtensions = split(value(form, "acceptedAttachmentExtensions")).map((item) => item.replace(/^\./, ""));
   const moves = {
     processedOrder: moveFromForm(form, "processed"),
     failedOrder: moveFromForm(form, "failed"),
@@ -293,12 +349,10 @@ function automationSettingsFromForm(form) {
   };
   return {
     routingSettings: compactObject({
-      routingPhases: DEFAULT_ROUTING_PHASES,
-      acceptedAttachmentExtensions
+      routingPhases: DEFAULT_ROUTING_PHASES
     }),
     orderConditions: compactObject({
-      requiredAttachments: checked(form, "requiredAttachments"),
-      acceptedAttachmentExtensions
+      requiredAttachments: checked(form, "requiredAttachments")
     }),
     webstoreEmailConditions: compactObject({
       senderDomains: split(value(form, "webstoreSenderDomains")),
@@ -314,6 +368,44 @@ function automationSettingsFromForm(form) {
       categoryTemplates: split(value(form, "categoryTemplates")),
       moves
     })
+  };
+}
+
+function systemSettings() {
+  return state.dashboard?.systemSettings || {};
+}
+
+function supportedFileTypes() {
+  const settings = systemSettings().supportedFileTypes || {};
+  const values = settings.orderInputExtensions || settings.extensions || DEFAULT_SUPPORTED_FILE_TYPES;
+  return [...new Set(values.map((item) => String(item || "").trim()).filter(Boolean))];
+}
+
+function customSupportedFileTypes(selected = supportedFileTypes()) {
+  const builtIns = new Set(SUPPORTED_FILE_TYPE_OPTIONS.map((option) => option.value.toLowerCase()));
+  return selected.filter((item) => !builtIns.has(item.toLowerCase()));
+}
+
+function renderSystemSettings() {
+  const selected = new Set(supportedFileTypes());
+  el("supportedFileTypeChoices").innerHTML = SUPPORTED_FILE_TYPE_OPTIONS.map((option) => `
+    <label class="checkline">
+      <input name="supportedFileTypes" type="checkbox" value="${escapeHtml(option.value)}" ${selected.has(option.value) ? "checked" : ""}>
+      ${escapeHtml(option.label)}
+    </label>
+  `).join("");
+  setValue(el("systemSettingsForm"), "customFileTypes", listText(customSupportedFileTypes([...selected])));
+}
+
+function systemSettingsFromForm(form) {
+  const selected = [...form.querySelectorAll('input[name="supportedFileTypes"]:checked')].map((input) => input.value);
+  const custom = split(value(form, "customFileTypes")).map((item) => item.replace(/^\./, ""));
+  return {
+    ...systemSettings(),
+    supportedFileTypes: {
+      ...(systemSettings().supportedFileTypes || {}),
+      orderInputExtensions: [...new Set([...selected, ...custom].map((item) => item.trim()).filter(Boolean))]
+    }
   };
 }
 
@@ -342,10 +434,12 @@ function clearRoutingForm() {
   const form = el("routingForm");
   form.reset();
   setValue(form, "phase", "webstoreOrder");
-  setValue(form, "outcome", "knownOrder");
+  setValue(form, "outcome", "knownCustomerNonOrder");
   setValue(form, "priority", "100");
   setValue(form, "customerCodeSource", "combined");
   setValue(form, "processedMoveMode", "none");
+  setValue(form, "nonOrderMoveMode", "customerField");
+  setValue(form, "nonOrderMoveTarget", "csrFolder");
   setChecked(form, "enabled", true);
   fillSelect(form.elements.processorProfileId, processorProfileOptions(), "");
 }
@@ -374,9 +468,19 @@ function loadRoutingRule(ruleId) {
   const processedMove = rule.emailActions?.moves?.processedOrder || {};
   setValue(form, "processedMoveMode", processedMove.mode || "none");
   setValue(form, "processedMoveTarget", moveTarget(processedMove));
+  const nonOrderMove = rule.emailActions?.moves?.nonOrder || {};
+  setValue(form, "nonOrderMoveMode", nonOrderMove.mode || "none");
+  setValue(form, "nonOrderMoveTarget", moveTarget(nonOrderMove));
   setChecked(form, "requiredAttachment", rule.requiredAttachment);
   setChecked(form, "enabled", rule.enabled !== false);
   form.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function syncRoutingDefaultsForPhase() {
+  const form = el("routingForm");
+  if (value(form, "phase") === "webstoreOrder" && value(form, "outcome") === "knownOrder") {
+    setValue(form, "outcome", "knownCustomerNonOrder");
+  }
 }
 
 function clearProcessorProfileForm() {
@@ -934,6 +1038,7 @@ async function refresh() {
   renderRows();
   renderExceptions();
   renderArtifacts();
+  renderSystemSettings();
   renderDistributorSelector();
   renderCustomerPage();
 }
@@ -1038,6 +1143,21 @@ function wireForms() {
     await refresh();
   });
 
+  el("systemSettingsForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const result = await post("/console/tenants", {
+      targetTenantId: SYSTEM_TENANT_ID,
+      id: SYSTEM_TENANT_ID,
+      name: "System Settings",
+      environment: "system",
+      status: "active",
+      settings: systemSettingsFromForm(form)
+    });
+    if (!showActionResult(result)) return;
+    await refresh();
+  });
+
   el("routingForm").addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
@@ -1049,7 +1169,7 @@ function wireForms() {
       phase: value(form, "phase"),
       outcome: value(form, "outcome"),
       priority: value(form, "priority") ? Number(value(form, "priority")) : 100,
-      processorProfileId: value(form, "processorProfileId"),
+      processorProfileId: value(form, "outcome") === "knownOrder" ? value(form, "processorProfileId") : "",
       mailboxAccountIds: mailbox?.id ? [mailbox.id] : [],
       mailboxAddresses: mailbox?.mailboxAddress ? [mailbox.mailboxAddress] : [],
       senderEquals: split(value(form, "senderEquals")),
@@ -1069,7 +1189,10 @@ function wireForms() {
       categoryTemplates: split(value(form, "categoryTemplates")),
       processedMoveMode: value(form, "processedMoveMode"),
       processedMoveFolder: value(form, "processedMoveMode") === "staticFolder" ? value(form, "processedMoveTarget") : "",
-      processedMoveCustomerField: value(form, "processedMoveMode") === "customerField" ? value(form, "processedMoveTarget") : ""
+      processedMoveCustomerField: value(form, "processedMoveMode") === "customerField" ? value(form, "processedMoveTarget") : "",
+      nonOrderMoveMode: value(form, "nonOrderMoveMode"),
+      nonOrderMoveFolder: value(form, "nonOrderMoveMode") === "staticFolder" ? value(form, "nonOrderMoveTarget") : "",
+      nonOrderMoveCustomerField: value(form, "nonOrderMoveMode") === "customerField" ? value(form, "nonOrderMoveTarget") : ""
     });
     if (!showActionResult(result)) return;
     clearRoutingForm();
@@ -1203,8 +1326,13 @@ async function testMailbox() {
 }
 
 document.addEventListener("click", async (event) => {
+  try {
   const target = event.target.closest("button, tr");
   if (!target) return;
+  if (target.id === "closeDetailsButton") {
+    clearDetails();
+    return;
+  }
   if (target.classList.contains("tab")) {
     activeView(target.dataset.view);
     if (target.dataset.view === "customers") {
@@ -1265,12 +1393,16 @@ document.addEventListener("click", async (event) => {
       artifactId: target.dataset.artifact
     }));
   }
+  } catch (error) {
+    showDetails(payloadForError(error));
+  }
 });
 
 el("refreshButton").addEventListener("click", refresh);
 el("distributorSelector").addEventListener("change", async (event) => {
   await switchDistributor(event.target.value);
 });
+el("routingForm").elements.phase.addEventListener("change", syncRoutingDefaultsForPhase);
 [
   "downstreamCustomerSearch",
   "downstreamCustomerFilterField",
@@ -1286,6 +1418,13 @@ el("distributorSelector").addEventListener("change", async (event) => {
   el(id).addEventListener(id.endsWith("Field") ? "change" : "input", () => renderCustomerDataList("items"));
 });
 wireForms();
+window.addEventListener("unhandledrejection", (event) => {
+  event.preventDefault();
+  showDetails(payloadForError(event.reason));
+});
+window.addEventListener("error", (event) => {
+  showDetails({ error: "consoleError", message: event.message });
+});
 if (params.get("authStatus")) {
   state.customerPage = "detail";
   showDetails({ microsoftAuthStatus: params.get("authStatus"), connectionId: params.get("connectionId") });

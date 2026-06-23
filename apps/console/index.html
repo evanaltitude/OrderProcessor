@@ -35,6 +35,7 @@
         <button class="tab" data-view="customers" type="button">Customers</button>
         <button class="tab" data-view="outputs" type="button">Outputs</button>
         <button class="tab" data-view="users" type="button">Users</button>
+        <button class="tab" data-view="settings" type="button">Settings</button>
       </nav>
 
       <section id="monitor" class="view active" aria-labelledby="monitor-title">
@@ -154,9 +155,6 @@
             <form id="automationSettingsForm" class="editor">
               <h2>Customer Automation Settings</h2>
               <div class="form-grid three">
-                <label>Order attachment types
-                  <input name="acceptedAttachmentExtensions" placeholder="csv, xlsx, pdf">
-                </label>
                 <label>Webstore sender domains
                   <input name="webstoreSenderDomains" placeholder="shopify.com, customer.com">
                 </label>
@@ -237,8 +235,8 @@
                 </label>
                 <label>Action
                   <select name="outcome">
-                    <option value="knownOrder">Create order</option>
-                    <option value="knownCustomerNonOrder">Tag CSR follow-up</option>
+                    <option value="knownCustomerNonOrder">Update, tag, and move email</option>
+                    <option value="knownOrder">Create order file</option>
                     <option value="needsCustomerIdentification">Find customer first</option>
                     <option value="needsHumanReview">Send to review</option>
                     <option value="ignored">Ignore</option>
@@ -298,6 +296,16 @@
                 <label>Move folder or field
                   <input name="processedMoveTarget" placeholder="Completed Orders or csrFolder">
                 </label>
+                <label>Follow-up email move
+                  <select name="nonOrderMoveMode">
+                    <option value="none">Leave in place</option>
+                    <option value="staticFolder">Move to folder</option>
+                    <option value="customerField">Use customer CSR folder</option>
+                  </select>
+                </label>
+                <label>Follow-up folder or field
+                  <input name="nonOrderMoveTarget" placeholder="CSR Review or csrFolder">
+                </label>
                 <label class="checkline"><input name="requiredAttachment" type="checkbox"> Requires an attachment</label>
                 <label class="checkline"><input name="enabled" type="checkbox" checked> Enabled</label>
               </div>
@@ -321,6 +329,7 @@
                       <option value="csv">CSV</option>
                       <option value="xlsx">Excel XLSX</option>
                       <option value="xls">Excel XLS</option>
+                      <option value="xlt">Excel XLT</option>
                       <option value="pdf">PDF</option>
                       <option value="emailBody">Email body</option>
                       <option value="customerOverride">Customer override</option>
@@ -367,6 +376,8 @@
                       <option value="">Same as input type</option>
                       <option value="csv">CSV</option>
                       <option value="xlsx">Excel XLSX</option>
+                      <option value="xls">Excel XLS</option>
+                      <option value="xlt">Excel XLT</option>
                       <option value="emailBody">Email body</option>
                       <option value="pdf">PDF</option>
                     </select>
@@ -642,7 +653,30 @@
           </form>
         </section>
       </section>
+
+      <section id="settings" class="view" aria-labelledby="settings-title">
+        <section class="band">
+          <form id="systemSettingsForm" class="editor">
+            <div class="section-title">
+              <div>
+                <h2 id="settings-title">System Settings</h2>
+                <p>Supported File Types</p>
+              </div>
+            </div>
+            <div id="supportedFileTypeChoices" class="checkbox-grid"></div>
+            <label>Additional extensions
+              <input name="customFileTypes" placeholder="xml, xltm">
+            </label>
+            <button type="submit">Save System Settings</button>
+          </form>
+        </section>
+      </section>
     </main>
+
+    <div id="busyOverlay" class="busy-overlay hidden" role="status" aria-live="polite">
+      <div class="busy-mark" aria-hidden="true"></div>
+      <span id="busyText">Working</span>
+    </div>
 
     <aside id="detailsPane" class="details" aria-live="polite"></aside>
     <script src="./app.js" type="module"></script>

@@ -627,6 +627,26 @@ class ConsoleBackendTests(unittest.TestCase):
         self.assertEqual(result["error"], "tenantIdRequired")
         self.assertIsNone(repo.get("tenants", "default"))
 
+    def test_console_dashboard_exposes_system_settings_without_listing_system_tenant(self) -> None:
+        api, _, _ = self._api()
+        admin_headers = {"x-ms-client-principal": _easy_auth_header("connect@focuseautomate.com")}
+        api.console_upsert_tenant_config(
+            {
+                "tenantId": "altitude",
+                "headers": admin_headers,
+                "targetTenantId": "__system__",
+                "name": "System Settings",
+                "environment": "system",
+                "status": "active",
+                "settings": {"supportedFileTypes": {"orderInputExtensions": ["csv", "xlsx", "xlt"]}},
+            }
+        )
+
+        dashboard = api.console_dashboard({"tenantId": "altitude", "headers": admin_headers})
+
+        self.assertEqual(dashboard["systemSettings"]["supportedFileTypes"]["orderInputExtensions"], ["csv", "xlsx", "xlt"])
+        self.assertNotIn("__system__", [tenant["tenantId"] for tenant in dashboard["distributorCustomers"]])
+
     def test_console_upserts_email_triage_policy_fields(self) -> None:
         api, repo, _ = self._api()
         admin_headers = {"x-ms-client-principal": _easy_auth_header("connect@focuseautomate.com")}
@@ -639,14 +659,14 @@ class ConsoleBackendTests(unittest.TestCase):
                 "customerId": "_global",
                 "name": "Webstore orders",
                 "phase": "webstoreOrder",
-                "outcome": "knownOrder",
+                "outcome": "knownCustomerNonOrder",
                 "customerCodeSource": "bodyText",
                 "customerCodeRegex": r"Customer:\s*(?P<customerCode>\d+)",
                 "subjectTemplate": "Cust: {customerCode} - {originalSubject}",
                 "categoryCsrField": "csrFolder",
                 "categoryTemplates": ["CSR: {csrName}"],
-                "processedMoveMode": "customerField",
-                "processedMoveCustomerField": "csrFolder",
+                "nonOrderMoveMode": "customerField",
+                "nonOrderMoveCustomerField": "csrFolder",
             }
         )
 
@@ -654,7 +674,7 @@ class ConsoleBackendTests(unittest.TestCase):
         self.assertEqual(stored["phase"], "webstoreOrder")
         self.assertEqual(stored["customerCodeExtraction"]["source"], "bodyText")
         self.assertEqual(stored["subjectUpdate"]["template"], "Cust: {customerCode} - {originalSubject}")
-        self.assertEqual(stored["emailActions"]["moves"]["processedOrder"]["field"], "csrFolder")
+        self.assertEqual(stored["emailActions"]["moves"]["nonOrder"]["field"], "csrFolder")
 
     def test_console_upserts_profiles_and_downloads_output_artifact_content(self) -> None:
         api, _, _ = self._api()
