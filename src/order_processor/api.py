@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from datetime import UTC, datetime, timedelta
 import json
 import os
 import re
@@ -73,9 +74,12 @@ from .microsoft_graph import (
     InMemorySecretStore,
     MicrosoftGraphError,
     build_authorization_url,
+    client_credentials_access_token,
     config_from_environment,
     exchange_authorization_code,
     graph_get,
+    graph_patch,
+    graph_post,
     refresh_access_token,
     secret_name,
     secret_store_from_environment,
@@ -441,6 +445,18 @@ def _normalized_email(value: str) -> str:
     return str(value or "").strip().lower()
 
 
+def _parse_datetime(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
 def _document_customer_id(document: dict[str, Any]) -> str | None:
     customer_id = _pick(document, "customerId", "customer_id", default=None)
     if customer_id:
@@ -683,6 +699,418 @@ class OrderProcessorApi:
             "results": results,
         }
 
+    def sync_mailbox_subscriptions(self, payload: dict[str, Any]) -> dict[str, Any]:
+        tenant_id = str(_pick(payload, "tenantId", "tenant_id", default="")).strip()
+        mailbox_id = str(_pick(payload, "mailboxAccountId", "mailbox_account_id", "mailboxId", default="")).strip()
+        notification_url = str(
+            _pick(payload, "notificationUrl", "notification_url", default=self._graph_notification_url())
+        ).strip()
+        lifecycle_url = str(
+            _pick(payload, "lifecycleNotificationUrl", "lifecycle_notification_url", default=notification_url)
+        ).strip()
+        auth_mode = str(
+            _pick(
+                payload,
+                "authMode",
+                "auth_mode",
+                default=os.environ.get("ORDER_PROCESSOR_GRAPH_SUBSCRIPTION_AUTH_MODE", "auto"),
+            )
+        ).strip().lower() or "auto"
+        force = bool(_pick(payload, "force", default=False))
+        if not notification_url:
+            return {
+                "error": "notificationUrlRequired",
+                "message": "Set ORDER_PROCESSOR_GRAPH_NOTIFICATION_BASE_URL or pass notificationUrl.",
+            }
+
+        if mailbox_id:
+            mailbox = self.repository.get("mailboxAccounts", mailbox_id)
+            mailboxes = [mailbox] if mailbox else []
+        elif tenant_id:
+            mailboxes = self.repository.query_by_tenant("mailboxAccounts", tenant_id)
+        else:
+            mailboxes = self.repository.list("mailboxAccounts")
+
+        results = [
+            self._ensure_mailbox_subscription(
+                mailbox,
+                notification_url=notification_url,
+                lifecycle_notification_url=lifecycle_url,
+                auth_mode=auth_mode,
+                force=force,
+            )
+            for mailbox in mailboxes
+            if mailbox
+        ]
+        return {
+            "mailboxSubscriptions": {
+                "tenantId": tenant_id or "*",
+                "mailboxCount": len(mailboxes),
+                "activeCount": sum(1 for result in results if result.get("status") == "active"),
+                "createdCount": sum(1 for result in results if result.get("action") == "created"),
+                "recreatedCount": sum(1 for result in results if result.get("action") == "recreated"),
+                "renewedCount": sum(1 for result in results if result.get("action") == "renewed"),
+                "skippedCount": sum(1 for result in results if result.get("status") == "skipped"),
+                "failedCount": sum(1 for result in results if result.get("status") == "failed"),
+                "checkedAt": utc_now(),
+            },
+            "results": results,
+        }
+
+    def renew_mailbox_subscriptions(self, payload: dict[str, Any]) -> dict[str, Any]:
+        renewal_window = int(
+            _pick(
+                payload,
+                "renewalWindowMinutes",
+                "renewal_window_minutes",
+                default=os.environ.get("ORDER_PROCESSOR_GRAPH_SUBSCRIPTION_RENEWAL_WINDOW_MINUTES", "2880"),
+            )
+            or 2880
+        )
+        payload = {**payload, "renewalWindowMinutes": renewal_window}
+        return self.sync_mailbox_subscriptions(payload)
+
+    def process_graph_notifications(self, payload: dict[str, Any]) -> dict[str, Any]:
+        notifications = list(_as_list(_pick(payload, "notifications", "value", default=[])))
+        results = [
+            self._process_graph_notification(notification)
+            for notification in notifications
+            if isinstance(notification, dict)
+        ]
+        return {
+            "graphNotifications": {
+                "notificationCount": len(notifications),
+                "processedCount": sum(1 for result in results if result.get("status") in {"ingested", "skipped"}),
+                "ingestedCount": sum(1 for result in results if result.get("status") == "ingested"),
+                "skippedCount": sum(1 for result in results if result.get("status") == "skipped"),
+                "lifecycleCount": sum(1 for result in results if result.get("status") == "lifecycle"),
+                "failedCount": sum(1 for result in results if result.get("status") == "failed"),
+                "checkedAt": utc_now(),
+            },
+            "results": results,
+        }
+
+    def _ensure_mailbox_subscription(
+        self,
+        mailbox: dict[str, Any],
+        *,
+        notification_url: str,
+        lifecycle_notification_url: str,
+        auth_mode: str,
+        force: bool = False,
+    ) -> dict[str, Any]:
+        mailbox_id = str(_pick(mailbox, "id", default=""))
+        tenant_id = str(_pick(mailbox, "tenantId", "tenant_id", default=""))
+        mailbox_address = str(_pick(mailbox, "mailboxAddress", "mailbox_address", default="")).strip().lower()
+        result: dict[str, Any] = {
+            "mailboxAccountId": mailbox_id,
+            "tenantId": tenant_id,
+            "mailboxAddress": mailbox_address,
+            "status": "skipped",
+        }
+        if not _mailbox_enabled(mailbox):
+            result["reason"] = "mailbox disabled"
+            return result
+        if not tenant_id or not mailbox_id or not mailbox_address:
+            result["reason"] = "mailbox missing tenant, id, or address"
+            return result
+
+        settings = dict(_pick(mailbox, "settings", default={}) or {})
+        existing = dict(settings.get("graphSubscription") or {})
+        existing_id = str(existing.get("subscriptionId", ""))
+        now = datetime.now(UTC)
+        renewal_window = timedelta(
+            minutes=int(os.environ.get("ORDER_PROCESSOR_GRAPH_SUBSCRIPTION_RENEWAL_WINDOW_MINUTES", "2880") or 2880)
+        )
+        existing_expiration = _parse_datetime(str(existing.get("expirationDateTime", "")))
+        if (
+            existing_id
+            and existing_expiration
+            and existing_expiration > now + renewal_window
+            and existing.get("notificationUrl") == notification_url
+            and not force
+        ):
+            result.update(
+                {
+                    "status": "active",
+                    "action": "unchanged",
+                    "subscriptionId": existing_id,
+                    "expirationDateTime": existing.get("expirationDateTime"),
+                    "authMethod": existing.get("authMethod", ""),
+                }
+            )
+            return result
+
+        try:
+            if existing_id:
+                try:
+                    subscription, auth_method = self._renew_graph_subscription(mailbox, existing_id, auth_mode=auth_mode)
+                    action = "renewed"
+                except MicrosoftGraphError as exc:
+                    if exc.status_code not in {404, 410}:
+                        raise
+                    subscription, auth_method = self._create_graph_subscription(
+                        mailbox,
+                        notification_url=notification_url,
+                        lifecycle_notification_url=lifecycle_notification_url,
+                        auth_mode=auth_mode,
+                    )
+                    action = "recreated"
+            else:
+                subscription, auth_method = self._create_graph_subscription(
+                    mailbox,
+                    notification_url=notification_url,
+                    lifecycle_notification_url=lifecycle_notification_url,
+                    auth_mode=auth_mode,
+                )
+                action = "created"
+        except MicrosoftGraphError as exc:
+            result.update(
+                {
+                    "status": "failed",
+                    "reason": str(exc),
+                    "statusCode": exc.status_code,
+                    "details": exc.details,
+                }
+            )
+            settings["graphSubscription"] = {
+                **existing,
+                "status": "failed",
+                "lastError": str(exc),
+                "lastErrorStatusCode": exc.status_code,
+                "lastAttemptAt": utc_now(),
+                "notificationUrl": notification_url,
+            }
+            mailbox.update({"settings": settings, "ingestStatus": "needsAttention", "updatedAt": utc_now()})
+            self.repository.upsert("mailboxAccounts", mailbox)
+            self._audit(
+                tenant_id,
+                "mailbox.graphSubscription.failed",
+                mailbox_id,
+                mailbox_id,
+                {
+                    "mailboxAccountId": mailbox_id,
+                    "mailboxAddress": mailbox_address,
+                    "reason": str(exc),
+                    "statusCode": exc.status_code,
+                    "details": exc.details,
+                },
+            )
+            return result
+
+        subscription_id = str(subscription.get("id", existing_id))
+        client_state = str(subscription.get("clientState") or existing.get("clientState") or "")
+        graph_subscription = {
+            **existing,
+            "status": "active",
+            "subscriptionId": subscription_id,
+            "resource": str(subscription.get("resource", self._graph_subscription_resource(mailbox_address))),
+            "changeType": str(subscription.get("changeType", "created")),
+            "clientState": client_state,
+            "notificationUrl": notification_url,
+            "lifecycleNotificationUrl": lifecycle_notification_url,
+            "expirationDateTime": str(subscription.get("expirationDateTime", "")),
+            "authMethod": auth_method,
+            "lastSyncedAt": utc_now(),
+            "lastError": "",
+        }
+        settings["graphSubscription"] = graph_subscription
+        mailbox.update({"settings": settings, "ingestStatus": "active", "updatedAt": utc_now()})
+        self.repository.upsert("mailboxAccounts", mailbox)
+        self._audit(
+            tenant_id,
+            "mailbox.graphSubscription.synced",
+            mailbox_id,
+            mailbox_id,
+            {
+                "mailboxAccountId": mailbox_id,
+                "mailboxAddress": mailbox_address,
+                "subscriptionId": subscription_id,
+                "action": action,
+                "expirationDateTime": graph_subscription["expirationDateTime"],
+                "authMethod": auth_method,
+            },
+        )
+        result.update(
+            {
+                "status": "active",
+                "action": action,
+                "subscriptionId": subscription_id,
+                "expirationDateTime": graph_subscription["expirationDateTime"],
+                "authMethod": auth_method,
+            }
+        )
+        return result
+
+    def _create_graph_subscription(
+        self,
+        mailbox: dict[str, Any],
+        *,
+        notification_url: str,
+        lifecycle_notification_url: str,
+        auth_mode: str,
+    ) -> tuple[dict[str, Any], str]:
+        mailbox_id = str(_pick(mailbox, "id", default=""))
+        tenant_id = str(_pick(mailbox, "tenantId", "tenant_id", default=""))
+        mailbox_address = str(_pick(mailbox, "mailboxAddress", "mailbox_address", default="")).strip().lower()
+        client_state = self._graph_client_state(tenant_id, mailbox_id, mailbox_address)
+        subscription_payload = {
+            "changeType": "created",
+            "notificationUrl": notification_url,
+            "lifecycleNotificationUrl": lifecycle_notification_url,
+            "resource": self._graph_subscription_resource(mailbox_address),
+            "expirationDateTime": self._graph_subscription_expiration(),
+            "clientState": client_state,
+            "latestSupportedTlsVersion": "v1_2",
+        }
+        return self._graph_subscription_request(mailbox, "POST", "https://graph.microsoft.com/v1.0/subscriptions", subscription_payload, auth_mode)
+
+    def _renew_graph_subscription(
+        self,
+        mailbox: dict[str, Any],
+        subscription_id: str,
+        *,
+        auth_mode: str,
+    ) -> tuple[dict[str, Any], str]:
+        encoded_subscription_id = parse.quote(subscription_id, safe="")
+        payload = {"expirationDateTime": self._graph_subscription_expiration()}
+        return self._graph_subscription_request(
+            mailbox,
+            "PATCH",
+            f"https://graph.microsoft.com/v1.0/subscriptions/{encoded_subscription_id}",
+            payload,
+            auth_mode,
+        )
+
+    def _graph_subscription_request(
+        self,
+        mailbox: dict[str, Any],
+        method: str,
+        url: str,
+        payload: dict[str, Any],
+        auth_mode: str,
+    ) -> tuple[dict[str, Any], str]:
+        candidates = self._graph_access_token_candidates(mailbox, auth_mode=auth_mode)
+        last_error: MicrosoftGraphError | None = None
+        for candidate in candidates:
+            try:
+                if method == "POST":
+                    return graph_post(candidate["accessToken"], url, payload), candidate["authMethod"]
+                return graph_patch(candidate["accessToken"], url, payload), candidate["authMethod"]
+            except MicrosoftGraphError as exc:
+                last_error = exc
+                if exc.status_code not in {401, 403}:
+                    break
+        if last_error:
+            raise last_error
+        raise MicrosoftGraphError("No Microsoft Graph access token is available for mailbox subscription.")
+
+    def _process_graph_notification(self, notification: dict[str, Any]) -> dict[str, Any]:
+        subscription_id = str(_pick(notification, "subscriptionId", "subscription_id", default=""))
+        client_state = str(_pick(notification, "clientState", "client_state", default=""))
+        lifecycle_event = str(_pick(notification, "lifecycleEvent", "lifecycle_event", default=""))
+        mailbox = self._mailbox_for_graph_subscription(subscription_id, client_state)
+        if not mailbox:
+            return {
+                "status": "failed",
+                "reason": "unknown subscription or invalid clientState",
+                "subscriptionId": subscription_id,
+            }
+
+        mailbox_id = str(_pick(mailbox, "id", default=""))
+        tenant_id = str(_pick(mailbox, "tenantId", "tenant_id", default=""))
+        mailbox_address = str(_pick(mailbox, "mailboxAddress", "mailbox_address", default="")).strip().lower()
+        if lifecycle_event:
+            settings = dict(_pick(mailbox, "settings", default={}) or {})
+            graph_subscription = dict(settings.get("graphSubscription") or {})
+            graph_subscription.update(
+                {
+                    "status": "lifecycle",
+                    "lastLifecycleEvent": lifecycle_event,
+                    "lastLifecycleAt": utc_now(),
+                }
+            )
+            settings["graphSubscription"] = graph_subscription
+            mailbox.update({"settings": settings, "updatedAt": utc_now()})
+            self.repository.upsert("mailboxAccounts", mailbox)
+            self._audit(
+                tenant_id,
+                "mailbox.graphSubscription.lifecycle",
+                mailbox_id,
+                mailbox_id,
+                {
+                    "mailboxAccountId": mailbox_id,
+                    "mailboxAddress": mailbox_address,
+                    "subscriptionId": subscription_id,
+                    "lifecycleEvent": lifecycle_event,
+                },
+            )
+            return {"status": "lifecycle", "subscriptionId": subscription_id, "lifecycleEvent": lifecycle_event}
+
+        if str(_pick(notification, "changeType", "change_type", default="")).lower() not in {"", "created"}:
+            return {"status": "skipped", "reason": "change type is not created", "subscriptionId": subscription_id}
+
+        message_id = self._graph_message_id_from_notification(notification)
+        if not message_id:
+            return {"status": "failed", "reason": "notification did not include a message id", "subscriptionId": subscription_id}
+
+        auth_mode = str(
+            _pick(
+                dict(_pick(mailbox, "settings", default={}) or {}).get("graphSubscription", {}) or {},
+                "authMethod",
+                default=os.environ.get("ORDER_PROCESSOR_GRAPH_SUBSCRIPTION_AUTH_MODE", "auto"),
+            )
+        ).lower() or "auto"
+        candidates = self._graph_access_token_candidates(mailbox, auth_mode=auth_mode)
+        last_error: MicrosoftGraphError | None = None
+        for candidate in candidates:
+            try:
+                message = self._graph_message_by_id(candidate["accessToken"], mailbox_address, message_id)
+                ingest_result = self._ingest_graph_message(candidate["accessToken"], mailbox, message)
+                self._update_mailbox_after_graph_notification(mailbox, subscription_id, ingest_result)
+                self._audit(
+                    tenant_id,
+                    "mailbox.graphNotification.processed",
+                    mailbox_id,
+                    mailbox_id,
+                    {
+                        "mailboxAccountId": mailbox_id,
+                        "mailboxAddress": mailbox_address,
+                        "subscriptionId": subscription_id,
+                        "graphMessageId": message_id,
+                        "result": ingest_result,
+                        "authMethod": candidate["authMethod"],
+                    },
+                )
+                return {**ingest_result, "subscriptionId": subscription_id, "authMethod": candidate["authMethod"]}
+            except MicrosoftGraphError as exc:
+                last_error = exc
+                if exc.status_code not in {401, 403}:
+                    break
+        reason = str(last_error) if last_error else "No Microsoft Graph access token is available."
+        self._audit(
+            tenant_id,
+            "mailbox.graphNotification.failed",
+            mailbox_id,
+            mailbox_id,
+            {
+                "mailboxAccountId": mailbox_id,
+                "mailboxAddress": mailbox_address,
+                "subscriptionId": subscription_id,
+                "graphMessageId": message_id,
+                "reason": reason,
+                "statusCode": last_error.status_code if last_error else None,
+                "details": last_error.details if last_error else None,
+            },
+        )
+        return {
+            "status": "failed",
+            "reason": reason,
+            "statusCode": last_error.status_code if last_error else None,
+            "subscriptionId": subscription_id,
+            "graphMessageId": message_id,
+        }
+
     def _poll_mailbox(self, mailbox: dict[str, Any], *, limit: int) -> dict[str, Any]:
         mailbox_id = str(_pick(mailbox, "id", default=""))
         tenant_id = str(_pick(mailbox, "tenantId", "tenant_id", default=""))
@@ -779,9 +1207,73 @@ class OrderProcessorApi:
         )
         return result
 
-    def _graph_recent_messages(self, access_token: str, mailbox_address: str, limit: int) -> list[dict[str, Any]]:
+    def _graph_access_token_candidates(self, mailbox: dict[str, Any], *, auth_mode: str) -> list[dict[str, str]]:
+        normalized_mode = (auth_mode or "auto").lower()
+        if normalized_mode in {"app", "app-only"}:
+            normalized_mode = "application"
+        if normalized_mode not in {"auto", "application", "delegated"}:
+            normalized_mode = "auto"
+
+        candidates: list[dict[str, str]] = []
+        errors: list[MicrosoftGraphError] = []
+        config = config_from_environment()
+        client_secret = self._microsoft_client_secret(config)
+
+        if normalized_mode in {"auto", "application"}:
+            try:
+                token = client_credentials_access_token(config, client_secret)
+                access_token = str(token.get("access_token", ""))
+                if access_token:
+                    candidates.append({"accessToken": access_token, "authMethod": "application"})
+            except MicrosoftGraphError as exc:
+                errors.append(exc)
+                if normalized_mode == "application":
+                    raise
+
+        if normalized_mode in {"auto", "delegated"}:
+            try:
+                delegated = self._delegated_graph_access_token_for_mailbox(mailbox)
+                if delegated:
+                    candidates.append(delegated)
+            except MicrosoftGraphError as exc:
+                errors.append(exc)
+                if normalized_mode == "delegated":
+                    raise
+
+        if not candidates and errors:
+            raise errors[-1]
+        return candidates
+
+    def _delegated_graph_access_token_for_mailbox(self, mailbox: dict[str, Any]) -> dict[str, str] | None:
+        connection_id = str(_pick(mailbox, "connectionId", "connection_id", default=""))
+        connection = self.repository.get("microsoftAuthConnections", connection_id) if connection_id else None
+        if not connection:
+            return None
+        secret_names = dict(_pick(connection, "keyVaultSecretNames", "key_vault_secret_names", default={}) or {})
+        refresh_token_value = self.secret_store.get_secret(str(secret_names.get("refreshToken", "")))
+        if not refresh_token_value:
+            return None
+        config = config_from_environment(str(_pick(connection, "metadata", default={}).get("redirectUri", "")))
+        token = refresh_access_token(config, refresh_token_value, self._microsoft_client_secret(config))
+        updated_secret_names = self._store_microsoft_tokens(connection_id, token)
+        if updated_secret_names:
+            connection["keyVaultSecretNames"] = {**secret_names, **updated_secret_names}
+            connection["status"] = AuthConnectionStatus.ACTIVE.value
+            connection["lastTestedAt"] = utc_now()
+            self.repository.upsert("microsoftAuthConnections", connection)
+        access_token = str(token.get("access_token", ""))
+        return {"accessToken": access_token, "authMethod": "delegated"} if access_token else None
+
+    def _graph_message_by_id(self, access_token: str, mailbox_address: str, graph_message_id: str) -> dict[str, Any]:
         encoded_mailbox = parse.quote(mailbox_address, safe="")
-        select_fields = ",".join(
+        encoded_message = parse.quote(graph_message_id, safe="")
+        query = parse.urlencode({"$select": self._graph_message_select_fields()}, safe=",")
+        url = f"https://graph.microsoft.com/v1.0/users/{encoded_mailbox}/messages/{encoded_message}?{query}"
+        return graph_get(access_token, url)
+
+    @staticmethod
+    def _graph_message_select_fields() -> str:
+        return ",".join(
             [
                 "id",
                 "internetMessageId",
@@ -796,6 +1288,109 @@ class OrderProcessorApi:
                 "isRead",
             ]
         )
+
+    def _mailbox_for_graph_subscription(self, subscription_id: str, client_state: str) -> dict[str, Any] | None:
+        if not subscription_id or not client_state:
+            return None
+        for mailbox in self.repository.list("mailboxAccounts"):
+            settings = dict(_pick(mailbox, "settings", default={}) or {})
+            graph_subscription = dict(settings.get("graphSubscription") or {})
+            if (
+                str(graph_subscription.get("subscriptionId", "")) == subscription_id
+                and str(graph_subscription.get("clientState", "")) == client_state
+            ):
+                return mailbox
+        return None
+
+    def _update_mailbox_after_graph_notification(
+        self,
+        mailbox: dict[str, Any],
+        subscription_id: str,
+        result: dict[str, Any],
+    ) -> None:
+        settings = dict(_pick(mailbox, "settings", default={}) or {})
+        graph_subscription = dict(settings.get("graphSubscription") or {})
+        graph_subscription.update(
+            {
+                "status": "active",
+                "subscriptionId": subscription_id,
+                "lastNotificationAt": utc_now(),
+                "lastNotificationResult": {
+                    "status": result.get("status", ""),
+                    "emailMessageId": result.get("emailMessageId", ""),
+                    "orderRunId": result.get("orderRunId", ""),
+                    "processed": bool(result.get("processed")),
+                },
+            }
+        )
+        settings["graphSubscription"] = graph_subscription
+        settings["lastWebhook"] = {
+            "status": result.get("status", ""),
+            "checkedAt": utc_now(),
+            "emailMessageId": result.get("emailMessageId", ""),
+            "orderRunId": result.get("orderRunId", ""),
+            "processed": bool(result.get("processed")),
+        }
+        mailbox.update({"settings": settings, "ingestStatus": "active", "updatedAt": utc_now()})
+        self.repository.upsert("mailboxAccounts", mailbox)
+
+    @staticmethod
+    def _graph_message_id_from_notification(notification: dict[str, Any]) -> str:
+        resource_data = dict(_pick(notification, "resourceData", "resource_data", default={}) or {})
+        message_id = str(_pick(resource_data, "id", default=""))
+        if message_id:
+            return message_id
+        for value in (
+            str(_pick(resource_data, "@odata.id", "odataId", default="")),
+            str(_pick(notification, "resource", default="")),
+        ):
+            match = re.search(r"messages\('([^']+)'\)", value, flags=re.IGNORECASE)
+            if match:
+                return parse.unquote(match.group(1))
+            match = re.search(r"/messages/([^/?]+)", value, flags=re.IGNORECASE)
+            if match:
+                return parse.unquote(match.group(1))
+            match = re.search(r"/messages\('([^']+)'\)", value, flags=re.IGNORECASE)
+            if match:
+                return parse.unquote(match.group(1))
+        return ""
+
+    @staticmethod
+    def _graph_subscription_resource(mailbox_address: str) -> str:
+        encoded_mailbox = parse.quote(mailbox_address.strip().lower(), safe="")
+        return f"users/{encoded_mailbox}/mailFolders('inbox')/messages"
+
+    @staticmethod
+    def _graph_subscription_expiration() -> str:
+        minutes = int(os.environ.get("ORDER_PROCESSOR_GRAPH_SUBSCRIPTION_LIFETIME_MINUTES", "10020") or 10020)
+        minutes = max(45, min(minutes, 10080))
+        return (datetime.now(UTC) + timedelta(minutes=minutes)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+    @staticmethod
+    def _graph_notification_url() -> str:
+        explicit = os.environ.get("ORDER_PROCESSOR_GRAPH_NOTIFICATION_URL", "").strip()
+        if explicit:
+            return explicit
+        base = (
+            os.environ.get("ORDER_PROCESSOR_GRAPH_NOTIFICATION_BASE_URL", "").strip()
+            or os.environ.get("ORDER_PROCESSOR_FUNCTION_BASE_URL", "").strip()
+        )
+        if not base and os.environ.get("WEBSITE_HOSTNAME"):
+            base = f"https://{os.environ['WEBSITE_HOSTNAME'].strip()}"
+        return f"{base.rstrip('/')}/graph/notifications" if base else ""
+
+    @staticmethod
+    def _graph_client_state(tenant_id: str, mailbox_id: str, mailbox_address: str) -> str:
+        secret = (
+            os.environ.get("ORDER_PROCESSOR_GRAPH_WEBHOOK_CLIENT_STATE_SECRET")
+            or os.environ.get("ORDER_PROCESSOR_FUNCTION_SHARED_KEY")
+            or "local-development-graph-webhook"
+        )
+        return stable_id("graph-webhook", tenant_id, mailbox_id, mailbox_address, secret)
+
+    def _graph_recent_messages(self, access_token: str, mailbox_address: str, limit: int) -> list[dict[str, Any]]:
+        encoded_mailbox = parse.quote(mailbox_address, safe="")
+        select_fields = self._graph_message_select_fields()
         query = parse.urlencode(
             {
                 "$top": str(limit),
@@ -3477,6 +4072,18 @@ def test_mailbox_connection(mailbox_id: str, payload: dict[str, Any]) -> dict[st
 
 def poll_mailboxes(payload: dict[str, Any]) -> dict[str, Any]:
     return default_api.poll_mailboxes(payload)
+
+
+def sync_mailbox_subscriptions(payload: dict[str, Any]) -> dict[str, Any]:
+    return default_api.sync_mailbox_subscriptions(payload)
+
+
+def renew_mailbox_subscriptions(payload: dict[str, Any]) -> dict[str, Any]:
+    return default_api.renew_mailbox_subscriptions(payload)
+
+
+def process_graph_notifications(payload: dict[str, Any]) -> dict[str, Any]:
+    return default_api.process_graph_notifications(payload)
 
 
 def console_session(payload: dict[str, Any]) -> dict[str, Any]:

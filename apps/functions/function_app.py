@@ -4,8 +4,10 @@ import json
 import hmac
 import os
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib import parse
 
 APP_ROOT = Path(__file__).resolve().parent
 ROOT = Path(__file__).resolve().parents[2]
@@ -57,6 +59,12 @@ def _payload_with_headers(req: Any) -> dict[str, Any]:
     return payload
 
 
+def _payload_with_headers_and_query(req: Any) -> dict[str, Any]:
+    payload = _payload_with_headers(req)
+    payload["queryParams"] = dict(getattr(req, "params", {}) or {})
+    return payload
+
+
 def _response(payload: dict[str, Any], status_code: int = 200) -> Any:
     if func is None:
         return payload
@@ -101,6 +109,12 @@ def _handle(req: Any, callback: Any) -> Any:
         raise
 
 
+def _plain_text_response(value: str, status_code: int = 200) -> Any:
+    if func is None:
+        return value
+    return func.HttpResponse(value, status_code=status_code, mimetype="text/plain")
+
+
 if func is not None:
     app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
@@ -140,14 +154,58 @@ if func is not None:
     def mailboxes_poll(req: func.HttpRequest) -> func.HttpResponse:
         return _handle(req, lambda: order_api.poll_mailboxes(_payload_with_headers(req)))
 
+    @app.route(route="mailboxes/subscriptions/sync", methods=["POST"])
+    def mailboxes_subscriptions_sync(req: func.HttpRequest) -> func.HttpResponse:
+        return _handle(req, lambda: order_api.sync_mailbox_subscriptions(_payload_with_headers(req)))
+
+    @app.route(route="graph/notifications", methods=["POST"])
+    @app.queue_output(
+        arg_name="queued",
+        queue_name="%ORDER_PROCESSOR_GRAPH_NOTIFICATION_QUEUE%",
+        connection="AzureWebJobsStorage",
+    )
+    def graph_notifications(req: func.HttpRequest, queued: func.Out[str]) -> func.HttpResponse:
+        params = dict(getattr(req, "params", {}) or {})
+        validation_token = params.get("validationToken") or params.get("validationtoken")
+        if validation_token:
+            return _plain_text_response(parse.unquote(str(validation_token)))
+
+        payload = _payload_with_headers_and_query(req)
+        notifications = payload.get("value", [])
+        queued.set(
+            json.dumps(
+                {
+                    "source": "microsoftGraphWebhook",
+                    "receivedAt": datetime.now(UTC).isoformat(),
+                    "notifications": notifications if isinstance(notifications, list) else [],
+                    "headers": payload.get("headers", {}),
+                    "queryParams": payload.get("queryParams", {}),
+                },
+                separators=(",", ":"),
+            )
+        )
+        return _response(
+            {"accepted": len(notifications) if isinstance(notifications, list) else 0, "queued": True},
+            status_code=202,
+        )
+
+    @app.queue_trigger(
+        arg_name="msg",
+        queue_name="%ORDER_PROCESSOR_GRAPH_NOTIFICATION_QUEUE%",
+        connection="AzureWebJobsStorage",
+    )
+    def graph_notifications_queue(msg: func.QueueMessage) -> None:
+        payload = json.loads(msg.get_body().decode("utf-8"))
+        order_api.process_graph_notifications(payload)
+
     @app.timer_trigger(
         arg_name="timer",
-        schedule="%ORDER_PROCESSOR_MAILBOX_POLL_CRON%",
+        schedule="%ORDER_PROCESSOR_GRAPH_SUBSCRIPTION_RENEWAL_CRON%",
         run_on_startup=False,
         use_monitor=True,
     )
-    def mailbox_poll_timer(timer: func.TimerRequest) -> None:
-        order_api.poll_mailboxes({"source": "timer", "pastDue": bool(getattr(timer, "past_due", False))})
+    def graph_subscription_renewal_timer(timer: func.TimerRequest) -> None:
+        order_api.renew_mailbox_subscriptions({"source": "timer", "pastDue": bool(getattr(timer, "past_due", False))})
 
     @app.route(route="orders/{orderRunId}/timeline", methods=["POST"])
     def orders_timeline(req: func.HttpRequest) -> func.HttpResponse:

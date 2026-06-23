@@ -455,6 +455,120 @@ class ConsoleBackendTests(unittest.TestCase):
         self.assertEqual(orders[0]["customerId"], "frontier-102598")
         self.assertEqual(orders[0]["sourceFileName"], "order.csv")
 
+    def test_graph_webhook_subscription_processes_message_notification(self) -> None:
+        api, repo, _ = self._api()
+        mailbox = api.upsert_mailbox(
+            {
+                "tenantId": "altitude",
+                "mailboxAddress": "orders@example.com",
+                "connectionId": "m365-orders",
+            }
+        )["mailboxAccount"]
+        api.upsert_customer_config(
+            {
+                "tenantId": "altitude",
+                "id": "frontier-102598",
+                "customerCode": "102598",
+                "name": "Frontier",
+            }
+        )
+        api.upsert_processor_profile(
+            {
+                "tenantId": "altitude",
+                "customerId": "_global",
+                "id": "csv-default",
+                "name": "CSV",
+                "processorType": "csv",
+            }
+        )
+        api.upsert_routing_rule(
+            {
+                "tenantId": "altitude",
+                "customerId": "_global",
+                "name": "Webstore orders",
+                "phase": "webstoreOrder",
+                "outcome": "knownOrder",
+                "mailboxAccountIds": [mailbox["id"]],
+                "subjectRegex": ["Order"],
+                "customerCodeSource": "subject",
+                "customerCodeRegex": r"Order\s*#\s*(?P<customerCode>\d+)",
+                "processorProfileId": "csv-default",
+            }
+        )
+        created_payloads: list[dict[str, object]] = []
+
+        def graph_post_response(_token: str, url: str, payload: dict[str, object]) -> dict[str, object]:
+            created_payloads.append(payload)
+            self.assertEqual(url, "https://graph.microsoft.com/v1.0/subscriptions")
+            return {
+                "id": "subscription-1",
+                "clientState": payload["clientState"],
+                "resource": payload["resource"],
+                "changeType": payload["changeType"],
+                "expirationDateTime": "2026-06-30T12:00:00Z",
+            }
+
+        csv_body = base64.b64encode(b"item_number,quantity,description\nSKU-1,2,Test Item\n").decode("ascii")
+
+        def graph_get_response(_token: str, url: str) -> dict[str, object]:
+            if url.endswith("/attachments"):
+                return {
+                    "value": [
+                        {
+                            "id": "attachment-1",
+                            "name": "order.csv",
+                            "contentType": "text/csv",
+                            "size": 48,
+                            "isInline": False,
+                            "contentBytes": csv_body,
+                        }
+                    ]
+                }
+            return {
+                "id": "graph-message-1",
+                "internetMessageId": "<message-1@example.com>",
+                "subject": "Frontier Distributing. Purchase Receipt for Order #  102598",
+                "from": {"emailAddress": {"address": "buyer@example.com"}},
+                "receivedDateTime": "2026-06-23T12:00:00Z",
+                "body": {"contentType": "text", "content": "Order attached."},
+                "hasAttachments": True,
+                "isRead": False,
+            }
+
+        with patch.dict(os.environ, {"ORDER_PROCESSOR_MICROSOFT_AUTH_CLIENT_SECRET": "client-secret"}, clear=False), patch(
+            "order_processor.api.client_credentials_access_token",
+            return_value={"access_token": "app-access-token"},
+        ), patch("order_processor.api.graph_post", side_effect=graph_post_response), patch(
+            "order_processor.api.graph_get",
+            side_effect=graph_get_response,
+        ):
+            subscription_result = api.sync_mailbox_subscriptions(
+                {
+                    "tenantId": "altitude",
+                    "notificationUrl": "https://functions.example.com/graph/notifications",
+                    "authMode": "application",
+                }
+            )
+            stored_mailbox = repo.get("mailboxAccounts", mailbox["id"])
+            graph_subscription = stored_mailbox["settings"]["graphSubscription"]
+            notification = {
+                "subscriptionId": "subscription-1",
+                "clientState": graph_subscription["clientState"],
+                "changeType": "created",
+                "resourceData": {"id": "graph-message-1"},
+            }
+            first = api.process_graph_notifications({"notifications": [notification]})
+            second = api.process_graph_notifications({"notifications": [notification]})
+
+        self.assertEqual(subscription_result["mailboxSubscriptions"]["createdCount"], 1)
+        self.assertEqual(created_payloads[0]["resource"], "users/orders%40example.com/mailFolders('inbox')/messages")
+        self.assertEqual(first["graphNotifications"]["ingestedCount"], 1)
+        self.assertEqual(second["graphNotifications"]["skippedCount"], 1)
+        orders = repo.query_by_tenant("orderRuns", "altitude")
+        self.assertEqual(len(orders), 1)
+        self.assertEqual(orders[0]["customerId"], "frontier-102598")
+        self.assertEqual(orders[0]["sourceFileName"], "order.csv")
+
     def test_console_upserts_tenant_mailbox_and_customer_identification_rule(self) -> None:
         api, repo, _ = self._api()
         admin_headers = {"x-ms-client-principal": _easy_auth_header("connect@focuseautomate.com")}

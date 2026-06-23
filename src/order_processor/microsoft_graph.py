@@ -216,13 +216,45 @@ def refresh_access_token(
     )
 
 
+def client_credentials_access_token(
+    config: MicrosoftGraphAuthConfig,
+    client_secret: str,
+) -> dict[str, Any]:
+    if not client_secret:
+        raise MicrosoftGraphError("Microsoft Graph OAuth client secret is not configured.")
+    return _token_request(
+        config.token_url,
+        {
+            "client_id": config.client_id,
+            "client_secret": client_secret,
+            "grant_type": "client_credentials",
+            "scope": "https://graph.microsoft.com/.default",
+        },
+    )
+
+
 def graph_get(access_token: str, url: str) -> dict[str, Any]:
+    return graph_request(access_token, "GET", url)
+
+
+def graph_post(access_token: str, url: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return graph_request(access_token, "POST", url, payload)
+
+
+def graph_patch(access_token: str, url: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return graph_request(access_token, "PATCH", url, payload)
+
+
+def graph_request(access_token: str, method: str, url: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
     req = request.Request(
         url,
-        method="GET",
+        data=data,
+        method=method.upper(),
         headers={
             "Authorization": f"Bearer {access_token}",
             "Accept": "application/json",
+            **({"Content-Type": "application/json"} if payload is not None else {}),
         },
     )
     try:

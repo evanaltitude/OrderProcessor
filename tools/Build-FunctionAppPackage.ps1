@@ -51,6 +51,8 @@ $routes = @(
     @{ Name = "mailboxes_upsert"; EntryPoint = "mailboxes_upsert"; Route = "mailboxes" },
     @{ Name = "mailboxes_test_connection"; EntryPoint = "mailboxes_test_connection"; Route = "mailboxes/{id}/test-connection" },
     @{ Name = "mailboxes_poll"; EntryPoint = "mailboxes_poll"; Route = "mailboxes/poll" },
+    @{ Name = "mailboxes_subscriptions_sync"; EntryPoint = "mailboxes_subscriptions_sync"; Route = "mailboxes/subscriptions/sync" },
+    @{ Name = "graph_notifications"; EntryPoint = "graph_notifications"; Route = "graph/notifications"; QueueOutput = "%ORDER_PROCESSOR_GRAPH_NOTIFICATION_QUEUE%" },
     @{ Name = "orders_timeline"; EntryPoint = "orders_timeline"; Route = "orders/{orderRunId}/timeline" },
     @{ Name = "console_session"; EntryPoint = "console_session"; Route = "console/session" },
     @{ Name = "console_dashboard"; EntryPoint = "console_dashboard"; Route = "console/dashboard" },
@@ -78,30 +80,40 @@ $routes = @(
 foreach ($route in $routes) {
     $routeDir = Join-Path $stagingRoot $route.Name
     New-Item -ItemType Directory -Path $routeDir | Out-Null
+    $bindings = @(
+        @{
+            authLevel = "anonymous"
+            type = "httpTrigger"
+            direction = "in"
+            name = "req"
+            methods = @("post")
+            route = $route.Route
+        }
+    )
+    if ($route.ContainsKey("QueueOutput")) {
+        $bindings += @{
+            type = "queue"
+            direction = "out"
+            name = "queued"
+            queueName = $route.QueueOutput
+            connection = "AzureWebJobsStorage"
+        }
+    }
+    $bindings += @{
+        type = "http"
+        direction = "out"
+        name = '$return'
+    }
     $metadata = @{
         scriptFile = "../function_app.py"
         entryPoint = $route.EntryPoint
-        bindings = @(
-            @{
-                authLevel = "anonymous"
-                type = "httpTrigger"
-                direction = "in"
-                name = "req"
-                methods = @("post")
-                route = $route.Route
-            },
-            @{
-                type = "http"
-                direction = "out"
-                name = '$return'
-            }
-        )
+        bindings = $bindings
     } | ConvertTo-Json -Depth 10
     Set-Content -LiteralPath (Join-Path $routeDir "function.json") -Value $metadata -Encoding ASCII
 }
 
 $timers = @(
-    @{ Name = "mailbox_poll_timer"; EntryPoint = "mailbox_poll_timer"; Schedule = "%ORDER_PROCESSOR_MAILBOX_POLL_CRON%" }
+    @{ Name = "graph_subscription_renewal_timer"; EntryPoint = "graph_subscription_renewal_timer"; Schedule = "%ORDER_PROCESSOR_GRAPH_SUBSCRIPTION_RENEWAL_CRON%" }
 )
 
 foreach ($timer in $timers) {
@@ -122,6 +134,29 @@ foreach ($timer in $timers) {
         )
     } | ConvertTo-Json -Depth 10
     Set-Content -LiteralPath (Join-Path $timerDir "function.json") -Value $metadata -Encoding ASCII
+}
+
+$queueTriggers = @(
+    @{ Name = "graph_notifications_queue"; EntryPoint = "graph_notifications_queue"; QueueName = "%ORDER_PROCESSOR_GRAPH_NOTIFICATION_QUEUE%" }
+)
+
+foreach ($queueTrigger in $queueTriggers) {
+    $queueDir = Join-Path $stagingRoot $queueTrigger.Name
+    New-Item -ItemType Directory -Path $queueDir | Out-Null
+    $metadata = @{
+        scriptFile = "../function_app.py"
+        entryPoint = $queueTrigger.EntryPoint
+        bindings = @(
+            @{
+                type = "queueTrigger"
+                direction = "in"
+                name = "msg"
+                queueName = $queueTrigger.QueueName
+                connection = "AzureWebJobsStorage"
+            }
+        )
+    } | ConvertTo-Json -Depth 10
+    Set-Content -LiteralPath (Join-Path $queueDir "function.json") -Value $metadata -Encoding ASCII
 }
 
 Get-ChildItem -Path $stagingRoot -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
