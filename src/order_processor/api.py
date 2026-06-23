@@ -3470,6 +3470,10 @@ def test_mailbox_connection(mailbox_id: str, payload: dict[str, Any]) -> dict[st
     return default_api.test_mailbox_connection(mailbox_id, payload)
 
 
+def poll_mailboxes(payload: dict[str, Any]) -> dict[str, Any]:
+    return default_api.poll_mailboxes(payload)
+
+
 def console_session(payload: dict[str, Any]) -> dict[str, Any]:
     return default_api.console_session(payload)
 
