@@ -349,8 +349,12 @@ function renderSession() {
 async function refresh(options = {}) {
   const includeCustomerFilter = options.includeCustomerFilter ?? activeConsoleView() !== "customers";
   const customerId = includeCustomerFilter ? el("customerFilter").value : "";
+  const selectedBeforeRefresh = state.selectedDistributorId;
   state.dashboard = await post("/console/dashboard", customerId ? { customerId } : {});
-  state.selectedDistributorId = state.dashboard?.tenant?.tenantId || state.tenantId;
+  const distributors = state.dashboard?.distributorCustomers || [];
+  state.selectedDistributorId = distributors.some((distributor) => distributor.tenantId === selectedBeforeRefresh)
+    ? selectedBeforeRefresh
+    : state.dashboard?.tenant?.tenantId || state.tenantId;
   renderSession();
   renderMetrics(state.dashboard.summary);
   renderRows();

@@ -40,6 +40,8 @@ class ConsoleFrontendTests(unittest.TestCase):
         self.assertIn("x-ms-client-principal", server)
         self.assertIn("ORDER_PROCESSOR_API_BASE_URL", server)
         self.assertIn("/auth/microsoft/callback", server)
+        self.assertIn('"Content-Length": Buffer.byteLength(body)', server)
+        self.assertIn("proxyRequest.write(body)", server)
         self.assertIn("Distributor Customers", index)
         self.assertIn("Shared Mailbox", index)
         self.assertIn("Authorized Microsoft login", index)

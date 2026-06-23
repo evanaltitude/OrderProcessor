@@ -2090,7 +2090,11 @@ class OrderProcessorApi:
         return email_actions
 
     def upsert_tenant_config(self, payload: dict[str, Any]) -> dict[str, Any]:
-        tenant_id = _pick(payload, "targetTenantId", "target_tenant_id", "id", "tenantId", "tenant_id", default="default")
+        tenant_id = str(
+            _pick(payload, "targetTenantId", "target_tenant_id", "id", "tenantId", "tenant_id", default="")
+        ).strip()
+        if not tenant_id:
+            return {"error": "tenantIdRequired", "message": "Customer id is required."}
         existing = self.repository.get("tenants", tenant_id) or {}
         settings = {
             **dict(_pick(existing, "settings", default={}) or {}),

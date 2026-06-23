@@ -52,43 +52,47 @@ function proxyApi(request, response) {
     return;
   }
 
-  const targetPath = request.url.replace(/^\/api/, "") || "/";
-  const target = new URL(`${apiBaseUrl}${targetPath}`);
-  const headers = {
-    Accept: request.headers.accept || "application/json",
-    "Content-Type": request.headers["content-type"] || "application/json"
-  };
+  readResponseBody(request, (body) => {
+    const targetPath = request.url.replace(/^\/api/, "") || "/";
+    const target = new URL(`${apiBaseUrl}${targetPath}`);
+    const headers = {
+      Accept: request.headers.accept || "application/json",
+      "Content-Type": request.headers["content-type"] || "application/json",
+      "Content-Length": Buffer.byteLength(body)
+    };
 
-  for (const name of [
-    "x-ms-client-principal",
-    "x-ms-client-principal-id",
-    "x-ms-client-principal-idp",
-    "x-ms-client-principal-name"
-  ]) {
-    if (request.headers[name]) headers[name] = request.headers[name];
-  }
-  if (subscriptionKey) headers["Ocp-Apim-Subscription-Key"] = subscriptionKey;
-
-  const proxyRequest = https.request(
-    target,
-    {
-      method: request.method,
-      headers
-    },
-    (proxyResponse) => {
-      const responseHeaders = {
-        "Content-Type": proxyResponse.headers["content-type"] || "application/json; charset=utf-8",
-        "Cache-Control": "no-store"
-      };
-      response.writeHead(proxyResponse.statusCode || 502, responseHeaders);
-      proxyResponse.pipe(response);
+    for (const name of [
+      "x-ms-client-principal",
+      "x-ms-client-principal-id",
+      "x-ms-client-principal-idp",
+      "x-ms-client-principal-name"
+    ]) {
+      if (request.headers[name]) headers[name] = request.headers[name];
     }
-  );
+    if (subscriptionKey) headers["Ocp-Apim-Subscription-Key"] = subscriptionKey;
 
-  proxyRequest.on("error", (error) => {
-    sendJson(response, 502, { error: "apiProxyFailed", message: error.message });
+    const proxyRequest = https.request(
+      target,
+      {
+        method: request.method,
+        headers
+      },
+      (proxyResponse) => {
+        const responseHeaders = {
+          "Content-Type": proxyResponse.headers["content-type"] || "application/json; charset=utf-8",
+          "Cache-Control": "no-store"
+        };
+        response.writeHead(proxyResponse.statusCode || 502, responseHeaders);
+        proxyResponse.pipe(response);
+      }
+    );
+
+    proxyRequest.on("error", (error) => {
+      sendJson(response, 502, { error: "apiProxyFailed", message: error.message });
+    });
+    proxyRequest.write(body);
+    proxyRequest.end();
   });
-  request.pipe(proxyRequest);
 }
 
 function readResponseBody(stream, callback) {

@@ -385,6 +385,15 @@ class ConsoleBackendTests(unittest.TestCase):
         self.assertEqual(rule["customerIdentificationRule"]["normalizedValue"], "PILOT001")
         self.assertIsNotNone(repo.get("customerAliases", rule["customerIdentificationRule"]["id"]))
 
+    def test_console_tenant_upsert_rejects_empty_payload(self) -> None:
+        api, repo, _ = self._api()
+        admin_headers = {"x-ms-client-principal": _easy_auth_header("connect@focuseautomate.com")}
+
+        result = api.console_upsert_tenant_config({"headers": admin_headers})
+
+        self.assertEqual(result["error"], "tenantIdRequired")
+        self.assertIsNone(repo.get("tenants", "default"))
+
     def test_console_upserts_email_triage_policy_fields(self) -> None:
         api, repo, _ = self._api()
         admin_headers = {"x-ms-client-principal": _easy_auth_header("connect@focuseautomate.com")}
