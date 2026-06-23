@@ -72,6 +72,7 @@ from .microsoft_graph import (
     build_authorization_url,
     config_from_environment,
     exchange_authorization_code,
+    graph_get,
     refresh_access_token,
     secret_name,
     secret_store_from_environment,
@@ -1684,6 +1685,8 @@ class OrderProcessorApi:
         mailbox_address = _pick(payload, "mailboxAddress", "mailbox_address", default=None)
         if mailbox is not None:
             mailbox_address = _pick(mailbox, "mailboxAddress", "mailbox_address", default=mailbox_address)
+        if not mailbox_address:
+            return {"error": "mailboxRequired", "message": "Save the shared mailbox before authorizing Microsoft access."}
         connection_id = _pick(
             payload,
             "connectionId",
@@ -1707,26 +1710,31 @@ class OrderProcessorApi:
 
         session = self.console_session(payload)
         actor_email = _pick(session.get("principal", {}), "email", default="").lower()
+        authorized_user_email = _normalized_email(
+            _pick(payload, "authorizedUserEmail", "authorized_user_email", "loginHint", "login_hint", default="")
+        )
         state = sign_state(
             {
                 "tenantId": tenant_id,
                 "connectionId": connection_id,
                 "mailboxAccountId": mailbox_id,
                 "mailboxAddress": mailbox_address or "",
-                "requestedBy": actor_email,
+                "requestedBy": authorized_user_email or actor_email,
+                "initiatedBy": actor_email,
+                "authorizedUserEmail": authorized_user_email,
                 "redirectUri": config.redirect_uri,
                 "returnTo": _pick(payload, "returnTo", "return_to", default="/"),
             },
             state_secret_from_environment(),
         )
-        authorization_url = build_authorization_url(config, state)
+        authorization_url = build_authorization_url(config, state, prompt="select_account", login_hint=authorized_user_email)
         connection = MicrosoftAuthConnection(
             id=connection_id,
             tenant_id=tenant_id,
             customer_id=GLOBAL_CUSTOMER_ID,
             provider="microsoft365",
             display_name=_pick(payload, "displayName", "display_name", default=mailbox_address or "Microsoft 365"),
-            owner_email=actor_email,
+            owner_email=authorized_user_email or actor_email,
             connection_type="delegated",
             status=AuthConnectionStatus.NEEDS_CONSENT,
             scopes=config.scopes,
@@ -1737,6 +1745,8 @@ class OrderProcessorApi:
                 "mailboxAddress": mailbox_address or "",
                 "redirectUri": config.redirect_uri,
                 "authMethod": "delegatedAuthorizationCode",
+                "authorizedUserEmail": authorized_user_email,
+                "initiatedBy": actor_email,
             },
         )
         stored = self.repository.upsert("microsoftAuthConnections", to_dict(connection))
@@ -1797,6 +1807,19 @@ class OrderProcessorApi:
 
         secrets = self._store_microsoft_tokens(connection_id, token)
         access_token = str(token.get("access_token", ""))
+        authorized_user: dict[str, Any] = {}
+        authorized_email = _normalized_email(_pick(state_payload, "authorizedUserEmail", "requestedBy", default=""))
+        if access_token:
+            try:
+                authorized_user = graph_get(
+                    access_token,
+                    "https://graph.microsoft.com/v1.0/me?$select=id,displayName,userPrincipalName,mail",
+                )
+                authorized_email = _normalized_email(
+                    _pick(authorized_user, "mail", "userPrincipalName", default=authorized_email)
+                )
+            except MicrosoftGraphError:
+                authorized_user = {}
         mailbox_test = (
             test_shared_mailbox_access(access_token, mailbox_address)
             if access_token and mailbox_address
@@ -1808,13 +1831,13 @@ class OrderProcessorApi:
             customer_id=GLOBAL_CUSTOMER_ID,
             provider="microsoft365",
             display_name=_pick(existing, "displayName", "display_name", default=mailbox_address or "Microsoft 365"),
-            owner_email=_pick(state_payload, "requestedBy", default=_pick(existing, "ownerEmail", "owner_email", default="")),
+            owner_email=authorized_email or _pick(existing, "ownerEmail", "owner_email", default=""),
             connection_type="delegated",
             status=AuthConnectionStatus.ACTIVE if mailbox_test.get("canAccess") else AuthConnectionStatus.CONFIGURED,
             scopes=list(_as_list(token.get("scope", " ".join(config.scopes)).split())),
             key_vault_secret_names=secrets,
             tenant_authority=config.tenant_authority,
-            consented_by=_pick(state_payload, "requestedBy", default=""),
+            consented_by=authorized_email,
             consented_at=utc_now(),
             expires_at=token_expiry(token.get("expires_in")),
             metadata={
@@ -1823,6 +1846,9 @@ class OrderProcessorApi:
                 "mailboxAddress": mailbox_address,
                 "authMethod": "delegatedAuthorizationCode",
                 "mailboxAccess": mailbox_test,
+                "authorizedUser": authorized_user,
+                "authorizedUserEmail": authorized_email,
+                "initiatedBy": _pick(state_payload, "initiatedBy", default=""),
             },
         )
         stored_connection = self.repository.upsert("microsoftAuthConnections", to_dict(connection))
@@ -1832,7 +1858,7 @@ class OrderProcessorApi:
                 mailbox_id,
                 connection_id,
                 mailbox_test,
-                authorized_by=_pick(state_payload, "requestedBy", default=""),
+                authorized_by=authorized_email,
             )
         self._audit(
             tenant_id,
@@ -2183,6 +2209,8 @@ class OrderProcessorApi:
         deprecated_customer_id = _pick(payload, "customerId", "customer_id", default="")
         customer_id = GLOBAL_CUSTOMER_ID
         mailbox_address = str(_pick(payload, "mailboxAddress", "mailbox_address", default="")).strip().lower()
+        if not mailbox_address:
+            return {"error": "mailboxAddressRequired", "message": "Mailbox address is required."}
         mailbox_id = _pick(
             payload,
             "id",
@@ -2193,6 +2221,11 @@ class OrderProcessorApi:
         settings = dict(_pick(payload, "settings", default={}) or {})
         if deprecated_customer_id and deprecated_customer_id != GLOBAL_CUSTOMER_ID:
             settings["deprecatedMailboxCustomerId"] = deprecated_customer_id
+        connection_id = _pick(payload, "connectionId", "connection_id", default="") or stable_id(
+            tenant_id,
+            "microsoft365",
+            mailbox_address,
+        )
         mailbox = MailboxAccount(
             id=mailbox_id,
             tenant_id=tenant_id,
@@ -2200,7 +2233,7 @@ class OrderProcessorApi:
             customer_id=customer_id,
             display_name=_pick(payload, "displayName", "display_name", default=mailbox_address),
             provider=_pick(payload, "provider", default="microsoft365"),
-            connection_id=_pick(payload, "connectionId", "connection_id", default=""),
+            connection_id=connection_id,
             enabled=bool(_pick(payload, "enabled", default=True)),
             ingest_status=_pick(payload, "ingestStatus", "ingest_status", default="configured"),
             permission_status=_pick(payload, "permissionStatus", "permission_status", default="unknown"),

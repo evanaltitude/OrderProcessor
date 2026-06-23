@@ -266,15 +266,19 @@ class ConsoleBackendTests(unittest.TestCase):
                     "mailboxAccountId": mailbox["id"],
                     "mailboxAddress": "orders@example.com",
                     "connectionId": "m365-orders",
+                    "authorizedUserEmail": "mailbox-admin@example.com",
                     "redirectUri": "https://console.example.com/auth/microsoft/callback",
                 }
             )
 
         self.assertIn("https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize", result["authorizationUrl"])
         self.assertIn("Mail.ReadWrite.Shared", result["authorizationUrl"])
+        self.assertIn("prompt=select_account", result["authorizationUrl"])
+        self.assertIn("login_hint=mailbox-admin%40example.com", result["authorizationUrl"])
         stored = repo.get("microsoftAuthConnections", "m365-orders")
         self.assertEqual(stored["status"], "needsConsent")
         self.assertEqual(stored["metadata"]["mailboxAddress"], "orders@example.com")
+        self.assertEqual(stored["ownerEmail"], "mailbox-admin@example.com")
 
     def test_console_microsoft_auth_callback_stores_tokens_and_updates_mailbox(self) -> None:
         api, repo, _ = self._api()
@@ -299,7 +303,9 @@ class ConsoleBackendTests(unittest.TestCase):
                 "connectionId": "m365-orders",
                 "mailboxAccountId": mailbox["id"],
                 "mailboxAddress": "orders@example.com",
-                "requestedBy": "connect@focuseautomate.com",
+                "requestedBy": "mailbox-admin@example.com",
+                "initiatedBy": "connect@focuseautomate.com",
+                "authorizedUserEmail": "mailbox-admin@example.com",
                 "redirectUri": "https://console.example.com/auth/microsoft/callback",
             },
             "state-secret",
@@ -325,12 +331,21 @@ class ConsoleBackendTests(unittest.TestCase):
         ), patch(
             "order_processor.api.test_shared_mailbox_access",
             return_value={"canAccess": True, "status": "active", "checkedAt": "2026-06-22T12:00:00Z"},
+        ), patch(
+            "order_processor.api.graph_get",
+            return_value={
+                "id": "user-id",
+                "displayName": "Mailbox Admin",
+                "userPrincipalName": "mailbox-admin@example.com",
+                "mail": "mailbox-admin@example.com",
+            },
         ):
             result = api.console_complete_microsoft_auth({"state": state, "code": "auth-code"})
 
         self.assertEqual(result["microsoftAuthConnection"]["status"], "active")
+        self.assertEqual(result["microsoftAuthConnection"]["ownerEmail"], "mailbox-admin@example.com")
         self.assertEqual(result["mailboxAccount"]["permissionStatus"], "active")
-        self.assertEqual(repo.get("mailboxAccounts", mailbox["id"])["settings"]["authorizedBy"], "connect@focuseautomate.com")
+        self.assertEqual(repo.get("mailboxAccounts", mailbox["id"])["settings"]["authorizedBy"], "mailbox-admin@example.com")
         self.assertEqual(api.secret_store.get_secret("msgraph-m365-orders-refresh-token"), "refresh-token")
         self.assertEqual(api.secret_store.get_secret("msgraph-m365-orders-access-token"), "access-token")
 

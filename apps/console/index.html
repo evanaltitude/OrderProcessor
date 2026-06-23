@@ -125,7 +125,8 @@
               <h2>Shared Mailbox</h2>
               <input name="mailboxAddress" placeholder="Mailbox address">
               <input name="displayName" placeholder="Display name">
-              <input name="connectionId" placeholder="Microsoft connection id">
+              <input name="authorizedUserEmail" placeholder="Authorized Microsoft login">
+              <input name="connectionId" placeholder="Microsoft connection id" readonly>
               <label><input name="enabled" type="checkbox" checked> Enabled</label>
               <button type="submit">Save Mailbox</button>
             </form>
@@ -272,7 +273,7 @@
               <button id="cancelDistributorEditButton" class="secondary" type="button">Back</button>
             </div>
             <form id="tenantForm" class="editor">
-              <input name="id" placeholder="Tenant id">
+              <input name="id" placeholder="Customer id">
               <input name="name" placeholder="Customer name">
               <input name="environment" placeholder="Environment">
               <input name="status" placeholder="Status">

@@ -15,6 +15,20 @@ const el = (id) => document.getElementById(id);
 const value = (form, name) => new FormData(form).get(name)?.toString().trim() || "";
 const split = (text) => text.split(",").map((part) => part.trim()).filter(Boolean);
 
+function slugifyId(text) {
+  return String(text || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48);
+}
+
+function connectionIdFor(tenantId, mailboxAddress) {
+  const mailboxKey = slugifyId(String(mailboxAddress || "").split("@")[0] || "mailbox") || "mailbox";
+  return `m365-${slugifyId(tenantId) || "customer"}-${mailboxKey}`;
+}
+
 async function post(path, body = {}, options = {}) {
   const tenantId = options.tenantId || state.tenantId;
   const response = await fetch(`${apiBase}${path}`, {
@@ -257,13 +271,14 @@ function renderDistributorDetail() {
   const mailbox = primaryMailbox();
   const connection = primaryConnection();
   const settings = distributor.settings || {};
-  el("distributorDetailTitle").textContent = distributor.name || distributor.tenantId;
-  el("distributorDetailMeta").textContent = `${distributor.tenantId} ${distributor.environment || ""}`.trim();
+  el("distributorDetailTitle").textContent = `Customer Profile: ${distributor.name || distributor.tenantId}`;
+  el("distributorDetailMeta").textContent = `Customer ID ${distributor.tenantId}${distributor.environment ? ` - ${distributor.environment}` : ""}`;
 
   const mailboxForm = el("mailboxForm");
   mailboxForm.elements.mailboxAddress.value = mailbox?.mailboxAddress || "";
   mailboxForm.elements.displayName.value = mailbox?.displayName || "";
-  mailboxForm.elements.connectionId.value = mailbox?.connectionId || connection?.id || "";
+  mailboxForm.elements.authorizedUserEmail.value = mailbox?.settings?.authorizedUserEmail || connection?.metadata?.authorizedUserEmail || connection?.ownerEmail || "";
+  mailboxForm.elements.connectionId.value = mailbox?.connectionId || connection?.id || connectionIdFor(distributor.tenantId, mailbox?.mailboxAddress || "mailbox");
   mailboxForm.elements.enabled.checked = mailbox?.enabled !== false;
 
   el("authSummary").innerHTML = `
@@ -375,7 +390,11 @@ function wireForms() {
   el("tenantForm").addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
-    const targetTenantId = value(form, "id") || state.tenantId;
+    const targetTenantId = value(form, "id") || slugifyId(value(form, "name"));
+    if (!targetTenantId) {
+      showDetails({ error: "customerIdRequired", message: "Enter a customer name or customer id before saving." });
+      return;
+    }
     const result = await post("/console/tenants", {
       targetTenantId,
       id: targetTenantId,
@@ -394,12 +413,23 @@ function wireForms() {
     event.preventDefault();
     const form = event.currentTarget;
     const mailbox = primaryMailbox();
+    const mailboxAddress = value(form, "mailboxAddress");
+    if (!mailboxAddress) {
+      showDetails({ error: "mailboxAddressRequired", message: "Enter the shared mailbox address before saving." });
+      return;
+    }
+    const connectionId = mailbox?.connectionId || connectionIdFor(state.tenantId, mailboxAddress);
+    const authorizedUserEmail = value(form, "authorizedUserEmail");
     const result = await post("/console/mailboxes", {
       id: mailbox?.id,
-      mailboxAddress: value(form, "mailboxAddress"),
+      mailboxAddress,
       displayName: value(form, "displayName"),
-      connectionId: value(form, "connectionId"),
-      enabled: form.enabled.checked
+      connectionId,
+      enabled: form.enabled.checked,
+      settings: {
+        ...(mailbox?.settings || {}),
+        authorizedUserEmail
+      }
     });
     if (!showActionResult(result)) return;
     await refresh({ includeCustomerFilter: false });
@@ -509,6 +539,7 @@ async function authorizeMicrosoft() {
     mailboxAddress: mailbox.mailboxAddress,
     connectionId: mailbox.connectionId || `m365-${state.tenantId}`,
     displayName: mailbox.displayName || mailbox.mailboxAddress,
+    authorizedUserEmail: mailbox.settings?.authorizedUserEmail || "",
     redirectUri: `${window.location.origin}/auth/microsoft/callback`,
     returnTo: "/"
   });

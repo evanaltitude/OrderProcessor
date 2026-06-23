@@ -104,5 +104,22 @@ if (Test-Path $outputFullPath) {
     Remove-Item -LiteralPath $outputFullPath -Force
 }
 
-tar -a -cf $outputFullPath -C $stagingRoot .
+Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$zip = [System.IO.Compression.ZipFile]::Open($outputFullPath, [System.IO.Compression.ZipArchiveMode]::Create)
+try {
+    $stagingRootWithSeparator = $stagingRoot.TrimEnd("\", "/") + [System.IO.Path]::DirectorySeparatorChar
+    Get-ChildItem -LiteralPath $stagingRoot -Recurse -File | ForEach-Object {
+        $relativePath = $_.FullName.Substring($stagingRootWithSeparator.Length).Replace("\", "/")
+        [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+            $zip,
+            $_.FullName,
+            $relativePath,
+            [System.IO.Compression.CompressionLevel]::Optimal
+        ) | Out-Null
+    }
+}
+finally {
+    $zip.Dispose()
+}
 Write-Host "Built Function package: $outputFullPath"

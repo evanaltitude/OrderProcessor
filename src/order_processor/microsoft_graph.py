@@ -126,7 +126,13 @@ def state_secret_from_environment(fallback: str = "") -> str:
     )
 
 
-def build_authorization_url(config: MicrosoftGraphAuthConfig, state: str) -> str:
+def build_authorization_url(
+    config: MicrosoftGraphAuthConfig,
+    state: str,
+    *,
+    prompt: str = "",
+    login_hint: str = "",
+) -> str:
     if not config.client_id:
         raise MicrosoftGraphError("Microsoft Graph OAuth client id is not configured.")
     if not config.redirect_uri:
@@ -139,6 +145,10 @@ def build_authorization_url(config: MicrosoftGraphAuthConfig, state: str) -> str
         "scope": " ".join(config.scopes),
         "state": state,
     }
+    if prompt:
+        query["prompt"] = prompt
+    if login_hint:
+        query["login_hint"] = login_hint
     return f"{config.authorize_url}?{parse.urlencode(query)}"
 
 
