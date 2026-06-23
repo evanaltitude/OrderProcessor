@@ -5,14 +5,20 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="order-api-base" content="/api">
     <title>Order Processor Console</title>
+    <link rel="icon" href="./assets/brand/focus-automate-symbol.svg" type="image/svg+xml">
     <link rel="stylesheet" href="./styles.css">
   </head>
   <body>
     <header class="app-header">
-      <div>
-        <h1>Order Processor Console</h1>
-        <p id="sessionLine">Microsoft sign-in required</p>
-        <p id="customerContextLine">System overview</p>
+      <div class="brand-lockup">
+        <a class="brand-mark" href="/" aria-label="Focus Automate console">
+          <img class="brand-logo" src="./assets/brand/focus-automate-main-logo.svg" alt="Focus Automate">
+        </a>
+        <div class="header-copy">
+          <h1>Order Processor Console</h1>
+          <p id="sessionLine">Microsoft sign-in required</p>
+          <p id="customerContextLine">System overview</p>
+        </div>
       </div>
       <div class="header-actions">
         <select id="distributorSelector" aria-label="Customer profile selector">
