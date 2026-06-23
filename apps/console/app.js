@@ -502,19 +502,35 @@ function renderArtifacts() {
   `).join("");
 }
 
-function renderCustomerFilter() {
-  const customerFilter = el("customerFilter");
-  const current = customerFilter.value;
-  customerFilter.innerHTML = '<option value="">All downstream customers</option>' + (state.dashboard?.customers || [])
-    .map((customer) => `<option value="${escapeHtml(customer.id)}">${escapeHtml(customer.name || customer.id)}</option>`)
+function customerLabel(distributor) {
+  if (!distributor) return "System overview";
+  const name = distributor.name || distributor.tenantId;
+  return distributor.tenantId === "default" ? `${name} (system)` : name;
+}
+
+function renderCustomerContext() {
+  const tenant = state.dashboard?.tenant || {};
+  const selected = selectedDistributor();
+  const name = selected?.name || tenant.name || state.tenantId;
+  const tenantId = selected?.tenantId || tenant.tenantId || state.tenantId;
+  el("customerContextLine").textContent = tenantId === "default"
+    ? "System overview"
+    : `Viewing customer profile: ${name} (${tenantId})`;
+}
+
+function renderDistributorSelector() {
+  const selector = el("distributorSelector");
+  const distributors = state.dashboard?.distributorCustomers || [];
+  selector.innerHTML = '<option value="">Select customer profile</option>' + distributors
+    .map((distributor) => `<option value="${escapeHtml(distributor.tenantId)}">${escapeHtml(customerLabel(distributor))}</option>`)
     .join("");
-  customerFilter.value = current;
+  selector.value = distributors.some((distributor) => distributor.tenantId === state.tenantId) ? state.tenantId : "";
 }
 
 function renderDistributors() {
   const distributors = state.dashboard?.distributorCustomers || [];
   el("distributorBody").innerHTML = distributors.map((distributor) => `
-    <tr class="click-row" data-action="open-distributor" data-tenant="${escapeHtml(distributor.tenantId)}">
+    <tr class="click-row ${distributor.tenantId === state.tenantId ? "selected-row" : ""}" data-action="open-distributor" data-tenant="${escapeHtml(distributor.tenantId)}">
       <td>${escapeHtml(distributor.name || distributor.tenantId)}</td>
       <td>${escapeHtml(distributor.tenantId)}</td>
       <td>${escapeHtml(distributor.environment || "")}</td>
@@ -565,7 +581,7 @@ function renderDistributorDetail() {
   mailboxForm.elements.displayName.value = mailbox?.displayName || "";
   mailboxForm.elements.authorizedUserEmail.value = mailbox?.settings?.authorizedUserEmail || connection?.metadata?.authorizedUserEmail || connection?.ownerEmail || "";
   mailboxForm.elements.connectionId.value = mailbox?.connectionId || connection?.id || connectionIdFor(distributor.tenantId, mailbox?.mailboxAddress || "mailbox");
-  mailboxForm.elements.enabled.checked = mailbox?.enabled !== false;
+  mailboxForm.elements.enabled.value = mailbox?.enabled === false ? "false" : "true";
 
   el("authSummary").innerHTML = `
     <div><strong>Connection</strong> ${escapeHtml(connection?.id || mailbox?.connectionId || "")}</div>
@@ -652,21 +668,20 @@ function renderSession() {
     : `${session.reason || "unauthorized"}`;
 }
 
-async function refresh(options = {}) {
-  const includeCustomerFilter = options.includeCustomerFilter ?? activeConsoleView() !== "customers";
-  const customerId = includeCustomerFilter ? el("customerFilter").value : "";
+async function refresh() {
   const selectedBeforeRefresh = state.selectedDistributorId;
-  state.dashboard = await post("/console/dashboard", customerId ? { customerId } : {});
+  state.dashboard = await post("/console/dashboard", {});
   const distributors = state.dashboard?.distributorCustomers || [];
   state.selectedDistributorId = distributors.some((distributor) => distributor.tenantId === selectedBeforeRefresh)
     ? selectedBeforeRefresh
     : state.dashboard?.tenant?.tenantId || state.tenantId;
   renderSession();
+  renderCustomerContext();
   renderMetrics(state.dashboard.summary);
   renderRows();
   renderExceptions();
   renderArtifacts();
-  renderCustomerFilter();
+  renderDistributorSelector();
   renderCustomerPage();
 }
 
@@ -679,7 +694,17 @@ async function openDistributor(tenantId) {
   state.tenantId = tenantId;
   state.selectedDistributorId = tenantId;
   state.customerPage = "detail";
-  await refresh({ includeCustomerFilter: false });
+  await refresh();
+}
+
+async function switchDistributor(tenantId) {
+  if (!tenantId || tenantId === state.tenantId) return;
+  state.tenantId = tenantId;
+  state.selectedDistributorId = tenantId;
+  if (activeConsoleView() === "customers") {
+    state.customerPage = "detail";
+  }
+  await refresh();
 }
 
 async function resolveTask(id, type) {
@@ -716,7 +741,7 @@ function wireForms() {
     state.tenantId = targetTenantId;
     state.selectedDistributorId = targetTenantId;
     state.customerPage = "detail";
-    await refresh({ includeCustomerFilter: false });
+    await refresh();
   });
 
   el("mailboxForm").addEventListener("submit", async (event) => {
@@ -735,14 +760,14 @@ function wireForms() {
       mailboxAddress,
       displayName: value(form, "displayName"),
       connectionId,
-      enabled: form.enabled.checked,
+      enabled: value(form, "enabled") !== "false",
       settings: {
         ...(mailbox?.settings || {}),
         authorizedUserEmail
       }
     });
     if (!showActionResult(result)) return;
-    await refresh({ includeCustomerFilter: false });
+    await refresh();
   });
 
   el("automationSettingsForm").addEventListener("submit", async (event) => {
@@ -757,7 +782,7 @@ function wireForms() {
       settings: automationSettingsFromForm(form)
     });
     if (!showActionResult(result)) return;
-    await refresh({ includeCustomerFilter: false });
+    await refresh();
   });
 
   el("routingForm").addEventListener("submit", async (event) => {
@@ -795,7 +820,7 @@ function wireForms() {
     });
     if (!showActionResult(result)) return;
     clearRoutingForm();
-    await refresh({ includeCustomerFilter: false });
+    await refresh();
   });
 
   el("processorProfileForm").addEventListener("submit", async (event) => {
@@ -828,7 +853,7 @@ function wireForms() {
     });
     if (!showActionResult(result)) return;
     clearProcessorProfileForm();
-    await refresh({ includeCustomerFilter: false });
+    await refresh();
   });
 
   el("outputProfileForm").addEventListener("submit", async (event) => {
@@ -859,7 +884,7 @@ function wireForms() {
     });
     if (!showActionResult(result)) return;
     clearOutputProfileForm();
-    await refresh({ includeCustomerFilter: false });
+    await refresh();
   });
 
   el("userForm").addEventListener("submit", async (event) => {
@@ -929,7 +954,10 @@ document.addEventListener("click", async (event) => {
   if (!target) return;
   if (target.classList.contains("tab")) {
     activeView(target.dataset.view);
-    if (target.dataset.view === "customers") await refresh({ includeCustomerFilter: false });
+    if (target.dataset.view === "customers") {
+      state.customerPage = "list";
+      await refresh();
+    }
   }
   if (target.dataset.action === "open-distributor") await openDistributor(target.dataset.tenant);
   if (target.id === "addDistributorButton") {
@@ -973,7 +1001,9 @@ document.addEventListener("click", async (event) => {
 });
 
 el("refreshButton").addEventListener("click", refresh);
-el("customerFilter").addEventListener("change", refresh);
+el("distributorSelector").addEventListener("change", async (event) => {
+  await switchDistributor(event.target.value);
+});
 wireForms();
 if (params.get("authStatus")) {
   state.customerPage = "detail";

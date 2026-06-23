@@ -12,10 +12,11 @@
       <div>
         <h1>Order Processor Console</h1>
         <p id="sessionLine">Microsoft sign-in required</p>
+        <p id="customerContextLine">System overview</p>
       </div>
       <div class="header-actions">
-        <select id="customerFilter" aria-label="Downstream customer filter">
-          <option value="">All downstream customers</option>
+        <select id="distributorSelector" aria-label="Customer profile selector">
+          <option value="">Select customer profile</option>
         </select>
         <button id="refreshButton" type="button" title="Refresh dashboard">Refresh</button>
       </div>
@@ -127,7 +128,12 @@
               <input name="displayName" placeholder="Display name">
               <input name="authorizedUserEmail" placeholder="Authorized Microsoft login">
               <input name="connectionId" placeholder="Microsoft connection id" readonly>
-              <label><input name="enabled" type="checkbox" checked> Enabled</label>
+              <label>Mailbox automation
+                <select name="enabled">
+                  <option value="true">Enabled</option>
+                  <option value="false">Disabled</option>
+                </select>
+              </label>
               <button type="submit">Save Mailbox</button>
             </form>
             <section class="editor">

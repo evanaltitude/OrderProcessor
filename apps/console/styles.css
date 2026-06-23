@@ -69,6 +69,10 @@ p {
   gap: 8px;
 }
 
+.header-actions select {
+  min-width: 220px;
+}
+
 button,
 select,
 input,
@@ -219,6 +223,10 @@ th {
 
 .click-row:hover {
   background: #edf7fb;
+}
+
+.selected-row {
+  background: #e8f4ef;
 }
 
 .editor {
