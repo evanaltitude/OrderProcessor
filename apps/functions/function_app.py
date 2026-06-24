@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hmac
+import logging
 import os
 import sys
 import uuid
@@ -27,7 +28,10 @@ if str(SRC) not in sys.path:
 from order_processor import api as order_api  # noqa: E402
 
 ITEM_IMPORT_TYPE = "items"
-DEFAULT_ITEM_IMPORT_JOB_CHUNK_SIZE = 250
+DEFAULT_ITEM_IMPORT_JOB_CHUNK_SIZE = 50
+
+for logger_name in ("azure", "azure.core.pipeline.policies.http_logging_policy"):
+    logging.getLogger(logger_name).setLevel(logging.WARNING)
 
 try:
     import azure.functions as func

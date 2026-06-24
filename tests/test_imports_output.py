@@ -424,6 +424,58 @@ class ImportsOutputTests(unittest.TestCase):
         self.assertEqual(items["items"][0]["customerId"], GLOBAL_CUSTOMER_ID)
         self.assertEqual(items["items"][0]["altPartsCombined"], ["031865BRN4R", "10004120"])
 
+    def test_import_item_audit_omits_embedded_item_records(self) -> None:
+        repo = InMemoryRepository()
+        api = OrderProcessorApi(
+            repo,
+            source_archive=InMemorySourceRowArchive(),
+            import_embedding_client=FakeEmbeddingClient(),
+        )
+
+        result = api.import_items(
+            {
+                "tenantId": "altitude",
+                "rows": [
+                    {"part_code": "10001", "part_desc": "Dog Food"},
+                    {"part_code": "10002", "part_desc": "Cat Food"},
+                ],
+            }
+        )
+
+        audits = [event for event in repo.query_by_tenant("auditEvents", "altitude") if event["eventType"] == "items.imported"]
+        details = audits[-1]["details"]
+        self.assertEqual(len(result["items"]), 2)
+        self.assertNotIn("items", details)
+        self.assertEqual(details["importedCount"], 2)
+        self.assertEqual(details["suppressedRecordDetails"][0]["field"], "items")
+        self.assertEqual(details["suppressedRecordDetails"][0]["count"], 2)
+
+    def test_import_customer_audit_omits_embedded_customer_records(self) -> None:
+        repo = InMemoryRepository()
+        api = OrderProcessorApi(
+            repo,
+            source_archive=InMemorySourceRowArchive(),
+            import_embedding_client=FakeEmbeddingClient(),
+        )
+
+        result = api.import_customers(
+            {
+                "tenantId": "altitude",
+                "rows": [{"cust_code": "10001", "bus_name": "Pilot Store"}],
+            }
+        )
+
+        audits = [
+            event
+            for event in repo.query_by_tenant("auditEvents", "altitude")
+            if event["eventType"] == "customers.imported"
+        ]
+        details = audits[-1]["details"]
+        self.assertEqual(len(result["customers"]), 1)
+        self.assertNotIn("customers", details)
+        self.assertNotIn("customerAliases", details)
+        self.assertEqual(details["importedCount"], 1)
+
     def test_import_items_honors_customer_refresh_override_and_incremental_updates(self) -> None:
         repo = InMemoryRepository()
         api = OrderProcessorApi(repo, source_archive=InMemorySourceRowArchive())

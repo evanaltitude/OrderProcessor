@@ -112,6 +112,47 @@ from .storage import InMemoryRepository, repository_from_environment
 BOOTSTRAP_CONSOLE_ADMIN_EMAIL = "connect@focuseautomate.com"
 SYSTEM_TENANT_ID = "__system__"
 PROCESSING_CATEGORY = "Processing"
+CONSOLE_CUSTOMER_FIELDS = [
+    "id",
+    "tenantId",
+    "customerCode",
+    "name",
+    "routeNumber",
+    "csrName",
+    "csrEmail",
+    "csrFolder",
+    "storeNumber",
+    "address1",
+    "city",
+    "state",
+    "postalCode",
+    "phone",
+    "website",
+    "customerEmail",
+    "senderDomains",
+    "aliases",
+    "knownSubjectPatterns",
+    "sourceName",
+    "sourceRowsBlobUrl",
+    "lastImportedAt",
+    "customFields",
+    "rawSource",
+]
+CONSOLE_ITEM_FIELDS = [
+    "id",
+    "tenantId",
+    "customerId",
+    "internalItemNumber",
+    "description",
+    "upc",
+    "altPartsCombined",
+    "customerItemNumbers",
+    "aliases",
+    "sourceName",
+    "sourceRowsBlobUrl",
+    "lastImportedAt",
+    "rawSource",
+]
 
 
 def _pick(payload: dict[str, Any], *names: str, default: Any = None) -> Any:
@@ -201,6 +242,34 @@ def _routing_priority_from_value(value: Any) -> int | None:
 
 def _api_value(value: Any) -> Any:
     return keys_to_camel(to_dict(value))
+
+
+def _compact_import_audit_details(result: dict[str, Any], record_fields: list[str]) -> dict[str, Any]:
+    details = {key: value for key, value in result.items() if key not in record_fields}
+    suppressed: list[dict[str, Any]] = []
+    for field in record_fields:
+        records = _as_list(result.get(field))
+        if not records:
+            continue
+        sample_ids = [
+            str(_pick(record, "id", default=""))
+            for record in records[:10]
+            if isinstance(record, dict) and _pick(record, "id", default="")
+        ]
+        suppressed.append({"field": field, "count": len(records), "sampleIds": sample_ids})
+
+    if suppressed:
+        details["suppressedRecordDetails"] = suppressed
+
+    errors = _as_list(details.get("errors"))
+    if len(errors) > 25:
+        details["errors"] = errors[:25]
+        details["truncatedErrorCount"] = len(errors) - 25
+    return details
+
+
+def _without_heavy_console_fields(document: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in document.items() if key not in {"embedding", "Embedding"}}
 
 
 def _html_to_text(value: str) -> str:
@@ -2628,7 +2697,13 @@ class OrderProcessorApi:
                 archive.import_run_id,
                 {"observability": observability, **vector_store_result},
             )
-        self._audit(tenant_id, "customers.imported", observability["correlationId"], archive.import_run_id, result)
+        self._audit(
+            tenant_id,
+            "customers.imported",
+            observability["correlationId"],
+            archive.import_run_id,
+            _compact_import_audit_details(result, ["customers", "customerAliases"]),
+        )
         return result
 
     def import_items(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -2717,7 +2792,7 @@ class OrderProcessorApi:
             "items.imported",
             observability["correlationId"],
             archive.import_run_id,
-            result,
+            _compact_import_audit_details(result, ["items"]),
             customer_id=customer_id,
         )
         return result
@@ -2849,6 +2924,15 @@ class OrderProcessorApi:
         )
         return session
 
+    def _query_console_records(self, container: str, tenant_id: str, fields: list[str]) -> list[dict[str, Any]]:
+        query_fields = getattr(self.repository, "query_by_tenant_fields", None)
+        if callable(query_fields):
+            return [_without_heavy_console_fields(item) for item in query_fields(container, tenant_id, fields)]
+        return [
+            _without_heavy_console_fields(item)
+            for item in self.repository.query_by_tenant(container, tenant_id)
+        ]
+
     def console_dashboard(self, payload: dict[str, Any]) -> dict[str, Any]:
         session = self.console_session(payload)
         if not session.get("authorized"):
@@ -2861,7 +2945,7 @@ class OrderProcessorApi:
             return {"session": session, "error": "forbidden", "message": "Customer is outside this user's assignments."}
 
         customers = self._filter_customer_documents(
-            self.repository.query_by_tenant("customers", tenant_id),
+            self._query_console_records("customers", tenant_id, CONSOLE_CUSTOMER_FIELDS),
             customer_filter,
             session,
         )
@@ -2894,7 +2978,7 @@ class OrderProcessorApi:
             include_global=True,
         )
         items = self._filter_customer_documents(
-            self.repository.query_by_tenant("items", tenant_id),
+            self._query_console_records("items", tenant_id, CONSOLE_ITEM_FIELDS),
             customer_filter,
             session,
             include_global=True,

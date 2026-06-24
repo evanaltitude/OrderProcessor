@@ -50,6 +50,12 @@ class InMemoryRepository:
             if document_value(document, "tenantId") == tenant_id
         ]
 
+    def query_by_tenant_fields(self, container: str, tenant_id: str, fields: list[str]) -> list[dict[str, Any]]:
+        return [
+            {field: document[field] for field in fields if field in document}
+            for document in self.query_by_tenant(container, tenant_id)
+        ]
+
     def query_by_customer(self, container: str, tenant_id: str, customer_id: str) -> list[dict[str, Any]]:
         self._ensure_container(container)
         return [
@@ -115,6 +121,25 @@ class CosmosRepository:
 
     def query_by_tenant(self, container: str, tenant_id: str) -> list[dict[str, Any]]:
         query = "SELECT * FROM c WHERE c.tenantId = @tenantId"
+        return list(
+            self._container(container).query_items(
+                query=query,
+                parameters=[{"name": "@tenantId", "value": tenant_id}],
+                enable_cross_partition_query=True,
+            )
+        )
+
+    def query_by_tenant_fields(self, container: str, tenant_id: str, fields: list[str]) -> list[dict[str, Any]]:
+        self._container(container)
+        selected_fields = []
+        for field in fields:
+            field_name = str(field).strip()
+            if field_name.replace("_", "").isalnum():
+                selected_fields.append(field_name)
+        if not selected_fields:
+            return self.query_by_tenant(container, tenant_id)
+        projection = ", ".join(f'"{field}": c.{field}' for field in selected_fields)
+        query = f"SELECT VALUE {{{projection}}} FROM c WHERE c.tenantId = @tenantId"
         return list(
             self._container(container).query_items(
                 query=query,

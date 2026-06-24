@@ -197,6 +197,40 @@ class ConsoleBackendTests(unittest.TestCase):
             "031865BRN4R",
         )
 
+    def test_console_dashboard_omits_customer_and_item_embeddings(self) -> None:
+        api, repo, _ = self._api()
+        admin_headers = {"x-ms-client-principal": _easy_auth_header("connect@focuseautomate.com")}
+        repo.upsert(
+            "customers",
+            {
+                "id": "pilot-customer",
+                "tenantId": "altitude",
+                "customerCode": "PILOT",
+                "name": "Pilot",
+                "embedding": [0.1, 0.2],
+                "rawSource": {"cust_code": "PILOT"},
+            },
+        )
+        repo.upsert(
+            "items",
+            {
+                "id": "item-1",
+                "tenantId": "altitude",
+                "customerId": "_global",
+                "internalItemNumber": "10001",
+                "description": "Dog Food",
+                "embedding": [0.3, 0.4],
+                "rawSource": {"part_code": "10001"},
+            },
+        )
+
+        dashboard = api.console_dashboard({"tenantId": "altitude", "headers": admin_headers})
+
+        self.assertEqual(dashboard["customers"][0]["rawSource"]["custCode"], "PILOT")
+        self.assertEqual(dashboard["items"][0]["rawSource"]["partCode"], "10001")
+        self.assertNotIn("embedding", dashboard["customers"][0])
+        self.assertNotIn("embedding", dashboard["items"][0])
+
     def test_platform_admin_can_manage_new_distributor_tenant_after_create(self) -> None:
         api, repo, _ = self._api()
         api.upsert_console_user(
