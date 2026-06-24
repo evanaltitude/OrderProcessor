@@ -3001,6 +3001,7 @@ class OrderProcessorApi:
             _pick(payload, "customerId", "customer_id", default=GLOBAL_CUSTOMER_ID) or GLOBAL_CUSTOMER_ID
         ).strip() or GLOBAL_CUSTOMER_ID
         name = str(_pick(payload, "name", default="")).strip()
+        rule_id = str(_pick(payload, "id", default="") or "").strip()
         outcome = _routing_outcome_from_value(_pick(payload, "outcome", default=RoutingOutcome.NEEDS_HUMAN_REVIEW))
         if outcome is None:
             return {
@@ -3067,7 +3068,7 @@ class OrderProcessorApi:
             if error:
                 return error
         rule_doc = {
-            "id": _pick(payload, "id", default=stable_id(tenant_id, customer_id, name or "routing-rule")),
+            "id": rule_id or stable_id(tenant_id, customer_id, name or "routing-rule"),
             "tenantId": tenant_id,
             "customerId": customer_id,
             "name": name,

@@ -701,6 +701,26 @@ class ConsoleBackendTests(unittest.TestCase):
         self.assertEqual(stored["customerCodeExtraction"]["regex"], r"Order\s*#\s*(?P<customerCode>\d+)")
         self.assertEqual(stored["priorProcessedSubjectRegex"], [r"Cust:\s*(?P<customerCode>\d+)"])
 
+    def test_console_upsert_routing_rule_generates_id_when_console_sends_blank_id(self) -> None:
+        api, repo, _ = self._api()
+        admin_headers = {"x-ms-client-principal": _easy_auth_header("connect@focuseautomate.com")}
+
+        result = api.console_upsert_routing_rule(
+            {
+                "tenantId": "altitude",
+                "headers": admin_headers,
+                "id": "",
+                "customerId": "_global",
+                "name": "Webstore orders",
+                "phase": "webstoreOrder",
+                "outcome": "knownCustomerNonOrder",
+            }
+        )
+
+        self.assertNotIn("error", result)
+        self.assertTrue(result["routingRule"]["id"])
+        self.assertIsNotNone(repo.get("routingRules", result["routingRule"]["id"]))
+
     def test_console_upsert_routing_rule_returns_validation_error_for_bad_regex(self) -> None:
         api, repo, _ = self._api()
         admin_headers = {"x-ms-client-principal": _easy_auth_header("connect@focuseautomate.com")}

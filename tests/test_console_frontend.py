@@ -97,7 +97,7 @@ class ConsoleFrontendTests(unittest.TestCase):
         self.assertIn("SUPPORTED_FILE_TYPE_OPTIONS", app)
         self.assertIn("SYSTEM_TENANT_ID", app)
         self.assertIn("Excel XLT", index)
-        self.assertIn("Follow-up email move", index)
+        self.assertIn("Non-order email", index)
         self.assertIn("routingFormStatus", index)
         self.assertIn("routingRuleNotVisibleAfterSave", app)
         self.assertIn("submittedRuleName", app)
