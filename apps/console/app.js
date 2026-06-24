@@ -190,8 +190,12 @@ async function post(path, body = {}, options = {}) {
       credentials: "include",
       body: JSON.stringify({ tenantId, ...body })
     });
-    const contentType = response.headers.get("content-type") || "";
-    const payload = contentType.includes("application/json") ? await response.json() : null;
+    const payload = await responsePayload(response);
+    if (payload?.error === "invalidJsonResponse") {
+      const error = new Error(payload.message);
+      error.payload = payload;
+      throw error;
+    }
     if (redirectToMicrosoftSignIn(payload, response)) {
       return new Promise(() => {});
     }
@@ -204,6 +208,24 @@ async function post(path, body = {}, options = {}) {
   } finally {
     endBusy();
   }
+}
+
+async function responsePayload(response) {
+  const contentType = response.headers.get("content-type") || "";
+  const text = await response.text();
+  if (!text.trim()) return null;
+  if (contentType.includes("application/json")) {
+    try {
+      return JSON.parse(text);
+    } catch {
+      return {
+        error: "invalidJsonResponse",
+        message: "The server returned a malformed JSON response.",
+        raw: text.slice(0, 1000)
+      };
+    }
+  }
+  return { message: text.slice(0, 1000), raw: text.slice(0, 1000) };
 }
 
 function actionFailed(result) {
@@ -1175,12 +1197,14 @@ function wireForms() {
     event.preventDefault();
     const form = event.currentTarget;
     const mailbox = primaryMailbox();
+    const submittedRuleId = value(form, "id");
+    const submittedRuleName = value(form, "name") || "routing rule";
     setFormStatus("routingFormStatus", "Saving routing rule...", "warn");
     try {
       const result = await post("/console/routing-rules", {
-        id: value(form, "id"),
+        id: submittedRuleId,
         customerId: "_global",
-        name: value(form, "name"),
+        name: submittedRuleName,
         phase: value(form, "phase"),
         outcome: value(form, "outcome"),
         priority: value(form, "priority") ? Number(value(form, "priority")) : 100,
@@ -1209,14 +1233,18 @@ function wireForms() {
         nonOrderMoveFolder: value(form, "nonOrderMoveMode") === "staticFolder" ? value(form, "nonOrderMoveTarget") : "",
         nonOrderMoveCustomerField: value(form, "nonOrderMoveMode") === "customerField" ? value(form, "nonOrderMoveTarget") : ""
       });
-      if (!showActionResult(result)) {
+      if (actionFailed(result)) {
+        showDetails(result);
         setFormStatus("routingFormStatus", `Rule was not saved: ${errorMessage(result)}`, "bad");
         return;
       }
-      const savedRuleId = result.routingRule?.id;
-      const savedRuleName = result.routingRule?.name || savedRuleId || "routing rule";
+      if (Object.keys(result || {}).length) showDetails(result);
+      const savedRuleId = result.routingRule?.id || submittedRuleId;
+      const savedRuleName = result.routingRule?.name || submittedRuleName;
       await refresh();
-      const savedRule = (state.dashboard?.routingRules || []).find((rule) => rule.id === savedRuleId);
+      const savedRule = (state.dashboard?.routingRules || []).find((rule) => (
+        savedRuleId ? rule.id === savedRuleId : rule.name === submittedRuleName
+      ));
       if (!savedRule) {
         setFormStatus(
           "routingFormStatus",
