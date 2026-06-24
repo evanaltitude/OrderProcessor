@@ -156,6 +156,7 @@ class CustomerProfile:
     customer_code: str
     name: str
     route_number: str = ""
+    csr_name: str = ""
     csr_email: str = ""
     csr_folder: str = ""
     store_number: str = ""

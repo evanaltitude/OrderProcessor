@@ -311,7 +311,7 @@ def _render_context(
     action_key: str,
     csr_field: str,
 ) -> dict[str, Any]:
-    csr_name = _customer_field(customer, csr_field)
+    csr_name = _customer_field(customer, csr_field) or (customer.csr_name if customer else "")
     return {
         "actionKey": action_key,
         "status": action_key,

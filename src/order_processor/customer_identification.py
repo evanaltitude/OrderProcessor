@@ -773,6 +773,7 @@ def _customer_from_mapping(mapping: Mapping[str, Any]) -> CustomerProfile:
         customer_code=_pick_mapping(mapping, "customerCode", "customer_code", default=""),
         name=_pick_mapping(mapping, "name", default=""),
         route_number=_pick_mapping(mapping, "routeNumber", "route_number", default=""),
+        csr_name=_pick_mapping(mapping, "csrName", "csr_name", default=""),
         csr_email=_pick_mapping(mapping, "csrEmail", "csr_email", default=""),
         csr_folder=_pick_mapping(mapping, "csrFolder", "csr_folder", default=""),
         store_number=_pick_mapping(mapping, "storeNumber", "store_number", default=""),
@@ -953,6 +954,7 @@ def _flow_record_from_customer(customer: CustomerProfile) -> dict[str, Any]:
         "customer_website": customer.website or "",
         "customer_email": customer.customer_email or "",
         "cust_code": customer.customer_code or "",
+        "route_number": customer.route_number or "",
     }
 
 
@@ -968,6 +970,7 @@ def _customer_ai_record(
             "customerId": customer.id,
             "customerCode": customer.customer_code,
             "routeNumber": customer.route_number,
+            "csrName": customer.csr_name,
             "senderDomains": list(customer.sender_domains),
             "sourceConfidence": round(confidence, 4),
             "sourceMethod": method,

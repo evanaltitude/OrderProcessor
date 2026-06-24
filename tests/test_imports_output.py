@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from order_processor.imports import normalize_customer_row, normalize_item_row
+from order_processor.imports import normalize_customer_alias_rows, normalize_customer_row, normalize_item_row
 from order_processor.imports import InMemorySourceRowArchive
 from order_processor.customer_vector_store import CustomerVectorStoreManager, customer_vector_store_reference_id
 from order_processor.data_model import GLOBAL_CUSTOMER_ID
@@ -96,17 +96,31 @@ class ImportsOutputTests(unittest.TestCase):
         customer = normalize_customer_row(
             "altitude",
             {
-                "customer_name": "CHOW HOUND #4",
-                "customer_store_number": "504",
-                "location_address1": "734 28TH ST SE",
-                "location_city": "GRAND RAPIDS",
-                "location_state": "MI",
-                "location_zip": "49548",
+                "internal_route_code": "340",
+                "stop_no": 60,
+                "cust_code": "100025",
+                "bus_name": "CLASSIC PET II - MARYSVILLE",
+                "address1": "3180 GRATIOT BLVD",
+                "city": "MARYSVILLE",
+                "state": "MI",
+                "zip": "48040",
                 "phone": "616-452-7877",
-                "customer_website": "WWW.CHOWHOUNDPET.COM",
-                "customer_email": "GREGC@CHOWHOUNDPET.COM",
-                "cust_code": "100029",
+                "cust_csr": "mwoodward",
+                "csr_email": "melissa.woodward@frontierdistributing.com",
+                "process_day": "Tuesday",
+                "email_addresses": "amyfowler1986@yahoo.com; classicpets@comcast.net",
+                "store_website": "WWW.CLASSICPETSUPPLY.NET",
+                "store_email": "CLASSICPETS@COMCAST.NET",
+                "mailblast_addr": "classic-pets@updates.example",
+                "route_code": "300",
+                "rank": 1,
             },
+            {},
+        )
+        aliases = normalize_customer_alias_rows(
+            "altitude",
+            customer,
+            customer.raw_source,
             {},
         )
         item = normalize_item_row(
@@ -124,18 +138,51 @@ class ImportsOutputTests(unittest.TestCase):
             {},
         )
 
-        self.assertEqual(customer.customer_code, "100029")
-        self.assertEqual(customer.name, "CHOW HOUND #4")
-        self.assertEqual(customer.store_number, "504")
-        self.assertEqual(customer.address1, "734 28TH ST SE")
-        self.assertEqual(customer.city, "GRAND RAPIDS")
-        self.assertEqual(customer.postal_code, "49548")
-        self.assertEqual(customer.customer_email, "GREGC@CHOWHOUNDPET.COM")
+        self.assertEqual(customer.customer_code, "100025")
+        self.assertEqual(customer.name, "CLASSIC PET II - MARYSVILLE")
+        self.assertEqual(customer.route_number, "300")
+        self.assertEqual(customer.csr_name, "mwoodward")
+        self.assertEqual(customer.csr_folder, "mwoodward")
+        self.assertEqual(customer.csr_email, "melissa.woodward@frontierdistributing.com")
+        self.assertEqual(customer.address1, "3180 GRATIOT BLVD")
+        self.assertEqual(customer.city, "MARYSVILLE")
+        self.assertEqual(customer.postal_code, "48040")
+        self.assertEqual(customer.website, "WWW.CLASSICPETSUPPLY.NET")
+        self.assertEqual(customer.customer_email, "CLASSICPETS@COMCAST.NET")
+        self.assertEqual(customer.custom_fields["internalRouteCode"], "340")
+        sender_email_aliases = {alias.value.lower() for alias in aliases if alias.alias_type == "senderEmail"}
+        sender_domain_aliases = {alias.normalized_value for alias in aliases if alias.alias_type == "senderDomain"}
+        self.assertIn("amyfowler1986@yahoo.com", sender_email_aliases)
+        self.assertIn("classicpets@comcast.net", sender_email_aliases)
+        self.assertIn("classic-pets@updates.example", sender_email_aliases)
+        self.assertIn("yahoo.com", sender_domain_aliases)
+        self.assertIn("comcast.net", sender_domain_aliases)
+        self.assertIn("updates.example", sender_domain_aliases)
         self.assertEqual(item.internal_item_number, "100510100")
         self.assertEqual(item.upc, "031865BRN4R")
         self.assertEqual(item.alt_parts_combined, ["031865BRN4R", "10004120"])
         self.assertIn("10004120", item.customer_item_numbers)
         self.assertEqual(item.raw_source["alt_parts_combined"][0]["alt_part"], "031865BRN4R")
+
+    def test_legacy_customer_file_uses_email_folder_as_route_and_preserves_internal_route(self) -> None:
+        customer = normalize_customer_row(
+            "altitude",
+            {
+                "route_code": "245",
+                "cust_code": "100028",
+                "bus_name": "CHOW HOUND #3",
+                "cust_csr": "rrussell",
+                "shipto_storenumb": "503",
+                "email_folder": "200",
+            },
+            {},
+        )
+
+        self.assertEqual(customer.route_number, "200")
+        self.assertEqual(customer.custom_fields["internalRouteCode"], "245")
+        self.assertEqual(customer.csr_name, "rrussell")
+        self.assertEqual(customer.csr_folder, "rrussell")
+        self.assertEqual(customer.store_number, "503")
 
     def test_csv_processor_outputs_universal_formats(self) -> None:
         order = OrderRun(
@@ -256,8 +303,11 @@ class ImportsOutputTests(unittest.TestCase):
                 "rows": [
                     {
                         "cust_code": "NEW",
-                        "customer_name": "New Customer",
-                        "customer_store_number": "101",
+                        "bus_name": "New Customer",
+                        "route_code": "300",
+                        "cust_csr": "mwoodward",
+                        "store_email": "orders@new.example",
+                        "email_addresses": "buyer@new.example; owner@retail.example",
                         "location_city": "Grand Rapids",
                     }
                 ],
@@ -275,6 +325,14 @@ class ImportsOutputTests(unittest.TestCase):
         self.assertEqual({record["cust_code"] for record in records}, {"OLD", "NEW"})
         existing_record = next(record for record in records if record["cust_code"] == "OLD")
         self.assertIn("existing.example", existing_record["aliases"])
+        self.assertIn("existing.example", existing_record["sender_domains"])
+        new_record = next(record for record in records if record["cust_code"] == "NEW")
+        self.assertEqual(new_record["route_number"], "300")
+        self.assertIn("orders@new.example", new_record["sender_emails"])
+        self.assertIn("buyer@new.example", new_record["sender_emails"])
+        self.assertIn("retail.example", new_record["sender_domains"])
+        self.assertNotIn("csr_email", new_record)
+        self.assertNotIn("csr_folder", new_record)
 
     def test_import_customers_preserves_old_vector_store_reference_when_rotation_fails(self) -> None:
         repo = InMemoryRepository()

@@ -331,7 +331,28 @@ def customer_vector_store_records(customers: list[dict[str, Any]], aliases: list
                 *[str(document_value(alias, "value", "") or "") for alias in aliases_by_customer.get(customer_id, [])],
             ]
         )
-        sender_domains = _unique([str(value) for value in _as_list(document_value(customer, "senderDomains", []))])
+        customer_aliases = aliases_by_customer.get(customer_id, [])
+        sender_emails = _unique(
+            [
+                str(document_value(customer, "customerEmail", "") or ""),
+                *[
+                    str(document_value(alias, "value", "") or "")
+                    for alias in customer_aliases
+                    if _normalized_alias_type(document_value(alias, "aliasType", "")) == "senderemail"
+                ],
+            ]
+        )
+        sender_domains = _unique(
+            [
+                *[str(value) for value in _as_list(document_value(customer, "senderDomains", []))],
+                *[
+                    str(document_value(alias, "normalizedValue", "") or document_value(alias, "value", "") or "")
+                    for alias in customer_aliases
+                    if _normalized_alias_type(document_value(alias, "aliasType", "")) == "senderdomain"
+                ],
+                *[_domain_from_email(value) for value in sender_emails],
+            ]
+        )
         known_subject_patterns = _unique(
             [str(value) for value in _as_list(document_value(customer, "knownSubjectPatterns", []))]
         )
@@ -349,8 +370,7 @@ def customer_vector_store_records(customers: list[dict[str, Any]], aliases: list
                 "phone": str(document_value(customer, "phone", "") or ""),
                 "customer_website": str(document_value(customer, "website", "") or ""),
                 "customer_email": str(document_value(customer, "customerEmail", "") or ""),
-                "csr_email": str(document_value(customer, "csrEmail", "") or ""),
-                "csr_folder": str(document_value(customer, "csrFolder", "") or ""),
+                "sender_emails": sender_emails,
                 "sender_domains": sender_domains,
                 "aliases": alias_values,
                 "known_subject_patterns": known_subject_patterns,
@@ -370,6 +390,17 @@ def _object_value(value: Any, *keys: str, default: Any = "") -> Any:
         if hasattr(value, key):
             return getattr(value, key)
     return default
+
+
+def _normalized_alias_type(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+
+
+def _domain_from_email(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if "@" not in text:
+        return ""
+    return text.rsplit("@", 1)[1].strip()
 
 
 def _pick(mapping: dict[str, Any], *keys: str, default: Any = None) -> Any:

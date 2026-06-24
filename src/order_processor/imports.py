@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass, field
+from email.utils import parseaddr
 import hashlib
 import io
 import json
@@ -65,32 +66,44 @@ def split_multi(value: Any) -> list[str]:
 
 FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     "customer_code": ("customerCode", "cust_code", "custCode", "account_number", "accountNumber"),
-    "name": ("customer_name", "customerName", "customer", "Customer Name"),
+    "name": ("customer_name", "customerName", "bus_name", "business_name", "businessName", "customer", "Customer Name"),
     "store_number": (
         "customer_store_number",
         "customerStoreNumber",
+        "shipto_storenumb",
+        "shipto_store_number",
+        "shipToStoreNumber",
         "storeNumber",
         "store",
         "location_number",
         "locationNumber",
     ),
-    "route_number": ("routeNumber", "route", "route_no", "routeNo"),
-    "csr_email": ("csrEmail", "csr", "csr_email_address", "csrEmailAddress"),
-    "csr_folder": ("csrFolder", "csr_name", "csrName", "csr_folder_name", "csrFolderName"),
-    "address1": ("location_address1", "locationAddress1", "address", "address_1", "addressLine1"),
+    "route_number": ("routeNumber", "email_folder", "route_code", "route", "route_no", "routeNo"),
+    "csr_name": ("csrName", "csr_name", "cust_csr", "csr"),
+    "csr_email": ("csrEmail", "csr_email", "csr_email_address", "csrEmailAddress"),
+    "csr_folder": ("csrFolder", "csr_folder", "csr_folder_name", "csrFolderName", "cust_csr"),
+    "address1": ("location_address1", "locationAddress1", "address1", "address", "address_1", "addressLine1"),
     "city": ("location_city", "locationCity"),
     "state": ("location_state", "locationState"),
     "postal_code": ("location_zip", "locationZip", "zip", "zip_code", "zipCode", "postalCode"),
     "phone": ("phone_number", "phoneNumber"),
-    "website": ("customer_website", "customerWebsite", "website"),
-    "customer_email": ("customerEmail", "customer_email_address", "email", "emailAddress"),
+    "website": ("customer_website", "customerWebsite", "store_website", "website"),
+    "customer_email": ("customerEmail", "store_email", "customer_email_address", "email", "emailAddress"),
     "sender_domains": ("senderDomains", "domains", "email_domains", "emailDomains"),
     "known_subject_patterns": ("knownSubjectPatterns", "subject_patterns", "subjectPatterns"),
     "alias_customer_codes": ("aliasCustomerCodes", "customer_code_aliases", "customerCodeAliases"),
     "alias_store_numbers": ("aliasStoreNumbers", "store_number_aliases", "storeNumberAliases"),
     "alias_route_numbers": ("aliasRouteNumbers", "route_number_aliases", "routeNumberAliases"),
     "alias_sender_domains": ("aliasSenderDomains", "sender_domain_aliases", "senderDomainAliases"),
-    "alias_sender_emails": ("aliasSenderEmails", "sender_email_aliases", "senderEmailAliases"),
+    "alias_sender_emails": (
+        "aliasSenderEmails",
+        "sender_email_aliases",
+        "senderEmailAliases",
+        "store_email",
+        "email_addresses",
+        "mailblast_addr",
+        "mailblastAddr",
+    ),
     "alias_subject_patterns": ("aliasSubjectPatterns", "subject_pattern_aliases", "subjectPatternAliases"),
     "internal_item_number": ("internalItemNumber", "part_code", "partCode", "item", "Item", "sku", "SKU"),
     "description": ("part_desc", "partDesc", "item_description", "itemDescription", "Description"),
@@ -125,6 +138,16 @@ def _pick_raw_field(row: dict[str, Any], field_map: dict[str, str], name: str, d
     return default if value is None else value
 
 
+def _pick_field_values(row: dict[str, Any], field_map: dict[str, str], name: str) -> list[str]:
+    sources = [field_map[name]] if name in field_map else [name, *FIELD_ALIASES.get(name, ())]
+    values: list[str] = []
+    for source in sources:
+        value = _first_row_value(row, source, default=None)
+        if value is not None:
+            values.extend(split_multi(value))
+    return _unique_preserve_order(values)
+
+
 def _first_row_value(row: dict[str, Any], key: str, default: Any = None) -> Any:
     if key in row:
         return row[key]
@@ -137,6 +160,31 @@ def _first_row_value(row: dict[str, Any], key: str, default: Any = None) -> Any:
 
 def _normalize_field_name(value: str) -> str:
     return "".join(character for character in str(value or "").lower() if character.isalnum())
+
+
+def _text_or_empty(value: Any) -> str:
+    return "" if value is None else str(value).strip()
+
+
+def _field_has_value(row: dict[str, Any], field_name: str) -> bool:
+    return bool(_text_or_empty(_first_row_value(row, field_name, default=None)))
+
+
+def _internal_route_code(row: dict[str, Any], field_map: dict[str, str]) -> str:
+    explicit = _text_or_empty(_first_row_value(row, field_map.get("internal_route_code", "internal_route_code"), None))
+    if explicit:
+        return explicit
+    if "internal_route_code" not in field_map and _field_has_value(row, "email_folder"):
+        return _text_or_empty(_first_row_value(row, "route_code", None))
+    return ""
+
+
+def _email_domain(value: Any) -> str:
+    _, address = parseaddr(_text_or_empty(value))
+    text = address or _text_or_empty(value)
+    if "@" not in text:
+        return ""
+    return normalize_domain(text.rsplit("@", 1)[1])
 
 
 def split_item_identifiers(value: Any) -> list[str]:
@@ -556,15 +604,25 @@ def normalize_customer_row(
     aliases = split_multi(_pick_field(row, field_map, "aliases"))
     known_subject_patterns = split_multi(_pick_field(row, field_map, "known_subject_patterns"))
     metadata = dict(import_metadata or {})
+    route_number = _pick_field(row, field_map, "route_number")
+    csr_name = _pick_field(row, field_map, "csr_name")
+    csr_folder = _pick_field(row, field_map, "csr_folder") or csr_name
+    custom_fields = dict(metadata.get("customFields", {}) or {})
+    internal_route_code = _internal_route_code(row, field_map)
+    if csr_name:
+        custom_fields.setdefault("csrName", csr_name)
+    if internal_route_code:
+        custom_fields.setdefault("internalRouteCode", internal_route_code)
 
     return CustomerProfile(
         id=customer_id,
         tenant_id=tenant_id,
         customer_code=customer_code,
         name=name,
-        route_number=_pick_field(row, field_map, "route_number"),
+        route_number=route_number,
+        csr_name=csr_name,
         csr_email=_pick_field(row, field_map, "csr_email"),
-        csr_folder=_pick_field(row, field_map, "csr_folder"),
+        csr_folder=csr_folder,
         store_number=_pick_field(row, field_map, "store_number"),
         address1=_pick_field(row, field_map, "address1"),
         city=_pick_field(row, field_map, "city"),
@@ -579,7 +637,7 @@ def normalize_customer_row(
         source_name=str(metadata.get("sourceName", "")),
         source_rows_blob_url=str(metadata.get("sourceRowsBlobUrl", "")),
         last_imported_at=metadata.get("importedAt"),
-        custom_fields=dict(metadata.get("customFields", {}) or {}),
+        custom_fields=custom_fields,
         raw_source={"row": row, **metadata} if metadata else row,
     )
 
@@ -592,24 +650,25 @@ def normalize_customer_alias_rows(
     import_metadata: dict[str, Any] | None = None,
 ) -> list[CustomerAlias]:
     aliases: list[CustomerAlias] = []
+    sender_email_values = _unique_preserve_order(
+        [
+            *split_multi(customer.customer_email),
+            *_pick_field_values(row, field_map, "alias_sender_emails"),
+        ]
+    )
+    sender_domain_values = _unique_preserve_order(
+        [
+            *customer.sender_domains,
+            *[normalize_domain(value) for value in _pick_field_values(row, field_map, "alias_sender_domains")],
+            *[_email_domain(value) for value in sender_email_values],
+        ]
+    )
     alias_specs = [
         ("customerCode", [customer.customer_code, *split_multi(_pick_field(row, field_map, "alias_customer_codes"))]),
         ("storeNumber", [customer.store_number, *split_multi(_pick_field(row, field_map, "alias_store_numbers"))]),
         ("routeNumber", [customer.route_number, *split_multi(_pick_field(row, field_map, "alias_route_numbers"))]),
-        (
-            "senderDomain",
-            [
-                *customer.sender_domains,
-                *[normalize_domain(value) for value in split_multi(_pick_field(row, field_map, "alias_sender_domains"))],
-            ],
-        ),
-        (
-            "senderEmail",
-            [
-                customer.customer_email,
-                *split_multi(_pick_field(row, field_map, "alias_sender_emails")),
-            ],
-        ),
+        ("senderDomain", sender_domain_values),
+        ("senderEmail", sender_email_values),
         (
             "knownSubjectPattern",
             [
