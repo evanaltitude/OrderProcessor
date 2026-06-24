@@ -25,6 +25,14 @@ def stable_id(*parts: str) -> str:
     return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:24]
 
 
+def item_record_id(tenant_id: str, customer_id: str, item_number: str) -> str:
+    return stable_id(tenant_id, customer_id, item_number)
+
+
+def legacy_item_record_id(tenant_id: str, customer_id: str, item_number: str, upc: str) -> str:
+    return stable_id(tenant_id, customer_id, item_number, upc) if upc else ""
+
+
 def split_multi(value: Any) -> list[str]:
     if value is None:
         return []
@@ -733,7 +741,7 @@ def normalize_item_row(
     metadata = dict(import_metadata or {})
 
     return ItemRecord(
-        id=stable_id(tenant_id, customer_id, canonical_item_number, upc),
+        id=item_record_id(tenant_id, customer_id, canonical_item_number),
         tenant_id=tenant_id,
         customer_id=customer_id,
         internal_item_number=canonical_item_number,

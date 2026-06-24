@@ -33,6 +33,10 @@ class InMemoryRepository:
         self._ensure_container(container)
         return self._containers[container].get(document_id)
 
+    def delete(self, container: str, document_id: str) -> bool:
+        self._ensure_container(container)
+        return self._containers[container].pop(document_id, None) is not None
+
     def list(self, container: str) -> list[dict[str, Any]]:
         self._ensure_container(container)
         return list(self._containers[container].values())
@@ -97,6 +101,13 @@ class CosmosRepository:
             )
         )
         return results[0] if results else None
+
+    def delete(self, container: str, document_id: str) -> bool:
+        document = self.get(container, document_id)
+        if document is None:
+            return False
+        self._container(container).delete_item(document_id, partition_key=partition_key_value(container, document))
+        return True
 
     def list(self, container: str) -> list[dict[str, Any]]:
         return list(self._container(container).query_items(query="SELECT * FROM c", enable_cross_partition_query=True))

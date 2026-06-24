@@ -7,7 +7,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from order_processor.imports import normalize_customer_alias_rows, normalize_customer_row, normalize_item_row
+from order_processor.imports import (
+    item_record_id,
+    legacy_item_record_id,
+    normalize_customer_alias_rows,
+    normalize_customer_row,
+    normalize_item_row,
+)
 from order_processor.imports import InMemorySourceRowArchive
 from order_processor.customer_vector_store import CustomerVectorStoreManager, customer_vector_store_reference_id
 from order_processor.data_model import GLOBAL_CUSTOMER_ID
@@ -480,6 +486,61 @@ class ImportsOutputTests(unittest.TestCase):
         self.assertEqual(second["updatedCount"], 1)
         self.assertEqual(stored_item["description"], "New Dog Food")
         self.assertEqual(stored_item["customerItemNumbers"], ["PILOT123"])
+
+    def test_import_items_uses_part_code_as_unique_id_without_upc(self) -> None:
+        repo = InMemoryRepository()
+        api = OrderProcessorApi(repo, source_archive=InMemorySourceRowArchive())
+        first = api.import_items(
+            {
+                "tenantId": "altitude",
+                "customerId": "pilot-customer",
+                "rows": [{"part_code": "10001", "upc_code": "012345678905", "part_desc": "Old Dog Food"}],
+            }
+        )
+        second = api.import_items(
+            {
+                "tenantId": "altitude",
+                "customerId": "pilot-customer",
+                "rows": [{"part_code": "10001", "upc_code": "999999999999", "part_desc": "New Dog Food"}],
+            }
+        )
+
+        expected_id = item_record_id("altitude", "pilot-customer", "10001")
+        self.assertEqual(first["items"][0]["id"], expected_id)
+        self.assertEqual(second["items"][0]["id"], expected_id)
+        self.assertEqual(second["updatedCount"], 1)
+        self.assertEqual(repo.get("items", expected_id)["upc"], "999999999999")
+        self.assertEqual(len(repo.query_by_customer("items", "altitude", "pilot-customer")), 1)
+
+    def test_import_items_rekeys_legacy_upc_based_item_id(self) -> None:
+        repo = InMemoryRepository()
+        legacy_id = legacy_item_record_id("altitude", "pilot-customer", "10001", "012345678905")
+        repo.upsert(
+            "items",
+            {
+                "id": legacy_id,
+                "tenantId": "altitude",
+                "customerId": "pilot-customer",
+                "internalItemNumber": "10001",
+                "upc": "012345678905",
+                "description": "Old Dog Food",
+            },
+        )
+        api = OrderProcessorApi(repo, source_archive=InMemorySourceRowArchive())
+
+        result = api.import_items(
+            {
+                "tenantId": "altitude",
+                "customerId": "pilot-customer",
+                "rows": [{"part_code": "10001", "upc_code": "012345678905", "part_desc": "New Dog Food"}],
+            }
+        )
+
+        expected_id = item_record_id("altitude", "pilot-customer", "10001")
+        self.assertEqual(result["items"][0]["id"], expected_id)
+        self.assertEqual(result["legacyRekeyedCount"], 1)
+        self.assertIsNone(repo.get("items", legacy_id))
+        self.assertEqual(repo.get("items", expected_id)["description"], "New Dog Food")
 
     def test_import_items_reports_missing_identifier_and_archives_original_rows(self) -> None:
         archive = InMemorySourceRowArchive()

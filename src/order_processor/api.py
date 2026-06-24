@@ -21,7 +21,7 @@ from .customer_identification import (
 from .customer_vector_store import customer_vector_store_manager_from_environment
 from .data_model import GLOBAL_CUSTOMER_ID, keys_to_camel
 from .email_triage import build_email_action_plan, evaluate_email_triage, find_customer_by_code
-from .imports import normalize_customer_row, normalize_item_row, stable_id
+from .imports import legacy_item_record_id, normalize_customer_row, normalize_item_row, stable_id
 from .imports import (
     CUSTOMER_IMPORT_TYPE,
     ITEM_IMPORT_TYPE,
@@ -2562,6 +2562,7 @@ class OrderProcessorApi:
         imported: list[ItemRecord] = []
         created_count = 0
         updated_count = 0
+        legacy_rekeyed_count = 0
         for row_index, row in validation.valid_rows:
             row_metadata = {**source_metadata, "rowIndex": row_index, "customerId": customer_id}
             item = normalize_item_row(tenant_id, customer_id, row, profile.field_map, row_metadata)
@@ -2571,6 +2572,11 @@ class OrderProcessorApi:
             else:
                 created_count += 1
             self.repository.upsert("items", to_dict(item))
+            legacy_id = legacy_item_record_id(tenant_id, customer_id, item.internal_item_number, item.upc)
+            if legacy_id and legacy_id != item.id and self.repository.get("items", legacy_id):
+                delete = getattr(self.repository, "delete", None)
+                if callable(delete) and delete("items", legacy_id):
+                    legacy_rekeyed_count += 1
             imported.append(item)
 
         schedule = refresh_schedule_for_import(ITEM_IMPORT_TYPE, profile, payload, imported_at)
@@ -2587,6 +2593,7 @@ class OrderProcessorApi:
             "importedCount": len(imported),
             "createdCount": created_count,
             "updatedCount": updated_count,
+            "legacyRekeyedCount": legacy_rekeyed_count,
             "skippedCount": len(validation.errors),
             "errorCount": len(errors),
             "errors": errors,
