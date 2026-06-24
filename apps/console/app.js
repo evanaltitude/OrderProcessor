@@ -272,6 +272,19 @@ function showDetails(payload, options = {}) {
   detailsTimer = window.setTimeout(clearDetails, autoCloseMs);
 }
 
+function setFormStatus(id, message = "", tone = "") {
+  const target = el(id);
+  if (!target) return;
+  target.textContent = message;
+  target.className = `form-status ${tone || ""}`.trim();
+  target.classList.toggle("hidden", !message);
+}
+
+function errorMessage(errorOrPayload) {
+  const payload = errorOrPayload?.payload || errorOrPayload || {};
+  return payload.message || payload.error || errorOrPayload?.message || "Something went wrong.";
+}
+
 function escapeHtml(text) {
   return String(text ?? "")
     .replaceAll("&", "&amp;")
@@ -1162,41 +1175,70 @@ function wireForms() {
     event.preventDefault();
     const form = event.currentTarget;
     const mailbox = primaryMailbox();
-    const result = await post("/console/routing-rules", {
-      id: value(form, "id"),
-      customerId: "_global",
-      name: value(form, "name"),
-      phase: value(form, "phase"),
-      outcome: value(form, "outcome"),
-      priority: value(form, "priority") ? Number(value(form, "priority")) : 100,
-      processorProfileId: value(form, "outcome") === "knownOrder" ? value(form, "processorProfileId") : "",
-      mailboxAccountIds: mailbox?.id ? [mailbox.id] : [],
-      mailboxAddresses: mailbox?.mailboxAddress ? [mailbox.mailboxAddress] : [],
-      senderEquals: split(value(form, "senderEquals")),
-      senderDomains: split(value(form, "senderDomains")),
-      subjectRegex: split(value(form, "subjectRegex")),
-      bodyRegex: split(value(form, "bodyRegex")),
-      priorProcessedSubjectRegex: split(value(form, "priorProcessedSubjectRegex")),
-      attachmentExtensions: split(value(form, "attachmentExtensions")),
-      attachmentNameRegex: split(value(form, "attachmentNameRegex")),
-      requiredAttachment: checked(form, "requiredAttachment"),
-      enabled: checked(form, "enabled"),
-      customerCodeSource: value(form, "customerCodeSource"),
-      customerCodeRegex: value(form, "customerCodeRegex"),
-      customerCodeGroup: "customerCode",
-      subjectTemplate: value(form, "subjectTemplate"),
-      categoryCsrField: "csrFolder",
-      categoryTemplates: split(value(form, "categoryTemplates")),
-      processedMoveMode: value(form, "processedMoveMode"),
-      processedMoveFolder: value(form, "processedMoveMode") === "staticFolder" ? value(form, "processedMoveTarget") : "",
-      processedMoveCustomerField: value(form, "processedMoveMode") === "customerField" ? value(form, "processedMoveTarget") : "",
-      nonOrderMoveMode: value(form, "nonOrderMoveMode"),
-      nonOrderMoveFolder: value(form, "nonOrderMoveMode") === "staticFolder" ? value(form, "nonOrderMoveTarget") : "",
-      nonOrderMoveCustomerField: value(form, "nonOrderMoveMode") === "customerField" ? value(form, "nonOrderMoveTarget") : ""
-    });
-    if (!showActionResult(result)) return;
-    clearRoutingForm();
-    await refresh();
+    setFormStatus("routingFormStatus", "Saving routing rule...", "warn");
+    try {
+      const result = await post("/console/routing-rules", {
+        id: value(form, "id"),
+        customerId: "_global",
+        name: value(form, "name"),
+        phase: value(form, "phase"),
+        outcome: value(form, "outcome"),
+        priority: value(form, "priority") ? Number(value(form, "priority")) : 100,
+        processorProfileId: value(form, "outcome") === "knownOrder" ? value(form, "processorProfileId") : "",
+        mailboxAccountIds: mailbox?.id ? [mailbox.id] : [],
+        mailboxAddresses: mailbox?.mailboxAddress ? [mailbox.mailboxAddress] : [],
+        senderEquals: split(value(form, "senderEquals")),
+        senderDomains: split(value(form, "senderDomains")),
+        subjectRegex: split(value(form, "subjectRegex")),
+        bodyRegex: split(value(form, "bodyRegex")),
+        priorProcessedSubjectRegex: split(value(form, "priorProcessedSubjectRegex")),
+        attachmentExtensions: split(value(form, "attachmentExtensions")),
+        attachmentNameRegex: split(value(form, "attachmentNameRegex")),
+        requiredAttachment: checked(form, "requiredAttachment"),
+        enabled: checked(form, "enabled"),
+        customerCodeSource: value(form, "customerCodeSource"),
+        customerCodeRegex: value(form, "customerCodeRegex"),
+        customerCodeGroup: "customerCode",
+        subjectTemplate: value(form, "subjectTemplate"),
+        categoryCsrField: "csrFolder",
+        categoryTemplates: split(value(form, "categoryTemplates")),
+        processedMoveMode: value(form, "processedMoveMode"),
+        processedMoveFolder: value(form, "processedMoveMode") === "staticFolder" ? value(form, "processedMoveTarget") : "",
+        processedMoveCustomerField: value(form, "processedMoveMode") === "customerField" ? value(form, "processedMoveTarget") : "",
+        nonOrderMoveMode: value(form, "nonOrderMoveMode"),
+        nonOrderMoveFolder: value(form, "nonOrderMoveMode") === "staticFolder" ? value(form, "nonOrderMoveTarget") : "",
+        nonOrderMoveCustomerField: value(form, "nonOrderMoveMode") === "customerField" ? value(form, "nonOrderMoveTarget") : ""
+      });
+      if (!showActionResult(result)) {
+        setFormStatus("routingFormStatus", `Rule was not saved: ${errorMessage(result)}`, "bad");
+        return;
+      }
+      const savedRuleId = result.routingRule?.id;
+      const savedRuleName = result.routingRule?.name || savedRuleId || "routing rule";
+      await refresh();
+      const savedRule = (state.dashboard?.routingRules || []).find((rule) => rule.id === savedRuleId);
+      if (!savedRule) {
+        setFormStatus(
+          "routingFormStatus",
+          `The API returned success for ${savedRuleName}, but it was not found after refresh. Check customer selection and permissions.`,
+          "bad"
+        );
+        showDetails({
+          error: "routingRuleNotVisibleAfterSave",
+          message: "The routing rule save returned success but the refreshed dashboard did not include it.",
+          tenantId: state.tenantId,
+          savedRuleId,
+          savedRuleName
+        });
+        return;
+      }
+      clearRoutingForm();
+      setFormStatus("routingFormStatus", `Saved ${savedRuleName} for ${selectedDistributor().name || state.tenantId}.`, "good");
+    } catch (error) {
+      const payload = payloadForError(error);
+      showDetails(payload);
+      setFormStatus("routingFormStatus", `Rule was not saved: ${errorMessage(payload)}`, "bad");
+    }
   });
 
   el("processorProfileForm").addEventListener("submit", async (event) => {

@@ -534,6 +534,33 @@ th {
   gap: 10px;
 }
 
+.form-status {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.form-status.good {
+  border-color: rgba(32, 120, 78, 0.25);
+  background: #edf8f2;
+  color: var(--good);
+}
+
+.form-status.bad {
+  border-color: rgba(164, 51, 51, 0.25);
+  background: #fbebeb;
+  color: var(--bad);
+}
+
+.form-status.warn {
+  border-color: rgba(155, 101, 0, 0.25);
+  background: #fff7e7;
+  color: var(--warn);
+}
+
 .task-list,
 .artifact-grid {
   display: grid;
@@ -615,7 +642,7 @@ th {
 
 .busy-overlay {
   position: fixed;
-  top: 18px;
+  top: 50%;
   left: 50%;
   z-index: 60;
   display: flex;
@@ -629,7 +656,7 @@ th {
   box-shadow: 0 12px 34px rgba(37, 41, 47, 0.14);
   color: var(--charcoal-2);
   font-weight: 800;
-  transform: translateX(-50%);
+  transform: translate(-50%, -50%);
 }
 
 .busy-overlay.hidden {
