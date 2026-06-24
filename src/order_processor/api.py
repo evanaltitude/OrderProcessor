@@ -21,7 +21,7 @@ from .customer_identification import (
 from .customer_vector_store import customer_vector_store_manager_from_environment
 from .data_model import GLOBAL_CUSTOMER_ID, keys_to_camel
 from .email_triage import build_email_action_plan, evaluate_email_triage, find_customer_by_code
-from .imports import legacy_item_record_id, normalize_customer_row, normalize_item_row, stable_id
+from .imports import legacy_item_record_id, normalize_customer_row, normalize_item_row, scoped_item_record_id, stable_id
 from .imports import (
     CUSTOMER_IMPORT_TYPE,
     ITEM_IMPORT_TYPE,
@@ -509,6 +509,10 @@ def _candidate_routing_rules(email: EmailMessage, rules: list[RoutingRule]) -> l
 
 
 def _normalized_email(value: str) -> str:
+    return str(value or "").strip().lower()
+
+
+def _item_identity_key(value: Any) -> str:
     return str(value or "").strip().lower()
 
 
@@ -2051,7 +2055,7 @@ class OrderProcessorApi:
         processor_profile = self._resolve_processor_profile(order, payload)
         order = process_order_payload(order, payload, processor_profile)
 
-        items = [_item_from_doc(doc) for doc in self.repository.query_by_tenant("items", order.tenant_id)]
+        items = [_item_from_doc(doc) for doc in self.repository.query_by_customer("items", order.tenant_id, GLOBAL_CUSTOMER_ID)]
         if items and order.lines:
             order = validate_order_lines(order, items)
 
@@ -2257,9 +2261,7 @@ class OrderProcessorApi:
             [_item_from_doc(item) for item in items_payload]
             if items_payload is not None
             else (
-                [_item_from_doc(doc) for doc in self.repository.query_by_customer("items", tenant_id, customer_id)]
-                if customer_id
-                else [_item_from_doc(doc) for doc in self.repository.query_by_tenant("items", tenant_id)]
+                [_item_from_doc(doc) for doc in self.repository.query_by_customer("items", tenant_id, GLOBAL_CUSTOMER_ID)]
             )
         )
         result = validate_item_line(
@@ -2534,11 +2536,7 @@ class OrderProcessorApi:
 
     def import_items(self, payload: dict[str, Any]) -> dict[str, Any]:
         tenant_id = _pick(payload, "tenantId", "tenant_id", default="default")
-        customer_id = self._resolve_item_import_customer_id(
-            tenant_id,
-            _pick(payload, "customerId", "customer_id", default=""),
-            _pick(payload, "customerCode", "customer_code", "accountNumber", "account_number", default=""),
-        )
+        customer_id = GLOBAL_CUSTOMER_ID
         profile = import_profile_from_payload(payload, ITEM_IMPORT_TYPE, "rows")
         parsed = parse_import_rows(payload, profile)
         validation = validate_item_rows(parsed.rows, profile.field_map)
@@ -2563,20 +2561,35 @@ class OrderProcessorApi:
         created_count = 0
         updated_count = 0
         legacy_rekeyed_count = 0
+        existing_items_by_number = self._existing_item_documents_by_number(tenant_id)
         for row_index, row in validation.valid_rows:
             row_metadata = {**source_metadata, "rowIndex": row_index, "customerId": customer_id}
             item = normalize_item_row(tenant_id, customer_id, row, profile.field_map, row_metadata)
             item = apply_item_embedding(item, self.import_embedding_client)
-            if self.repository.get("items", item.id):
+            existing_item = self.repository.get("items", item.id)
+            legacy_matches = [
+                document
+                for document in existing_items_by_number.get(_item_identity_key(item.internal_item_number), [])
+                if str(_pick(document, "id", default="")) != item.id
+            ]
+            if existing_item or legacy_matches:
                 updated_count += 1
             else:
                 created_count += 1
             self.repository.upsert("items", to_dict(item))
-            legacy_id = legacy_item_record_id(tenant_id, customer_id, item.internal_item_number, item.upc)
-            if legacy_id and legacy_id != item.id and self.repository.get("items", legacy_id):
-                delete = getattr(self.repository, "delete", None)
-                if callable(delete) and delete("items", legacy_id):
-                    legacy_rekeyed_count += 1
+            legacy_ids = {
+                scoped_item_record_id(tenant_id, customer_id, item.internal_item_number),
+                legacy_item_record_id(tenant_id, customer_id, item.internal_item_number, item.upc),
+                *[str(_pick(document, "id", default="")) for document in legacy_matches],
+            }
+            delete = getattr(self.repository, "delete", None)
+            if callable(delete):
+                for legacy_id in legacy_ids:
+                    if legacy_id and legacy_id != item.id and self.repository.get("items", legacy_id) and delete("items", legacy_id):
+                        legacy_rekeyed_count += 1
+            item_key = _item_identity_key(item.internal_item_number)
+            if item_key:
+                existing_items_by_number[item_key] = [to_dict(item)]
             imported.append(item)
 
         schedule = refresh_schedule_for_import(ITEM_IMPORT_TYPE, profile, payload, imported_at)
@@ -2585,7 +2598,7 @@ class OrderProcessorApi:
             "importType": ITEM_IMPORT_TYPE,
             "importRunId": archive.import_run_id,
             "customerId": customer_id,
-            "customerCode": _pick(payload, "customerCode", "customer_code", "accountNumber", "account_number", default=""),
+            "customerCode": "",
             "sourceRowsBlobUrl": archive.blob_url,
             "sourceRowsChecksum": archive.checksum,
             "sourceRowCount": archive.row_count,
@@ -2611,6 +2624,14 @@ class OrderProcessorApi:
             customer_id=customer_id,
         )
         return result
+
+    def _existing_item_documents_by_number(self, tenant_id: str) -> dict[str, list[dict[str, Any]]]:
+        items_by_number: dict[str, list[dict[str, Any]]] = {}
+        for document in self.repository.query_by_tenant("items", tenant_id):
+            key = _item_identity_key(_pick(document, "internalItemNumber", "internal_item_number", default=""))
+            if key:
+                items_by_number.setdefault(key, []).append(document)
+        return items_by_number
 
     def _resolve_item_import_customer_id(self, tenant_id: str, customer_id: Any, customer_code: Any) -> str:
         requested_customer_id = str(customer_id or "").strip()

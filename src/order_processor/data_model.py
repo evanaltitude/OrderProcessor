@@ -197,6 +197,9 @@ def normalize_document_for_storage(container_name: str, document: dict[str, Any]
         else:
             raise ValueError(f"{container_name} document {normalized['id']} must include tenantId.")
 
+    if container_name == "items":
+        normalized["customerId"] = GLOBAL_CUSTOMER_ID
+
     if definition.customer_scoped and not normalized.get("customerId"):
         if definition.customer_id_required:
             raise ValueError(f"{container_name} document {normalized['id']} must include customerId.")

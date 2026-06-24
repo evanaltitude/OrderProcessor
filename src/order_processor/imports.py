@@ -25,7 +25,11 @@ def stable_id(*parts: str) -> str:
     return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:24]
 
 
-def item_record_id(tenant_id: str, customer_id: str, item_number: str) -> str:
+def item_record_id(tenant_id: str, item_number: str) -> str:
+    return stable_id(tenant_id, item_number)
+
+
+def scoped_item_record_id(tenant_id: str, customer_id: str, item_number: str) -> str:
     return stable_id(tenant_id, customer_id, item_number)
 
 
@@ -741,7 +745,7 @@ def normalize_item_row(
     metadata = dict(import_metadata or {})
 
     return ItemRecord(
-        id=item_record_id(tenant_id, customer_id, canonical_item_number),
+        id=item_record_id(tenant_id, canonical_item_number),
         tenant_id=tenant_id,
         customer_id=customer_id,
         internal_item_number=canonical_item_number,

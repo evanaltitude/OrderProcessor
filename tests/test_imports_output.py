@@ -13,6 +13,7 @@ from order_processor.imports import (
     normalize_customer_alias_rows,
     normalize_customer_row,
     normalize_item_row,
+    scoped_item_record_id,
 )
 from order_processor.imports import InMemorySourceRowArchive
 from order_processor.customer_vector_store import CustomerVectorStoreManager, customer_vector_store_reference_id
@@ -376,16 +377,10 @@ class ImportsOutputTests(unittest.TestCase):
         self.assertEqual(fake_vector_store.deleted_files, [])
         self.assertEqual(fake_vector_store.deleted_vector_stores, [])
 
-    def test_import_items_resolves_customer_code_to_imported_customer_id(self) -> None:
+    def test_import_items_ignores_downstream_customer_scope_for_distributor_catalog(self) -> None:
         repo = InMemoryRepository()
         api = OrderProcessorApi(repo, source_archive=InMemorySourceRowArchive())
-        customers = api.import_customers(
-            {
-                "tenantId": "altitude",
-                "rows": [{"customerCode": "102914", "name": "Hollywood Feed"}],
-            }
-        )
-        customer_id = customers["customers"][0]["id"]
+        api.import_customers({"tenantId": "altitude", "rows": [{"customerCode": "102914", "name": "Hollywood Feed"}]})
 
         items = api.import_items(
             {
@@ -395,10 +390,12 @@ class ImportsOutputTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(items["customerId"], customer_id)
-        self.assertEqual(items["customerCode"], "102914")
-        self.assertEqual(items["items"][0]["customerId"], customer_id)
-        self.assertEqual(repo.get("items", items["items"][0]["id"])["customerId"], customer_id)
+        expected_id = item_record_id("altitude", "10001")
+        self.assertEqual(items["customerId"], GLOBAL_CUSTOMER_ID)
+        self.assertEqual(items["customerCode"], "")
+        self.assertEqual(items["items"][0]["id"], expected_id)
+        self.assertEqual(items["items"][0]["customerId"], GLOBAL_CUSTOMER_ID)
+        self.assertEqual(repo.get("items", expected_id)["customerId"], GLOBAL_CUSTOMER_ID)
 
     def test_import_items_without_customer_scope_uses_master_catalog(self) -> None:
         repo = InMemoryRepository()
@@ -505,16 +502,18 @@ class ImportsOutputTests(unittest.TestCase):
             }
         )
 
-        expected_id = item_record_id("altitude", "pilot-customer", "10001")
+        expected_id = item_record_id("altitude", "10001")
         self.assertEqual(first["items"][0]["id"], expected_id)
         self.assertEqual(second["items"][0]["id"], expected_id)
         self.assertEqual(second["updatedCount"], 1)
         self.assertEqual(repo.get("items", expected_id)["upc"], "999999999999")
-        self.assertEqual(len(repo.query_by_customer("items", "altitude", "pilot-customer")), 1)
+        self.assertEqual(repo.get("items", expected_id)["customerId"], GLOBAL_CUSTOMER_ID)
+        self.assertEqual(len(repo.query_by_customer("items", "altitude", GLOBAL_CUSTOMER_ID)), 1)
 
-    def test_import_items_rekeys_legacy_upc_based_item_id(self) -> None:
+    def test_import_items_rekeys_legacy_customer_scoped_item_ids(self) -> None:
         repo = InMemoryRepository()
         legacy_id = legacy_item_record_id("altitude", "pilot-customer", "10001", "012345678905")
+        scoped_id = scoped_item_record_id("altitude", "pilot-customer", "10001")
         repo.upsert(
             "items",
             {
@@ -524,6 +523,16 @@ class ImportsOutputTests(unittest.TestCase):
                 "internalItemNumber": "10001",
                 "upc": "012345678905",
                 "description": "Old Dog Food",
+            },
+        )
+        repo.upsert(
+            "items",
+            {
+                "id": scoped_id,
+                "tenantId": "altitude",
+                "customerId": "pilot-customer",
+                "internalItemNumber": "10001",
+                "description": "Scoped Dog Food",
             },
         )
         api = OrderProcessorApi(repo, source_archive=InMemorySourceRowArchive())
@@ -536,10 +545,12 @@ class ImportsOutputTests(unittest.TestCase):
             }
         )
 
-        expected_id = item_record_id("altitude", "pilot-customer", "10001")
+        expected_id = item_record_id("altitude", "10001")
         self.assertEqual(result["items"][0]["id"], expected_id)
-        self.assertEqual(result["legacyRekeyedCount"], 1)
+        self.assertEqual(result["items"][0]["customerId"], GLOBAL_CUSTOMER_ID)
+        self.assertEqual(result["legacyRekeyedCount"], 2)
         self.assertIsNone(repo.get("items", legacy_id))
+        self.assertIsNone(repo.get("items", scoped_id))
         self.assertEqual(repo.get("items", expected_id)["description"], "New Dog Food")
 
     def test_import_items_reports_missing_identifier_and_archives_original_rows(self) -> None:

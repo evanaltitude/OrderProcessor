@@ -64,9 +64,9 @@ class DataModelTests(unittest.TestCase):
         )
 
         self.assertEqual(document["tenantId"], "altitude")
-        self.assertEqual(document["customerId"], "customer-1")
+        self.assertEqual(document["customerId"], GLOBAL_CUSTOMER_ID)
         self.assertEqual(document["internalItemNumber"], "10001")
-        self.assertEqual(partition_key_value("items", document), ["altitude", "customer-1"])
+        self.assertEqual(partition_key_value("items", document), ["altitude", GLOBAL_CUSTOMER_ID])
 
     def test_global_and_unassigned_customer_partition_defaults(self) -> None:
         routing_rule = normalize_document_for_storage(
@@ -122,9 +122,9 @@ class DataModelTests(unittest.TestCase):
             },
         )
 
-        items = repo.query_by_customer("items", "altitude", "customer-1")
-        self.assertEqual(len(items), 1)
-        self.assertEqual(items[0]["internalItemNumber"], "10001")
+        items = repo.query_by_customer("items", "altitude", GLOBAL_CUSTOMER_ID)
+        self.assertEqual(len(items), 2)
+        self.assertEqual({item["internalItemNumber"] for item in items}, {"10001", "20001"})
 
 
 if __name__ == "__main__":

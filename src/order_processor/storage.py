@@ -6,6 +6,7 @@ from typing import Any
 
 from .data_model import (
     CONTAINER_NAMES,
+    container_definition,
     document_value,
     normalize_document_for_storage,
     partition_key_value,
@@ -106,7 +107,7 @@ class CosmosRepository:
         document = self.get(container, document_id)
         if document is None:
             return False
-        self._container(container).delete_item(document_id, partition_key=partition_key_value(container, document))
+        self._container(container).delete_item(document_id, partition_key=existing_partition_key_value(container, document))
         return True
 
     def list(self, container: str) -> list[dict[str, Any]]:
@@ -183,3 +184,15 @@ def repository_from_environment() -> InMemoryRepository | CosmosRepository:
         endpoint=os.environ.get("COSMOS_ACCOUNT_ENDPOINT", ""),
         database_name=os.environ.get("COSMOS_DATABASE_NAME", "orderProcessor"),
     )
+
+
+def existing_partition_key_value(container: str, document: dict[str, Any]) -> str | list[str]:
+    definition = container_definition(container)
+    values: list[str] = []
+    for path in definition.partition_key_paths:
+        field_name = path.lstrip("/")
+        value = document_value(document, field_name, None)
+        if value is None or value == "":
+            return partition_key_value(container, document)
+        values.append(str(value))
+    return values[0] if len(values) == 1 else values
