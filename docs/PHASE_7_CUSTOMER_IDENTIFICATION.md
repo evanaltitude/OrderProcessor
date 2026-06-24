@@ -91,6 +91,16 @@ Environment variables:
 
 When AI consensus is enabled and vector candidates exist, the vector score supplies the tight candidate set but does not auto-accept a customer by itself. The two-prompt consensus or decider must return a valid customer code from the candidate records.
 
+Production setup on 2026-06-24:
+
+- Azure OpenAI-compatible account: `orderprocessor-prod-openai-vc5upbm44rc4w`
+- Region: `eastus2`
+- Endpoint: `https://orderprocessor-prod-openai-vc5upbm44rc4w.openai.azure.com/`
+- Customer-ID chat deployment: `customer-id-chat`, `gpt-4o`, version `2024-11-20`, `Standard`, capacity `10`
+- Customer embedding deployment: `customer-id-embedding`, `text-embedding-3-small`, version `1`, `Standard`, capacity `10`
+- Local key auth is disabled on the account.
+- The production Function managed identity has `Cognitive Services OpenAI User` on the account.
+
 ## API Behavior
 
 `POST /customers/identify` accepts an `emailMessage`, optional `confidenceThreshold`, and optional caller-supplied `customers` or `customerAliases` for controlled tests. Normal backend operation loads customers and aliases from Cosmos.
