@@ -25,6 +25,7 @@ class DataModelTests(unittest.TestCase):
             {
                 "tenants",
                 "customers",
+                "customerVectorStores",
                 "customerAliases",
                 "items",
                 "routingRules",
@@ -41,10 +42,11 @@ class DataModelTests(unittest.TestCase):
                 "auditEvents",
             },
         )
-        self.assertEqual(len(container_manifest()), 16)
+        self.assertEqual(len(container_manifest()), 17)
 
     def test_customer_scoped_partition_contract(self) -> None:
         self.assertEqual(CONTAINER_BY_NAME["customers"].partition_key_paths, ("/tenantId",))
+        self.assertEqual(CONTAINER_BY_NAME["customerVectorStores"].partition_key_paths, ("/tenantId",))
         self.assertEqual(CONTAINER_BY_NAME["items"].partition_key_paths, ("/tenantId", "/customerId"))
         self.assertEqual(CONTAINER_BY_NAME["mailboxAccounts"].partition_key_paths, ("/tenantId", "/customerId"))
         self.assertTrue(CONTAINER_BY_NAME["items"].uses_hierarchical_partition_key)

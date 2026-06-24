@@ -142,6 +142,27 @@ Import-time embeddings are disabled by default. Enable with:
 
 The embedding client uses `AZURE_OPENAI_API_KEY` when present or managed identity otherwise. Customer embeddings include code/name/store/route/domain/alias text. Item embeddings include internal item number, description, UPC, customer item numbers, and aliases.
 
+## Customer Vector Store Rotation
+
+Customer-list imports can also rebuild the Foundry/OpenAI-compatible file-search vector store after the normalized customer records and aliases are written.
+
+Enable with:
+
+- `ORDER_PROCESSOR_ENABLE_CUSTOMER_VECTOR_STORE_ROTATION=true`
+- `AZURE_AI_FOUNDRY_OPENAI_ENDPOINT` or `AZURE_OPENAI_ENDPOINT`
+- `AZURE_AI_FOUNDRY_OPENAI_API_VERSION` or `AZURE_OPENAI_API_VERSION`
+
+When enabled, each successful customer import with at least one valid customer row:
+
+- Reads the full current tenant customer list from Cosmos, not just the changed rows.
+- Builds a compact JSONL file with customer code, name, store number, route, location, contact fields, CSR routing, aliases, sender domains, and known subject patterns.
+- Uploads the file to Azure OpenAI with `purpose=assistants`.
+- Creates a new vector store and waits for file ingestion to complete.
+- Writes the active reference to `customerVectorStores`.
+- Deletes the previous file and vector store after the new reference is active.
+
+If new vector-store creation fails, the previous active reference is left unchanged and the import response includes `customerVectorStore.status: "failed"`. If old-resource cleanup fails after activation, the new vector store remains active and the cleanup error is recorded on the reference document for follow-up.
+
 ## Validation
 
 Tests added or expanded:

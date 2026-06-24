@@ -18,6 +18,7 @@ from .customer_identification import (
     normalize_domain,
     normalize_identifier,
 )
+from .customer_vector_store import customer_vector_store_manager_from_environment
 from .data_model import GLOBAL_CUSTOMER_ID, keys_to_camel
 from .email_triage import build_email_action_plan, evaluate_email_triage, find_customer_by_code
 from .imports import normalize_customer_row, normalize_item_row, stable_id
@@ -587,6 +588,7 @@ class OrderProcessorApi:
         customer_ai_identifier: CustomerAiIdentifier | None = None,
         source_archive: SourceRowArchive | None = None,
         import_embedding_client: TextEmbeddingClient | None = None,
+        customer_vector_store_manager: Any | None = None,
         output_artifact_store: OutputArtifactStore | None = None,
         secret_store: Any | None = None,
     ) -> None:
@@ -606,6 +608,11 @@ class OrderProcessorApi:
             import_embedding_client
             if import_embedding_client is not None
             else import_embedding_client_from_environment()
+        )
+        self.customer_vector_store_manager = (
+            customer_vector_store_manager
+            if customer_vector_store_manager is not None
+            else customer_vector_store_manager_from_environment(self.repository)
         )
         self.output_artifact_store = output_artifact_store or output_artifact_store_from_environment()
         self.secret_store = secret_store if secret_store is not None else secret_store_from_environment()
@@ -2507,6 +2514,20 @@ class OrderProcessorApi:
         }
         observability = correlation_context(payload, archive.import_run_id)
         result["observability"] = observability
+        if self.customer_vector_store_manager and len(imported) > 0:
+            vector_store_result = self.customer_vector_store_manager.rotate_after_customer_import(
+                tenant_id,
+                result,
+                payload,
+            )
+            result["customerVectorStore"] = _api_value(vector_store_result)
+            self._audit(
+                tenant_id,
+                "customers.vectorStoreRotated",
+                observability["correlationId"],
+                archive.import_run_id,
+                {"observability": observability, **vector_store_result},
+            )
         self._audit(tenant_id, "customers.imported", observability["correlationId"], archive.import_run_id, result)
         return result
 

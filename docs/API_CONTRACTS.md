@@ -345,6 +345,8 @@ The immediate response includes `accepted`, `queued`, `status`, `importType`, `t
 
 Customer imports default to a daily refresh cadence. Override with `refreshIntervalDays`, `importProfile.refreshIntervalDays`, or `customerConfig.customerRefreshIntervalDays`.
 
+When `ORDER_PROCESSOR_ENABLE_CUSTOMER_VECTOR_STORE_ROTATION=true`, the queued worker rebuilds the full tenant customer-list vector store after customer records are updated. The import result and audit details include `customerVectorStore` with the active `vectorStoreId`, `fileId`, source import run, record counts, previous IDs, and cleanup status. The active reference is stored in `customerVectorStores`; old file/vector-store resources are deleted only after the new reference is written.
+
 The universal customer row shape is accepted without a field map when upstream adapters can already emit it:
 
 ```json
@@ -365,6 +367,7 @@ The universal customer row shape is accepted without a field map when upstream a
 Customer imports write:
 
 - `customers`
+- `customerVectorStores` when vector-store rotation is enabled
 - `customerAliases`
 - `auditEvents`
 - source rows archive in Blob Storage, or `memory://` archive in local tests

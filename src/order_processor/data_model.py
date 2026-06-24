@@ -36,6 +36,12 @@ CONTAINER_DEFINITIONS: tuple[ContainerDefinition, ...] = (
         vector_dimensions=1536,
     ),
     ContainerDefinition(
+        "customerVectorStores",
+        ("/tenantId",),
+        "CustomerVectorStoreReference",
+        "Active Azure OpenAI vector store references built from imported customer lists.",
+    ),
+    ContainerDefinition(
         "customerAliases",
         ("/tenantId", "/customerId"),
         "CustomerAlias",

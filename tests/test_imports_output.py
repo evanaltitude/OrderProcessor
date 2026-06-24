@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from order_processor.imports import normalize_customer_row, normalize_item_row
 from order_processor.imports import InMemorySourceRowArchive
+from order_processor.customer_vector_store import CustomerVectorStoreManager, customer_vector_store_reference_id
 from order_processor.data_model import GLOBAL_CUSTOMER_ID
 from order_processor.models import ItemRecord, OrderRun, ProcessingStatus
 from order_processor.order_processing import CsvOrderProcessor, validate_order_lines
@@ -20,6 +21,47 @@ from order_processor.storage import InMemoryRepository
 class FakeEmbeddingClient:
     def embed(self, text: str) -> list[float]:
         return [float(len(text or "")), 1.0]
+
+
+class FakeCustomerVectorStoreClient:
+    def __init__(self, fail_create: bool = False) -> None:
+        self.fail_create = fail_create
+        self.created: list[dict[str, object]] = []
+        self.deleted_files: list[str] = []
+        self.deleted_vector_stores: list[str] = []
+
+    def create_customer_vector_store(
+        self,
+        *,
+        name: str,
+        filename: str,
+        content: bytes,
+        metadata: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        if self.fail_create:
+            raise RuntimeError("vector store create failed")
+        records = [json.loads(line) for line in content.decode("utf-8").splitlines() if line.strip()]
+        self.created.append(
+            {
+                "name": name,
+                "filename": filename,
+                "metadata": metadata or {},
+                "records": records,
+            }
+        )
+        sequence = len(self.created)
+        return {
+            "vectorStoreId": f"vs-new-{sequence}",
+            "fileId": f"file-new-{sequence}",
+            "fileBatchId": f"batch-new-{sequence}",
+            "fileCounts": {"completed": 1, "failed": 0},
+        }
+
+    def delete_file(self, file_id: str) -> None:
+        self.deleted_files.append(file_id)
+
+    def delete_vector_store(self, vector_store_id: str) -> None:
+        self.deleted_vector_stores.append(vector_store_id)
 
 
 class ImportsOutputTests(unittest.TestCase):
@@ -164,6 +206,111 @@ class ImportsOutputTests(unittest.TestCase):
         self.assertGreater(stored_customer["embedding"][0], 0)
         self.assertIn("senderDomain", {alias["aliasType"] for alias in aliases})
         self.assertIn("knownSubjectPattern", {alias["aliasType"] for alias in aliases})
+
+    def test_import_customers_rotates_vector_store_after_customer_update(self) -> None:
+        repo = InMemoryRepository()
+        fake_vector_store = FakeCustomerVectorStoreClient()
+        manager = CustomerVectorStoreManager(repo, fake_vector_store)
+        reference_id = customer_vector_store_reference_id("altitude")
+        repo.upsert(
+            "customers",
+            {
+                "id": "existing-customer",
+                "tenantId": "altitude",
+                "customerCode": "OLD",
+                "name": "Existing Customer",
+                "aliases": ["Existing Alias"],
+            },
+        )
+        repo.upsert(
+            "customerAliases",
+            {
+                "id": "existing-alias",
+                "tenantId": "altitude",
+                "customerId": "existing-customer",
+                "aliasType": "senderDomain",
+                "value": "existing.example",
+                "normalizedValue": "existing.example",
+            },
+        )
+        repo.upsert(
+            "customerVectorStores",
+            {
+                "id": reference_id,
+                "tenantId": "altitude",
+                "referenceType": "customerListFileSearch",
+                "status": "active",
+                "vectorStoreId": "vs-old",
+                "fileId": "file-old",
+            },
+        )
+        api = OrderProcessorApi(
+            repo,
+            source_archive=InMemorySourceRowArchive(),
+            customer_vector_store_manager=manager,
+        )
+
+        result = api.import_customers(
+            {
+                "tenantId": "altitude",
+                "rows": [
+                    {
+                        "cust_code": "NEW",
+                        "customer_name": "New Customer",
+                        "customer_store_number": "101",
+                        "location_city": "Grand Rapids",
+                    }
+                ],
+            }
+        )
+
+        reference = repo.get("customerVectorStores", reference_id)
+        records = fake_vector_store.created[0]["records"]
+        self.assertEqual(result["customerVectorStore"]["status"], "active")
+        self.assertEqual(reference["vectorStoreId"], "vs-new-1")
+        self.assertEqual(reference["fileId"], "file-new-1")
+        self.assertEqual(reference["previousVectorStoreId"], "vs-old")
+        self.assertEqual(fake_vector_store.deleted_files, ["file-old"])
+        self.assertEqual(fake_vector_store.deleted_vector_stores, ["vs-old"])
+        self.assertEqual({record["cust_code"] for record in records}, {"OLD", "NEW"})
+        existing_record = next(record for record in records if record["cust_code"] == "OLD")
+        self.assertIn("existing.example", existing_record["aliases"])
+
+    def test_import_customers_preserves_old_vector_store_reference_when_rotation_fails(self) -> None:
+        repo = InMemoryRepository()
+        fake_vector_store = FakeCustomerVectorStoreClient(fail_create=True)
+        manager = CustomerVectorStoreManager(repo, fake_vector_store)
+        reference_id = customer_vector_store_reference_id("altitude")
+        repo.upsert(
+            "customerVectorStores",
+            {
+                "id": reference_id,
+                "tenantId": "altitude",
+                "referenceType": "customerListFileSearch",
+                "status": "active",
+                "vectorStoreId": "vs-old",
+                "fileId": "file-old",
+            },
+        )
+        api = OrderProcessorApi(
+            repo,
+            source_archive=InMemorySourceRowArchive(),
+            customer_vector_store_manager=manager,
+        )
+
+        result = api.import_customers(
+            {
+                "tenantId": "altitude",
+                "rows": [{"cust_code": "NEW", "customer_name": "New Customer"}],
+            }
+        )
+
+        reference = repo.get("customerVectorStores", reference_id)
+        self.assertEqual(result["customerVectorStore"]["status"], "failed")
+        self.assertEqual(reference["vectorStoreId"], "vs-old")
+        self.assertEqual(reference["fileId"], "file-old")
+        self.assertEqual(fake_vector_store.deleted_files, [])
+        self.assertEqual(fake_vector_store.deleted_vector_stores, [])
 
     def test_import_items_resolves_customer_code_to_imported_customer_id(self) -> None:
         repo = InMemoryRepository()

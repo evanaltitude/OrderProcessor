@@ -145,6 +145,12 @@ var operationalContainers = [
     ]
   }
   {
+    name: 'customerVectorStores'
+    partitionKeyPaths: [
+      '/tenantId'
+    ]
+  }
+  {
     name: 'routingRules'
     partitionKeyPaths: [
       '/tenantId'

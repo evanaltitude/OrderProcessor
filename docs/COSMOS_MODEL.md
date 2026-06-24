@@ -10,6 +10,7 @@ The database name is `orderProcessor`.
 | --- | --- | --- | --- |
 | `tenants` | `/tenantId` | No | Tenant-level settings and environment flags |
 | `customers` | `/tenantId` | No | Canonical customer profiles, aliases, routing metadata, embeddings |
+| `customerVectorStores` | `/tenantId` | No | Active Azure OpenAI vector store references built from imported customer lists |
 | `customerAliases` | `/tenantId`, `/customerId` | Yes, required | Alternate names, account numbers, optional sender rules, regex rules, and deterministic customer matching keys |
 | `items` | `/tenantId`, `/customerId` | Yes, required | Canonical item records, customer item numbers, UPCs, aliases, embeddings |
 | `routingRules` | `/tenantId`, `/customerId` | Yes, default `_global` | Data-driven email routing rules |
@@ -43,6 +44,7 @@ Implemented dataclasses in `src/order_processor/models.py`:
 
 - `Tenant`
 - `CustomerProfile`
+- `CustomerVectorStoreReference`
 - `CustomerAlias`
 - `ItemRecord`
 - `RoutingRule`

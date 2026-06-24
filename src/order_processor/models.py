@@ -178,6 +178,31 @@ class CustomerProfile:
 
 
 @dataclass(slots=True)
+class CustomerVectorStoreReference:
+    id: str
+    tenant_id: str
+    reference_type: str
+    status: str
+    name: str = ""
+    vector_store_id: str = ""
+    file_id: str = ""
+    file_batch_id: str = ""
+    source_import_run_id: str = ""
+    source_rows_blob_url: str = ""
+    source_rows_checksum: str = ""
+    customer_count: int = 0
+    alias_count: int = 0
+    record_count: int = 0
+    content_bytes: int = 0
+    previous_vector_store_id: str = ""
+    previous_file_id: str = ""
+    last_rotation: dict[str, Any] = field(default_factory=dict)
+    last_cleanup: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now)
+    updated_at: str = field(default_factory=utc_now)
+
+
+@dataclass(slots=True)
 class CustomerAlias:
     id: str
     tenant_id: str
