@@ -134,6 +134,53 @@ def _as_float(value: Any) -> float | None:
         return None
 
 
+def _normalize_regex_pattern(value: Any) -> str:
+    pattern = str(value or "").strip()
+    if not pattern:
+        return ""
+    return re.sub(r"\(\?<([A-Za-z_][A-Za-z0-9_]*)>", r"(?P<\1>", pattern)
+
+
+def _normalize_regex_list(value: Any) -> list[str]:
+    return [pattern for pattern in (_normalize_regex_pattern(item) for item in _as_list(value)) if pattern]
+
+
+def _regex_validation_error(field_name: str, patterns: list[str]) -> dict[str, Any] | None:
+    for pattern in patterns:
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            return {
+                "error": "invalidRegex",
+                "field": field_name,
+                "pattern": pattern,
+                "message": f"{field_name} contains an invalid regular expression: {exc}",
+            }
+    return None
+
+
+def _routing_outcome_from_value(value: Any) -> RoutingOutcome | None:
+    if isinstance(value, RoutingOutcome):
+        return value
+    normalized = str(value or "").strip()
+    if not normalized:
+        return RoutingOutcome.NEEDS_HUMAN_REVIEW
+    try:
+        return RoutingOutcome(normalized)
+    except ValueError:
+        return None
+
+
+def _routing_priority_from_value(value: Any) -> int | None:
+    if value is None or value == "":
+        return 100
+    try:
+        priority = int(value)
+    except (TypeError, ValueError):
+        return None
+    return priority if priority >= 1 else None
+
+
 def _api_value(value: Any) -> Any:
     return keys_to_camel(to_dict(value))
 
@@ -209,9 +256,10 @@ def _email_from_payload(payload: dict[str, Any]) -> EmailMessage:
 
 
 def _routing_rule_from_doc(doc: dict[str, Any]) -> RoutingRule:
-    outcome = _pick(doc, "outcome", default=RoutingOutcome.NEEDS_CUSTOMER_IDENTIFICATION)
-    if not isinstance(outcome, RoutingOutcome):
-        outcome = RoutingOutcome(outcome)
+    outcome = _routing_outcome_from_value(
+        _pick(doc, "outcome", default=RoutingOutcome.NEEDS_CUSTOMER_IDENTIFICATION)
+    ) or RoutingOutcome.NEEDS_HUMAN_REVIEW
+    priority = _routing_priority_from_value(_pick(doc, "priority", default=100)) or 100
 
     return RoutingRule(
         id=str(_pick(doc, "id")),
@@ -219,7 +267,7 @@ def _routing_rule_from_doc(doc: dict[str, Any]) -> RoutingRule:
         name=_pick(doc, "name", default=""),
         outcome=outcome,
         phase=_pick(doc, "phase", "triagePhase", "triage_phase", default="general"),
-        priority=int(_pick(doc, "priority", default=100)),
+        priority=priority,
         enabled=bool(_pick(doc, "enabled", default=True)),
         customer_id=_pick(doc, "customerId", "customer_id", default=None),
         processor_profile_id=_pick(doc, "processorProfileId", "processor_profile_id", default=None),
@@ -2948,33 +2996,101 @@ class OrderProcessorApi:
         return result
 
     def upsert_routing_rule(self, payload: dict[str, Any]) -> dict[str, Any]:
-        tenant_id = _pick(payload, "tenantId", "tenant_id", default="default")
-        customer_id = _pick(payload, "customerId", "customer_id", default=GLOBAL_CUSTOMER_ID)
+        tenant_id = str(_pick(payload, "tenantId", "tenant_id", default="default") or "default").strip() or "default"
+        customer_id = str(
+            _pick(payload, "customerId", "customer_id", default=GLOBAL_CUSTOMER_ID) or GLOBAL_CUSTOMER_ID
+        ).strip() or GLOBAL_CUSTOMER_ID
+        name = str(_pick(payload, "name", default="")).strip()
+        outcome = _routing_outcome_from_value(_pick(payload, "outcome", default=RoutingOutcome.NEEDS_HUMAN_REVIEW))
+        if outcome is None:
+            return {
+                "error": "invalidRoutingOutcome",
+                "message": "Routing action is not valid.",
+                "field": "outcome",
+                "allowedValues": [item.value for item in RoutingOutcome],
+            }
+        priority = _routing_priority_from_value(_pick(payload, "priority", default=100))
+        if priority is None:
+            return {
+                "error": "invalidRoutingPriority",
+                "message": "Priority must be a whole number greater than zero.",
+                "field": "priority",
+            }
+        subject_regex = _normalize_regex_list(_pick(payload, "subjectRegex", "subject_regex", default=[]))
+        body_regex = _normalize_regex_list(_pick(payload, "bodyRegex", "body_regex", default=[]))
+        known_webstore_patterns = _normalize_regex_list(
+            _pick(payload, "knownWebstorePatterns", "known_webstore_patterns", default=[])
+        )
+        prior_processed_subject_regex = _normalize_regex_list(
+            _pick(payload, "priorProcessedSubjectRegex", "prior_processed_subject_regex", default=[])
+        )
+        attachment_name_regex = _normalize_regex_list(
+            _pick(payload, "attachmentNameRegex", "attachment_name_regex", default=[])
+        )
+        regex_fields = {
+            "subjectRegex": subject_regex,
+            "bodyRegex": body_regex,
+            "knownWebstorePatterns": known_webstore_patterns,
+            "priorProcessedSubjectRegex": prior_processed_subject_regex,
+            "attachmentNameRegex": attachment_name_regex,
+        }
+        for field_name, patterns in regex_fields.items():
+            error = _regex_validation_error(field_name, patterns)
+            if error:
+                return error
+        customer_code_extraction = self._routing_customer_code_extraction_from_payload(payload)
+        extraction_regex = _normalize_regex_pattern(
+            _pick(
+                customer_code_extraction,
+                "regex",
+                "pattern",
+                "customerCodeRegex",
+                default="",
+            )
+        )
+        if extraction_regex:
+            customer_code_extraction["regex"] = extraction_regex
+            error = _regex_validation_error("customerCodeRegex", [extraction_regex])
+            if error:
+                return error
+        subject_update = self._routing_subject_update_from_payload(payload)
+        for field_name, subject_update_key in {
+            "processedSubjectDetectRegex": "detectRegex",
+            "processedSubjectCustomerCodeRegex": "customerCodeRegex",
+            "processedSubjectRouteRegex": "routeRegex",
+        }.items():
+            pattern = _normalize_regex_pattern(subject_update.get(subject_update_key))
+            if not pattern:
+                continue
+            subject_update[subject_update_key] = pattern
+            error = _regex_validation_error(field_name, [pattern])
+            if error:
+                return error
         rule_doc = {
-            "id": _pick(payload, "id", default=stable_id(tenant_id, customer_id, _pick(payload, "name", default="routing-rule"))),
+            "id": _pick(payload, "id", default=stable_id(tenant_id, customer_id, name or "routing-rule")),
             "tenantId": tenant_id,
             "customerId": customer_id,
-            "name": _pick(payload, "name", default=""),
-            "outcome": _pick(payload, "outcome", default=RoutingOutcome.NEEDS_HUMAN_REVIEW),
+            "name": name,
+            "outcome": outcome,
             "phase": _pick(payload, "phase", "triagePhase", "triage_phase", default="general"),
-            "priority": int(_pick(payload, "priority", default=100) or 100),
+            "priority": priority,
             "enabled": bool(_pick(payload, "enabled", default=True)),
             "processorProfileId": _pick(payload, "processorProfileId", "processor_profile_id", default=None),
             "mailboxAccountIds": list(_as_list(_pick(payload, "mailboxAccountIds", "mailbox_account_ids", default=[]))),
             "mailboxAddresses": list(_as_list(_pick(payload, "mailboxAddresses", "mailbox_addresses", default=[]))),
             "senderEquals": list(_as_list(_pick(payload, "senderEquals", "sender_equals", default=[]))),
             "senderDomains": list(_as_list(_pick(payload, "senderDomains", "sender_domains", default=[]))),
-            "subjectRegex": list(_as_list(_pick(payload, "subjectRegex", "subject_regex", default=[]))),
-            "bodyRegex": list(_as_list(_pick(payload, "bodyRegex", "body_regex", default=[]))),
-            "knownWebstorePatterns": list(_as_list(_pick(payload, "knownWebstorePatterns", "known_webstore_patterns", default=[]))),
-            "priorProcessedSubjectRegex": list(_as_list(_pick(payload, "priorProcessedSubjectRegex", "prior_processed_subject_regex", default=[]))),
+            "subjectRegex": subject_regex,
+            "bodyRegex": body_regex,
+            "knownWebstorePatterns": known_webstore_patterns,
+            "priorProcessedSubjectRegex": prior_processed_subject_regex,
             "attachmentExtensions": list(_as_list(_pick(payload, "attachmentExtensions", "attachment_extensions", default=[]))),
             "attachmentContentTypes": list(_as_list(_pick(payload, "attachmentContentTypes", "attachment_content_types", default=[]))),
-            "attachmentNameRegex": list(_as_list(_pick(payload, "attachmentNameRegex", "attachment_name_regex", default=[]))),
+            "attachmentNameRegex": attachment_name_regex,
             "requiredAttachment": bool(_pick(payload, "requiredAttachment", "required_attachment", default=False)),
             "tags": list(_as_list(_pick(payload, "tags", default=[]))),
-            "customerCodeExtraction": self._routing_customer_code_extraction_from_payload(payload),
-            "subjectUpdate": self._routing_subject_update_from_payload(payload),
+            "customerCodeExtraction": customer_code_extraction,
+            "subjectUpdate": subject_update,
             "emailActions": self._routing_email_actions_from_payload(payload),
         }
         rule = _routing_rule_from_doc(rule_doc)
@@ -2985,9 +3101,12 @@ class OrderProcessorApi:
     @staticmethod
     def _routing_customer_code_extraction_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         extraction = dict(_pick(payload, "customerCodeExtraction", "customer_code_extraction", default={}) or {})
+        for key in ("regex", "pattern", "customerCodeRegex"):
+            if extraction.get(key):
+                extraction[key] = _normalize_regex_pattern(extraction[key])
         regex = _pick(payload, "customerCodeRegex", "customer_code_regex", default=None)
         if regex:
-            extraction.setdefault("regex", regex)
+            extraction.setdefault("regex", _normalize_regex_pattern(regex))
             extraction.setdefault("source", _pick(payload, "customerCodeSource", "customer_code_source", default="combined"))
             extraction.setdefault("group", _pick(payload, "customerCodeGroup", "customer_code_group", default="customerCode"))
             extraction.setdefault("required", bool(_pick(payload, "customerCodeRequired", "customer_code_required", default=True)))
@@ -3001,13 +3120,13 @@ class OrderProcessorApi:
             subject_update.setdefault("template", template)
         detect_regex = _pick(payload, "processedSubjectDetectRegex", "processed_subject_detect_regex", default=None)
         if detect_regex:
-            subject_update.setdefault("detectRegex", detect_regex)
+            subject_update.setdefault("detectRegex", _normalize_regex_pattern(detect_regex))
         customer_code_regex = _pick(payload, "processedSubjectCustomerCodeRegex", "processed_subject_customer_code_regex", default=None)
         if customer_code_regex:
-            subject_update.setdefault("customerCodeRegex", customer_code_regex)
+            subject_update.setdefault("customerCodeRegex", _normalize_regex_pattern(customer_code_regex))
         route_regex = _pick(payload, "processedSubjectRouteRegex", "processed_subject_route_regex", default=None)
         if route_regex:
-            subject_update.setdefault("routeRegex", route_regex)
+            subject_update.setdefault("routeRegex", _normalize_regex_pattern(route_regex))
         return subject_update
 
     @staticmethod

@@ -676,6 +676,52 @@ class ConsoleBackendTests(unittest.TestCase):
         self.assertEqual(stored["subjectUpdate"]["template"], "Cust: {customerCode} - {originalSubject}")
         self.assertEqual(stored["emailActions"]["moves"]["nonOrder"]["field"], "csrFolder")
 
+    def test_console_upsert_routing_rule_normalizes_js_named_regex_groups(self) -> None:
+        api, repo, _ = self._api()
+        admin_headers = {"x-ms-client-principal": _easy_auth_header("connect@focuseautomate.com")}
+
+        result = api.console_upsert_routing_rule(
+            {
+                "tenantId": "altitude",
+                "headers": admin_headers,
+                "id": "webstore-orders",
+                "customerId": "_global",
+                "name": "Webstore orders",
+                "phase": "webstoreOrder",
+                "outcome": "knownCustomerNonOrder",
+                "subjectRegex": [r"Purchase\s+Receipt"],
+                "customerCodeSource": "subject",
+                "customerCodeRegex": r"Order\s*#\s*(?<customerCode>\d+)",
+                "priorProcessedSubjectRegex": [r"Cust:\s*(?<customerCode>\d+)"],
+            }
+        )
+
+        self.assertNotIn("error", result)
+        stored = repo.get("routingRules", "webstore-orders")
+        self.assertEqual(stored["customerCodeExtraction"]["regex"], r"Order\s*#\s*(?P<customerCode>\d+)")
+        self.assertEqual(stored["priorProcessedSubjectRegex"], [r"Cust:\s*(?P<customerCode>\d+)"])
+
+    def test_console_upsert_routing_rule_returns_validation_error_for_bad_regex(self) -> None:
+        api, repo, _ = self._api()
+        admin_headers = {"x-ms-client-principal": _easy_auth_header("connect@focuseautomate.com")}
+
+        result = api.console_upsert_routing_rule(
+            {
+                "tenantId": "altitude",
+                "headers": admin_headers,
+                "id": "bad-webstore-orders",
+                "customerId": "_global",
+                "name": "Bad webstore orders",
+                "phase": "webstoreOrder",
+                "outcome": "knownCustomerNonOrder",
+                "subjectRegex": ["["],
+            }
+        )
+
+        self.assertEqual(result["error"], "invalidRegex")
+        self.assertEqual(result["field"], "subjectRegex")
+        self.assertIsNone(repo.get("routingRules", "bad-webstore-orders"))
+
     def test_console_upserts_profiles_and_downloads_output_artifact_content(self) -> None:
         api, _, _ = self._api()
         api.upsert_customer_config(

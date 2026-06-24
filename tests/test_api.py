@@ -222,7 +222,7 @@ class ApiTests(unittest.TestCase):
                 "senderEquals": ["orders@webstore.example"],
                 "knownWebstorePatterns": ["webstore order"],
                 "customerCodeSource": "bodyText",
-                "customerCodeRegex": r"Customer\s*Code:\s*(?P<customerCode>\d+)",
+                "customerCodeRegex": r"Customer\s*Code:\s*(?<customerCode>\d+)",
                 "subjectTemplate": "Cust: {customerCode} Rte: {routeNumber} - {originalSubject}",
                 "categoryCsrField": "csrFolder",
                 "categoryTemplates": ["CSR: {csrName}", "Status: {status}"],
