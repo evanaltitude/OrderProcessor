@@ -111,6 +111,7 @@ from .storage import InMemoryRepository, repository_from_environment
 
 BOOTSTRAP_CONSOLE_ADMIN_EMAIL = "connect@focuseautomate.com"
 SYSTEM_TENANT_ID = "__system__"
+PROCESSING_CATEGORY = "Processing"
 
 
 def _pick(payload: dict[str, Any], *names: str, default: Any = None) -> Any:
@@ -1614,7 +1615,12 @@ class OrderProcessorApi:
         folder_name = str(_pick(move_plan, "folderName", "folder_name", "folder", default="")).strip()
         if move_plan and _bool_flag(_pick(move_plan, "enabled", default=False), default=False) and folder_name:
             try:
-                destination_id = self._graph_mail_folder_id(access_token, mailbox_address, folder_name)
+                destination_id = self._graph_mail_folder_id(
+                    access_token,
+                    mailbox_address,
+                    folder_name,
+                    create_missing=True,
+                )
                 if destination_id:
                     move_response = graph_post(access_token, f"{message_url}/move", {"destinationId": destination_id})
                     result["applied"].append(
@@ -1686,14 +1692,39 @@ class OrderProcessorApi:
             result.append(category)
         return result
 
-    def _graph_mail_folder_id(self, access_token: str, mailbox_address: str, folder_path: str) -> str:
+    def _graph_mail_folder_id(
+        self,
+        access_token: str,
+        mailbox_address: str,
+        folder_path: str,
+        *,
+        create_missing: bool = False,
+    ) -> str:
         parts = [part.strip() for part in re.split(r"[\\/]+", folder_path or "") if part.strip()]
         if not parts:
             return ""
+        if len(parts) == 1:
+            root_match = self._graph_mail_folder_id_from_parent(
+                access_token,
+                mailbox_address,
+                "",
+                parts,
+                create_missing=create_missing,
+            )
+            if root_match:
+                return root_match
+            return self._graph_mail_folder_id_from_parent(access_token, mailbox_address, "inbox", parts)
+
         inbox_match = self._graph_mail_folder_id_from_parent(access_token, mailbox_address, "inbox", parts)
         if inbox_match:
             return inbox_match
-        return self._graph_mail_folder_id_from_parent(access_token, mailbox_address, "", parts)
+        return self._graph_mail_folder_id_from_parent(
+            access_token,
+            mailbox_address,
+            "",
+            parts,
+            create_missing=create_missing,
+        )
 
     def _graph_mail_folder_id_from_parent(
         self,
@@ -1701,13 +1732,17 @@ class OrderProcessorApi:
         mailbox_address: str,
         parent_id: str,
         parts: list[str],
+        *,
+        create_missing: bool = False,
     ) -> str:
         current_parent = parent_id
         current_id = ""
         for part in parts:
             current_id = self._graph_child_mail_folder_id(access_token, mailbox_address, current_parent, part)
             if not current_id:
-                return ""
+                if not create_missing:
+                    return ""
+                current_id = self._graph_create_child_mail_folder(access_token, mailbox_address, current_parent, part)
             current_parent = current_id
         return current_id
 
@@ -1739,6 +1774,58 @@ class OrderProcessorApi:
                 return str(_pick(item, "id", default=""))
         return ""
 
+    def _graph_create_child_mail_folder(
+        self,
+        access_token: str,
+        mailbox_address: str,
+        parent_id: str,
+        display_name: str,
+    ) -> str:
+        encoded_mailbox = parse.quote(mailbox_address, safe="")
+        payload = {"displayName": display_name}
+        if parent_id:
+            encoded_parent = parent_id if parent_id.lower() == "inbox" else parse.quote(parent_id, safe="")
+            url = f"https://graph.microsoft.com/v1.0/users/{encoded_mailbox}/mailFolders/{encoded_parent}/childFolders"
+        else:
+            url = f"https://graph.microsoft.com/v1.0/users/{encoded_mailbox}/mailFolders"
+        response = graph_post(access_token, url, payload)
+        return str(_pick(response, "id", default=""))
+
+    def _mark_graph_message_processing(
+        self,
+        access_token: str,
+        mailbox_address: str,
+        graph_message_id: str,
+        existing_categories: list[Any],
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = {"status": "skipped", "category": PROCESSING_CATEGORY}
+        if not access_token or not mailbox_address or not graph_message_id:
+            result["reason"] = "missing Microsoft Graph message context"
+            return result
+
+        normalized_existing = [str(value or "").strip() for value in existing_categories if str(value or "").strip()]
+        categories = self._merged_graph_categories(existing_categories, [PROCESSING_CATEGORY])
+        if categories == normalized_existing:
+            result["reason"] = "processing category already present"
+            return result
+
+        encoded_mailbox = parse.quote(mailbox_address, safe="")
+        encoded_message = parse.quote(graph_message_id, safe="")
+        message_url = f"https://graph.microsoft.com/v1.0/users/{encoded_mailbox}/messages/{encoded_message}"
+        try:
+            graph_patch(access_token, message_url, {"categories": categories})
+            result.update({"status": "applied", "categories": categories})
+        except MicrosoftGraphError as exc:
+            result.update(
+                {
+                    "status": "failed",
+                    "reason": str(exc),
+                    "statusCode": exc.status_code,
+                    "details": exc.details,
+                }
+            )
+        return result
+
     def _ingest_graph_message(
         self,
         access_token: str,
@@ -1752,6 +1839,15 @@ class OrderProcessorApi:
         email_id = stable_id(tenant_id, mailbox_id, graph_message_id)
         if self.repository.get("emailMessages", email_id):
             return {"status": "skipped", "reason": "already ingested", "emailMessageId": email_id}
+
+        original_categories = list(_as_list(_pick(message, "categories", default=[])))
+        processing_category_result = self._mark_graph_message_processing(
+            access_token,
+            mailbox_address,
+            graph_message_id,
+            original_categories,
+        )
+        current_categories = self._merged_graph_categories(original_categories, [PROCESSING_CATEGORY])
 
         attachments, source_payload = self._graph_message_attachments(
             access_token,
@@ -1778,7 +1874,7 @@ class OrderProcessorApi:
             "receivedAt": str(_pick(message, "receivedDateTime", default=utc_now())),
             "bodyText": body_text,
             "bodyHtml": body_html,
-            "categories": list(_as_list(_pick(message, "categories", default=[]))),
+            "categories": current_categories,
             "attachments": attachments,
             "source": {
                 "provider": "microsoftGraph",
@@ -1815,7 +1911,7 @@ class OrderProcessorApi:
             mailbox_address,
             graph_message_id,
             ingest_result,
-            list(_as_list(_pick(message, "categories", default=[]))),
+            current_categories,
         )
         return {
             "status": "ingested",
@@ -1823,6 +1919,7 @@ class OrderProcessorApi:
             "graphMessageId": graph_message_id,
             "orderRunId": order_run.get("id") if order_run else "",
             "processed": processed,
+            "processingCategoryResult": processing_category_result,
             "emailActionResult": email_action_result,
         }
 

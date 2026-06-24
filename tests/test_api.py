@@ -481,12 +481,14 @@ class ApiTests(unittest.TestCase):
             )
 
         self.assertEqual(result["status"], "ingested")
+        self.assertEqual(result["processingCategoryResult"]["status"], "applied")
         self.assertEqual(result["emailActionResult"]["status"], "applied")
-        self.assertEqual(len(patch_calls), 1)
+        self.assertEqual(len(patch_calls), 2)
+        self.assertEqual(patch_calls[0][1], {"categories": ["Existing", "Processing"]})
         self.assertEqual(
-            patch_calls[0][1],
+            patch_calls[1][1],
             {
-                "categories": ["Existing", "CSR: Jane", "Process"],
+                "categories": ["Existing", "Processing", "CSR: Jane", "Process"],
                 "subject": "Cust: 100029 Rte: R12 - New webstore order",
             },
         )
@@ -518,6 +520,92 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "skipped")
         self.assertEqual(result["reason"], "production email actions disabled")
+
+    def test_graph_email_actions_move_to_existing_root_csr_folder(self) -> None:
+        repo = InMemoryRepository()
+        api = OrderProcessorApi(repo)
+        get_calls: list[str] = []
+        post_calls: list[tuple[str, dict[str, object]]] = []
+
+        def graph_get_response(_token: str, url: str) -> dict[str, object]:
+            get_calls.append(url)
+            if "/mailFolders?" in url:
+                return {"value": [{"id": "folder-jane", "displayName": "Jane"}]}
+            return {"value": []}
+
+        def graph_post_response(_token: str, url: str, payload: dict[str, object]) -> dict[str, object]:
+            post_calls.append((url, payload))
+            return {"id": "moved-message-1"}
+
+        with patch("order_processor.api.graph_get", side_effect=graph_get_response), patch(
+            "order_processor.api.graph_post",
+            side_effect=graph_post_response,
+        ):
+            result = api._apply_graph_email_actions(
+                "access-token",
+                "orders@example.com",
+                "graph-message-1",
+                {
+                    "emailMessage": {"id": "email-1", "tenantId": "altitude"},
+                    "routingDecision": {
+                        "matchedSignals": {
+                            "emailActions": {
+                                "move": {"enabled": True, "folderName": "Jane"},
+                            }
+                        }
+                    },
+                },
+                [],
+            )
+
+        self.assertEqual(result["status"], "applied")
+        self.assertEqual(len(post_calls), 1)
+        self.assertTrue(post_calls[0][0].endswith("/messages/graph-message-1/move"))
+        self.assertEqual(post_calls[0][1], {"destinationId": "folder-jane"})
+        self.assertTrue(any("/mailFolders?" in url for url in get_calls))
+        self.assertFalse(any("/mailFolders/inbox/childFolders" in url for url in get_calls))
+
+    def test_graph_email_actions_create_missing_root_csr_folder_before_move(self) -> None:
+        repo = InMemoryRepository()
+        api = OrderProcessorApi(repo)
+        create_calls: list[tuple[str, dict[str, object]]] = []
+        move_calls: list[tuple[str, dict[str, object]]] = []
+
+        def graph_post_response(_token: str, url: str, payload: dict[str, object]) -> dict[str, object]:
+            if url.endswith("/mailFolders"):
+                create_calls.append((url, payload))
+                return {"id": "folder-jane", "displayName": payload.get("displayName", "")}
+            move_calls.append((url, payload))
+            return {"id": "moved-message-1"}
+
+        with patch("order_processor.api.graph_get", return_value={"value": []}), patch(
+            "order_processor.api.graph_post",
+            side_effect=graph_post_response,
+        ):
+            result = api._apply_graph_email_actions(
+                "access-token",
+                "orders@example.com",
+                "graph-message-1",
+                {
+                    "emailMessage": {"id": "email-1", "tenantId": "altitude"},
+                    "routingDecision": {
+                        "matchedSignals": {
+                            "emailActions": {
+                                "move": {"enabled": True, "folderName": "Jane"},
+                            }
+                        }
+                    },
+                },
+                [],
+            )
+
+        self.assertEqual(result["status"], "applied")
+        self.assertEqual(len(create_calls), 1)
+        self.assertTrue(create_calls[0][0].endswith("/mailFolders"))
+        self.assertEqual(create_calls[0][1], {"displayName": "Jane"})
+        self.assertEqual(len(move_calls), 1)
+        self.assertTrue(move_calls[0][0].endswith("/messages/graph-message-1/move"))
+        self.assertEqual(move_calls[0][1], {"destinationId": "folder-jane"})
 
     def test_unknown_mailbox_account_id_creates_human_review_exception(self) -> None:
         repo = InMemoryRepository()
