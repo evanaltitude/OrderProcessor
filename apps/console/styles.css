@@ -585,6 +585,25 @@ th {
   gap: 12px;
 }
 
+.exception-resolution-form {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.exception-resolution-form.compact {
+  display: flex;
+}
+
+.exception-resolution-form label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .pill {
   display: inline-flex;
   align-items: center;
@@ -731,6 +750,7 @@ pre {
   .list-controls,
   .form-grid.two,
   .form-grid.three,
+  .exception-resolution-form,
   .checkbox-grid {
     display: grid;
     grid-template-columns: 1fr;

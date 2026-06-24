@@ -820,6 +820,7 @@ class ConsoleBackendTests(unittest.TestCase):
                 )
             ),
         )
+        repo.upsert("customers", {"tenantId": "altitude", "id": "pilot-customer", "customerCode": "PILOT", "name": "Pilot"})
         customer_task = api._create_exception(
             tenant_id="altitude",
             task_type="customerIdentification",
@@ -842,7 +843,7 @@ class ConsoleBackendTests(unittest.TestCase):
         )
 
         customer_resolution = api.resolve_exception(
-            customer_task["id"], {"resolution": {"selectedCustomerId": "pilot-customer"}}
+            customer_task["id"], {"resolution": {"customerCode": "PILOT"}}
         )
         item_resolution = api.resolve_exception(
             item_task["id"], {"resolution": {"matchedInternalItemNumber": "10001", "lineNumber": 1}}
@@ -854,6 +855,20 @@ class ConsoleBackendTests(unittest.TestCase):
         self.assertEqual(repo.get("orderRuns", "order-run-1")["lines"][0]["matchedInternalItemNumber"], "10001")
         self.assertEqual(item_resolution["resolutionResult"]["matchedInternalItemNumber"], "10001")
         self.assertEqual(parser_resolution["resolutionResult"]["reprocess"]["orderRun"]["status"], "received")
+
+    def test_customer_exception_bad_customer_code_stays_open(self) -> None:
+        api, _, _ = self._api()
+        task = api._create_exception(
+            tenant_id="altitude",
+            task_type="customerIdentification",
+            prompt="Resolve customer",
+            email_message_id="email-1",
+        )
+
+        result = api.resolve_exception(task["id"], {"resolution": {"customerCode": "MISSING"}})
+
+        self.assertEqual(result["exceptionTask"]["status"], "open")
+        self.assertEqual(result["resolutionResult"]["status"], "notFound")
 
     def test_console_customer_user_can_resolve_and_reprocess_assigned_customer_only(self) -> None:
         api, repo, _ = self._api()

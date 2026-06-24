@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -305,6 +306,119 @@ class ApiTests(unittest.TestCase):
         self.assertIsNone(result["orderRun"])
         self.assertEqual(actions["actionKey"], "nonOrder")
         self.assertEqual(actions["move"]["folderName"], "CSR/Jane")
+
+    def test_graph_ingest_applies_routing_email_actions(self) -> None:
+        repo = InMemoryRepository()
+        api = OrderProcessorApi(repo)
+        mailbox = api.upsert_mailbox(
+            {
+                "tenantId": "altitude",
+                "mailboxAddress": "orders@example.com",
+            }
+        )["mailboxAccount"]
+        api.upsert_customer_config(
+            {
+                "tenantId": "altitude",
+                "id": "chow-hound-4",
+                "customerCode": "100029",
+                "name": "CHOW HOUND #4",
+                "routeNumber": "R12",
+                "csrFolder": "Jane",
+            }
+        )
+        api.upsert_routing_rule(
+            {
+                "tenantId": "altitude",
+                "customerId": "chow-hound-4",
+                "id": "non-order-actions",
+                "name": "Non-order actions",
+                "phase": "nonOrder",
+                "outcome": "knownCustomerNonOrder",
+                "priority": 1,
+                "mailboxAccountIds": [mailbox["id"]],
+                "senderEquals": ["orders@webstore.example"],
+                "subjectTemplate": "Cust: {customerCode} Rte: {routeNumber} - {originalSubject}",
+                "categoryTemplates": ["CSR: {csrName}", "Process"],
+                "nonOrderMoveMode": "staticFolder",
+                "nonOrderMoveFolder": "CSR/Jane",
+            }
+        )
+        patch_calls: list[tuple[str, dict[str, object]]] = []
+        move_calls: list[tuple[str, dict[str, object]]] = []
+
+        def graph_get_response(_token: str, url: str) -> dict[str, object]:
+            if "/mailFolders/inbox/childFolders" in url:
+                return {"value": [{"id": "folder-csr", "displayName": "CSR"}]}
+            if "/mailFolders/folder-csr/childFolders" in url:
+                return {"value": [{"id": "folder-jane", "displayName": "Jane"}]}
+            return {"value": []}
+
+        def graph_patch_response(_token: str, url: str, payload: dict[str, object]) -> dict[str, object]:
+            patch_calls.append((url, payload))
+            return {}
+
+        def graph_post_response(_token: str, url: str, payload: dict[str, object]) -> dict[str, object]:
+            move_calls.append((url, payload))
+            return {"id": "moved-message-1"}
+
+        with patch("order_processor.api.graph_get", side_effect=graph_get_response), patch(
+            "order_processor.api.graph_patch",
+            side_effect=graph_patch_response,
+        ), patch("order_processor.api.graph_post", side_effect=graph_post_response):
+            result = api._ingest_graph_message(
+                "access-token",
+                mailbox,
+                {
+                    "id": "graph-message-1",
+                    "internetMessageId": "<graph-message-1@example.com>",
+                    "subject": "New webstore order",
+                    "from": {"emailAddress": {"address": "orders@webstore.example"}},
+                    "receivedDateTime": "2026-06-24T12:00:00Z",
+                    "body": {"contentType": "text", "content": "Not an attachment order."},
+                    "categories": ["Existing"],
+                    "hasAttachments": False,
+                    "isRead": False,
+                },
+            )
+
+        self.assertEqual(result["status"], "ingested")
+        self.assertEqual(result["emailActionResult"]["status"], "applied")
+        self.assertEqual(len(patch_calls), 1)
+        self.assertEqual(
+            patch_calls[0][1],
+            {
+                "categories": ["Existing", "CSR: Jane", "Process"],
+                "subject": "Cust: 100029 Rte: R12 - New webstore order",
+            },
+        )
+        self.assertEqual(len(move_calls), 1)
+        self.assertTrue(move_calls[0][0].endswith("/messages/graph-message-1/move"))
+        self.assertEqual(move_calls[0][1], {"destinationId": "folder-jane"})
+
+    def test_graph_email_actions_can_be_explicitly_disabled(self) -> None:
+        repo = InMemoryRepository()
+        api = OrderProcessorApi(repo)
+        result = api._apply_graph_email_actions(
+            "access-token",
+            "orders@example.com",
+            "graph-message-1",
+            {
+                "emailMessage": {"id": "email-1", "tenantId": "altitude"},
+                "routingDecision": {
+                    "matchedSignals": {
+                        "emailActions": {
+                            "productionActionsEnabled": False,
+                            "subject": {"value": "Updated"},
+                            "categories": ["Process"],
+                        }
+                    }
+                },
+            },
+            [],
+        )
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["reason"], "production email actions disabled")
 
     def test_unknown_mailbox_account_id_creates_human_review_exception(self) -> None:
         repo = InMemoryRepository()

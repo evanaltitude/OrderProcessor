@@ -90,7 +90,7 @@ def build_email_action_plan(
 
     return {
         "actionKey": action_key,
-        "productionActionsEnabled": bool(policy.get("productionActionsEnabled", False)),
+        "productionActionsEnabled": _bool_policy(policy.get("productionActionsEnabled"), default=True),
         "subject": subject,
         "move": _resolve_move(policy, action_key, customer),
         "categories": categories,
@@ -425,6 +425,16 @@ def _as_list(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(item) for item in value if str(item).strip()]
     return [str(value)] if str(value).strip() else []
+
+
+def _bool_policy(value: Any, *, default: bool = False) -> bool:
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off", "disabled"}
+    return bool(value)
 
 
 def _unique(values: list[str]) -> list[str]:

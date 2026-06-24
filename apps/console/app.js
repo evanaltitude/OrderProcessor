@@ -702,13 +702,61 @@ function renderExceptions() {
         ${statusPill(task.status)}
       </header>
       <div>${escapeHtml(task.prompt || task.id)}</div>
-      <div class="pill">Run ${escapeHtml(task.orderRunId || "")}</div>
+      <div class="pill">${escapeHtml(task.orderRunId ? `Run ${task.orderRunId}` : `Email ${task.emailMessageId || ""}`)}</div>
+      ${exceptionResolutionControls(task)}
       <div class="header-actions">
-        <button data-action="resolve" data-id="${escapeHtml(task.id)}" data-type="${escapeHtml(task.type)}" type="button">Resolve</button>
         <button class="secondary" data-action="inspect" data-payload="${escapeHtml(JSON.stringify(task))}" type="button">Inspect</button>
       </div>
     </article>
   `).join("");
+}
+
+function exceptionResolutionControls(task) {
+  const id = escapeHtml(task.id || "");
+  const type = escapeHtml(task.type || "");
+  if (task.type === "customerIdentification" || task.type === "routing") {
+    return `
+      <form class="exception-resolution-form" data-exception-id="${id}" data-exception-type="${type}">
+        <label>Customer code
+          <input name="customerCode" value="${escapeHtml(exceptionCustomerReference(task))}" placeholder="102598" required>
+        </label>
+        <button type="submit">Resolve</button>
+      </form>
+    `;
+  }
+  if (task.type === "itemValidation") {
+    return `
+      <form class="exception-resolution-form" data-exception-id="${id}" data-exception-type="${type}">
+        <label>ERP item
+          <input name="matchedInternalItemNumber" value="${escapeHtml(task.context?.line?.matchedInternalItemNumber || "")}" placeholder="10001" required>
+        </label>
+        <button type="submit">Resolve</button>
+      </form>
+    `;
+  }
+  if (task.type === "parserFailure" || task.type === "outputGeneration") {
+    return `
+      <form class="exception-resolution-form compact" data-exception-id="${id}" data-exception-type="${type}">
+        <input name="reprocess" type="hidden" value="true">
+        <button type="submit">Reprocess</button>
+      </form>
+    `;
+  }
+  return `
+    <form class="exception-resolution-form" data-exception-id="${id}" data-exception-type="${type}">
+      <label>Notes
+        <input name="notes" placeholder="Resolved">
+      </label>
+      <button type="submit">Resolve</button>
+    </form>
+  `;
+}
+
+function exceptionCustomerReference(task) {
+  const signals = task.context?.routingDecision?.matchedSignals || {};
+  const extracted = signals.extractedCustomerCode || signals.customerCodeExtraction?.value || "";
+  const identification = task.context?.result?.extractedSignals || {};
+  return extracted || identification.customerCode || identification.accountNumber || "";
 }
 
 function renderArtifacts() {
@@ -1105,9 +1153,25 @@ async function resolveTask(id, type) {
   if (type === "itemValidation") {
     resolution.matchedInternalItemNumber = window.prompt("Internal item number") || "";
   } else if (type === "customerIdentification" || type === "routing") {
-    resolution.selectedCustomerId = window.prompt("Downstream customer id") || "";
+    resolution.customerCode = window.prompt("Customer code or record id") || "";
   } else {
     resolution.reprocess = window.confirm("Request reprocess?");
+  }
+  const result = await post(`/console/exceptions/${id}/resolve`, { resolution });
+  showDetails(result);
+  await refresh();
+}
+
+async function resolveExceptionForm(form) {
+  const id = form.dataset.exceptionId;
+  const type = form.dataset.exceptionType;
+  const resolution = { notes: value(form, "notes") || "Resolved from console" };
+  if (type === "itemValidation") {
+    resolution.matchedInternalItemNumber = value(form, "matchedInternalItemNumber");
+  } else if (type === "customerIdentification" || type === "routing") {
+    resolution.customerCode = value(form, "customerCode");
+  } else {
+    resolution.reprocess = value(form, "reprocess") === "true";
   }
   const result = await post(`/console/exceptions/${id}/resolve`, { resolution });
   showDetails(result);
@@ -1394,6 +1458,17 @@ async function testMailbox() {
   showDetails(await post(`/console/mailboxes/${mailbox.id}/test-connection`, {}));
   await refresh();
 }
+
+document.addEventListener("submit", async (event) => {
+  const form = event.target.closest(".exception-resolution-form");
+  if (!form) return;
+  event.preventDefault();
+  try {
+    await resolveExceptionForm(form);
+  } catch (error) {
+    showDetails(payloadForError(error));
+  }
+});
 
 document.addEventListener("click", async (event) => {
   try {

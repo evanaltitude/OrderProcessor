@@ -17,7 +17,7 @@ from .customer_identification import (
     normalize_identifier,
 )
 from .data_model import GLOBAL_CUSTOMER_ID, keys_to_camel
-from .email_triage import evaluate_email_triage
+from .email_triage import evaluate_email_triage, find_customer_by_code
 from .imports import normalize_customer_row, normalize_item_row, stable_id
 from .imports import (
     CUSTOMER_IMPORT_TYPE,
@@ -123,6 +123,20 @@ def _as_list(value: Any) -> list[Any]:
     if isinstance(value, list):
         return value
     return [value]
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _bool_flag(value: Any, *, default: bool = False) -> bool:
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off", "disabled"}
+    return bool(value)
 
 
 def _as_float(value: Any) -> float | None:
@@ -1452,6 +1466,193 @@ class OrderProcessorApi:
         response = graph_get(access_token, url)
         return [message for message in response.get("value", []) if isinstance(message, dict)]
 
+    def _apply_graph_email_actions(
+        self,
+        access_token: str,
+        mailbox_address: str,
+        graph_message_id: str,
+        ingest_result: dict[str, Any],
+        existing_categories: list[Any],
+    ) -> dict[str, Any]:
+        action_plan = self._email_action_plan_from_ingest_result(ingest_result)
+        email_message = _as_dict(_pick(ingest_result, "emailMessage", "email_message", default={}))
+        tenant_id = str(_pick(email_message, "tenantId", "tenant_id", default=""))
+        email_message_id = str(_pick(email_message, "id", default=""))
+        correlation_id = str(_pick(email_message, "correlationId", "correlation_id", default=email_message_id))
+        result: dict[str, Any] = {
+            "status": "skipped",
+            "emailMessageId": email_message_id,
+            "graphMessageId": graph_message_id,
+            "applied": [],
+            "skipped": [],
+            "errors": [],
+        }
+        if not action_plan:
+            result["reason"] = "no email actions"
+            return result
+        if not _bool_flag(_pick(action_plan, "productionActionsEnabled", "production_actions_enabled", default=True), default=True):
+            result["reason"] = "production email actions disabled"
+            return result
+        if not access_token or not mailbox_address or not graph_message_id:
+            result["reason"] = "missing Microsoft Graph message context"
+            return result
+
+        encoded_mailbox = parse.quote(mailbox_address, safe="")
+        encoded_message = parse.quote(graph_message_id, safe="")
+        message_url = f"https://graph.microsoft.com/v1.0/users/{encoded_mailbox}/messages/{encoded_message}"
+        patch_payload: dict[str, Any] = {}
+        subject_plan = _as_dict(_pick(action_plan, "subject", default={}))
+        subject_value = str(_pick(subject_plan, "value", default="")).strip()
+        if subject_value:
+            patch_payload["subject"] = subject_value
+
+        categories = self._merged_graph_categories(existing_categories, _as_list(_pick(action_plan, "categories", default=[])))
+        if categories:
+            patch_payload["categories"] = categories
+
+        if patch_payload:
+            try:
+                graph_patch(access_token, message_url, patch_payload)
+                result["applied"].append({"action": "patch", "fields": sorted(patch_payload)})
+            except MicrosoftGraphError as exc:
+                result["errors"].append(
+                    {
+                        "action": "patch",
+                        "reason": str(exc),
+                        "statusCode": exc.status_code,
+                        "details": exc.details,
+                    }
+                )
+
+        move_plan = _as_dict(_pick(action_plan, "move", default={}))
+        folder_name = str(_pick(move_plan, "folderName", "folder_name", "folder", default="")).strip()
+        if move_plan and _bool_flag(_pick(move_plan, "enabled", default=False), default=False) and folder_name:
+            try:
+                destination_id = self._graph_mail_folder_id(access_token, mailbox_address, folder_name)
+                if destination_id:
+                    move_response = graph_post(access_token, f"{message_url}/move", {"destinationId": destination_id})
+                    result["applied"].append(
+                        {
+                            "action": "move",
+                            "folderName": folder_name,
+                            "destinationId": destination_id,
+                            "movedGraphMessageId": str(_pick(move_response, "id", default="")),
+                        }
+                    )
+                else:
+                    result["skipped"].append(
+                        {"action": "move", "reason": "destination folder not found", "folderName": folder_name}
+                    )
+            except MicrosoftGraphError as exc:
+                result["errors"].append(
+                    {
+                        "action": "move",
+                        "folderName": folder_name,
+                        "reason": str(exc),
+                        "statusCode": exc.status_code,
+                        "details": exc.details,
+                    }
+                )
+        elif move_plan:
+            result["skipped"].append(
+                {
+                    "action": "move",
+                    "reason": "move disabled or destination folder was blank",
+                    "mode": str(_pick(move_plan, "mode", default="")),
+                    "customerField": str(_pick(move_plan, "customerField", "customer_field", default="")),
+                }
+            )
+
+        if result["errors"]:
+            result["status"] = "failed" if not result["applied"] else "partial"
+        elif result["applied"]:
+            result["status"] = "applied"
+        else:
+            result["reason"] = result.get("reason") or "no applicable email actions"
+
+        if tenant_id and email_message_id:
+            self._audit(
+                tenant_id,
+                "email.graphActions.applied" if result["status"] == "applied" else "email.graphActions.skipped",
+                correlation_id or email_message_id,
+                email_message_id,
+                result,
+                customer_id=_pick(email_message, "customerId", "customer_id", default=None),
+                email_message_id=email_message_id,
+            )
+        return result
+
+    @staticmethod
+    def _email_action_plan_from_ingest_result(ingest_result: dict[str, Any]) -> dict[str, Any]:
+        decision = _as_dict(_pick(ingest_result, "routingDecision", "routing_decision", default={}))
+        matched_signals = _as_dict(_pick(decision, "matchedSignals", "matched_signals", default={}))
+        return _as_dict(_pick(matched_signals, "emailActions", "email_actions", default={}))
+
+    @staticmethod
+    def _merged_graph_categories(existing_categories: list[Any], configured_categories: list[Any]) -> list[str]:
+        seen: set[str] = set()
+        result: list[str] = []
+        for value in [*existing_categories, *configured_categories]:
+            category = str(value or "").strip()
+            if not category or category in seen:
+                continue
+            seen.add(category)
+            result.append(category)
+        return result
+
+    def _graph_mail_folder_id(self, access_token: str, mailbox_address: str, folder_path: str) -> str:
+        parts = [part.strip() for part in re.split(r"[\\/]+", folder_path or "") if part.strip()]
+        if not parts:
+            return ""
+        inbox_match = self._graph_mail_folder_id_from_parent(access_token, mailbox_address, "inbox", parts)
+        if inbox_match:
+            return inbox_match
+        return self._graph_mail_folder_id_from_parent(access_token, mailbox_address, "", parts)
+
+    def _graph_mail_folder_id_from_parent(
+        self,
+        access_token: str,
+        mailbox_address: str,
+        parent_id: str,
+        parts: list[str],
+    ) -> str:
+        current_parent = parent_id
+        current_id = ""
+        for part in parts:
+            current_id = self._graph_child_mail_folder_id(access_token, mailbox_address, current_parent, part)
+            if not current_id:
+                return ""
+            current_parent = current_id
+        return current_id
+
+    def _graph_child_mail_folder_id(
+        self,
+        access_token: str,
+        mailbox_address: str,
+        parent_id: str,
+        display_name: str,
+    ) -> str:
+        encoded_mailbox = parse.quote(mailbox_address, safe="")
+        escaped_name = display_name.replace("'", "''")
+        query = parse.urlencode(
+            {
+                "$top": "10",
+                "$select": "id,displayName",
+                "$filter": f"displayName eq '{escaped_name}'",
+            },
+            safe="(),'",
+        )
+        if parent_id:
+            encoded_parent = parent_id if parent_id.lower() == "inbox" else parse.quote(parent_id, safe="")
+            url = f"https://graph.microsoft.com/v1.0/users/{encoded_mailbox}/mailFolders/{encoded_parent}/childFolders?{query}"
+        else:
+            url = f"https://graph.microsoft.com/v1.0/users/{encoded_mailbox}/mailFolders?{query}"
+        response = graph_get(access_token, url)
+        for item in _as_list(response.get("value")):
+            if isinstance(item, dict) and str(_pick(item, "displayName", "display_name", default="")) == display_name:
+                return str(_pick(item, "id", default=""))
+        return ""
+
     def _ingest_graph_message(
         self,
         access_token: str,
@@ -1523,12 +1724,20 @@ class OrderProcessorApi:
             }
             self.process_order(order_run["id"], process_payload)
             processed = True
+        email_action_result = self._apply_graph_email_actions(
+            access_token,
+            mailbox_address,
+            graph_message_id,
+            ingest_result,
+            list(_as_list(_pick(message, "categories", default=[]))),
+        )
         return {
             "status": "ingested",
             "emailMessageId": email_id,
             "graphMessageId": graph_message_id,
             "orderRunId": order_run.get("id") if order_run else "",
             "processed": processed,
+            "emailActionResult": email_action_result,
         }
 
     def _graph_message_attachments(
@@ -3485,14 +3694,19 @@ class OrderProcessorApi:
         observability = correlation_context(payload, exception_id)
         resolution = _pick(payload, "resolution", default=payload)
         resolution_result = self._apply_exception_resolution(existing, resolution)
-        existing["status"] = ExceptionStatus.RESOLVED.value
+        resolution_status = str(_pick(resolution_result, "status", default="resolved") or "resolved")
+        existing["status"] = (
+            ExceptionStatus.OPEN.value if resolution_status in {"notFound", "invalid", "failed"} else ExceptionStatus.RESOLVED.value
+        )
         existing["resolution"] = resolution
         existing["resolvedBy"] = self._actor_from_payload(payload)
-        existing["resolved_at"] = utc_now()
+        if existing["status"] == ExceptionStatus.RESOLVED.value:
+            existing["resolved_at"] = utc_now()
         stored = self.repository.upsert("exceptionTasks", existing)
+        event_type = "exception.resolved" if existing["status"] == ExceptionStatus.RESOLVED.value else "exception.resolutionFailed"
         self._audit(
             _pick(existing, "tenantId", "tenant_id", default="default"),
-            "exception.resolved",
+            event_type,
             observability["correlationId"],
             exception_id,
             {
@@ -3536,11 +3750,36 @@ class OrderProcessorApi:
         task: dict[str, Any],
         resolution: dict[str, Any],
     ) -> dict[str, Any]:
+        tenant_id = str(_pick(task, "tenantId", "tenant_id", default="default"))
         customer_id = _pick(resolution, "selectedCustomerId", "customerId", "customer_id", default=None)
+        customer_code = str(
+            _pick(
+                resolution,
+                "customerCode",
+                "customer_code",
+                "accountNumber",
+                "account_number",
+                "customerReference",
+                "customer_reference",
+                default="",
+            )
+            or ""
+        ).strip()
+        if not customer_id and customer_code:
+            customer = self._customer_by_code_or_id(tenant_id, customer_code)
+            if customer is None:
+                return {
+                    "status": "notFound",
+                    "message": f"No customer record matched customer code or id {customer_code}.",
+                    "customerCode": customer_code,
+                }
+            customer_id = str(_pick(customer, "id", default=""))
         if not customer_id:
             return {"status": "recorded", "message": "No customer id supplied."}
 
         updated: dict[str, Any] = {"customerId": customer_id}
+        if customer_code:
+            updated["customerCode"] = customer_code
         order_run_id = _pick(task, "orderRunId", "order_run_id", default=None) or _pick(
             resolution, "orderRunId", "order_run_id", default=None
         )
@@ -3563,6 +3802,24 @@ class OrderProcessorApi:
                 self.repository.upsert("emailMessages", email)
                 updated["emailMessageId"] = email_message_id
         return updated
+
+    def _customer_by_code_or_id(self, tenant_id: str, customer_reference: str) -> dict[str, Any] | None:
+        reference = str(customer_reference or "").strip()
+        if not reference:
+            return None
+        exact = self.repository.get("customers", reference)
+        if exact is not None and str(_pick(exact, "tenantId", "tenant_id", default="")) == tenant_id:
+            return exact
+        customer_docs = self.repository.query_by_tenant("customers", tenant_id)
+        customers = [_customer_from_doc(doc) for doc in customer_docs]
+        aliases = [
+            _customer_alias_from_doc(doc)
+            for doc in self.repository.query_by_tenant("customerAliases", tenant_id)
+        ]
+        matched = find_customer_by_code(reference, customers, aliases)
+        if matched is None:
+            return None
+        return next((doc for doc in customer_docs if str(_pick(doc, "id", default="")) == matched.id), None)
 
     def _apply_item_resolution(
         self,
