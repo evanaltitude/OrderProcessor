@@ -17,7 +17,7 @@ from .customer_identification import (
     normalize_identifier,
 )
 from .data_model import GLOBAL_CUSTOMER_ID, keys_to_camel
-from .email_triage import evaluate_email_triage, find_customer_by_code
+from .email_triage import build_email_action_plan, evaluate_email_triage, find_customer_by_code
 from .imports import normalize_customer_row, normalize_item_row, stable_id
 from .imports import (
     CUSTOMER_IMPORT_TYPE,
@@ -533,6 +533,18 @@ def _document_status(document: dict[str, Any]) -> str:
     return str(_pick(document, "status", default="") or "")
 
 
+def _action_key_for_routing_outcome(outcome: RoutingOutcome) -> str:
+    if outcome == RoutingOutcome.KNOWN_ORDER:
+        return "processedOrder"
+    if outcome == RoutingOutcome.KNOWN_CUSTOMER_NON_ORDER:
+        return "nonOrder"
+    if outcome in {RoutingOutcome.NEEDS_CUSTOMER_IDENTIFICATION, RoutingOutcome.NEEDS_HUMAN_REVIEW}:
+        return "failedOrder"
+    if outcome == RoutingOutcome.IGNORED:
+        return "ignored"
+    return "general"
+
+
 def _normalized_customer_rule_value(alias_type: str, value: str) -> str:
     normalized_type = str(alias_type or "").replace("-", "_").lower()
     if normalized_type in {
@@ -606,6 +618,9 @@ class OrderProcessorApi:
             if not email.mailbox:
                 email.mailbox = _pick(mailbox_account, "mailboxAddress", "mailbox_address", default="")
 
+        rules: list[RoutingRule] = []
+        customers: list[CustomerProfile] = []
+        aliases: list[CustomerAlias] = []
         if mailbox_account_requested and mailbox_account is None:
             decision = RoutingDecision(
                 outcome=RoutingOutcome.NEEDS_HUMAN_REVIEW,
@@ -653,6 +668,7 @@ class OrderProcessorApi:
                 customers=customers,
                 aliases=aliases,
             )
+            decision = self._identify_customer_for_matched_routing(email, decision, rules, customers, aliases)
 
         email.customer_id = decision.customer_id or email.customer_id
         email.routing = to_dict(decision)
@@ -731,6 +747,55 @@ class OrderProcessorApi:
             "exceptionTask": exception_task,
             "observability": observability,
         }
+
+    def _identify_customer_for_matched_routing(
+        self,
+        email: EmailMessage,
+        decision: RoutingDecision,
+        rules: list[RoutingRule],
+        customers: list[CustomerProfile],
+        aliases: list[CustomerAlias],
+    ) -> RoutingDecision:
+        if decision.customer_id:
+            return decision
+        if decision.outcome not in {RoutingOutcome.KNOWN_ORDER, RoutingOutcome.KNOWN_CUSTOMER_NON_ORDER}:
+            return decision
+
+        result = identify_customer_from_email(
+            email,
+            customers,
+            aliases=aliases,
+            vector_search=self.customer_vector_search,
+            confidence_threshold=DEFAULT_CUSTOMER_CONFIDENCE_THRESHOLD,
+        )
+        decision.matched_signals["customerIdentification"] = _api_value(result)
+        if result.status == MatchStatus.MATCHED and result.customer_id:
+            decision.customer_id = result.customer_id
+            decision.matched_signals["customerId"] = result.customer_id
+            decision.matched_signals["identifiedCustomerCode"] = result.customer_code
+            decision.reasons.append(f"customer identification matched customer {result.customer_id}")
+            customer = next((item for item in customers if item.id == result.customer_id), None)
+            rule = next((item for item in rules if item.id == decision.rule_id), None)
+            if rule and customer:
+                action_plan = build_email_action_plan(
+                    email,
+                    customer,
+                    rule,
+                    _action_key_for_routing_outcome(decision.outcome),
+                )
+                if action_plan:
+                    decision.matched_signals["emailActions"] = action_plan
+            return decision
+
+        original_outcome = decision.outcome
+        decision.outcome = RoutingOutcome.NEEDS_CUSTOMER_IDENTIFICATION
+        decision.processor_profile_id = None
+        decision.customer_id = None
+        decision.confidence = result.confidence
+        decision.reasons.append(
+            f"{original_outcome.value} rule matched but customer identification did not produce a confident customer"
+        )
+        return decision
 
     def poll_mailboxes(self, payload: dict[str, Any]) -> dict[str, Any]:
         tenant_id = str(_pick(payload, "tenantId", "tenant_id", default="")).strip()

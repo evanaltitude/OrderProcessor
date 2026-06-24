@@ -307,6 +307,105 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(actions["actionKey"], "nonOrder")
         self.assertEqual(actions["move"]["folderName"], "CSR/Jane")
 
+    def test_general_non_order_rule_identifies_customer_before_email_actions(self) -> None:
+        repo = InMemoryRepository()
+        api = OrderProcessorApi(repo)
+        mailbox = api.upsert_mailbox(
+            {
+                "tenantId": "altitude",
+                "mailboxAddress": "orders@example.com",
+            }
+        )["mailboxAccount"]
+        api.upsert_customer_config(
+            {
+                "tenantId": "altitude",
+                "id": "pilot-customer",
+                "customerCode": "PILOT",
+                "name": "Pilot Customer",
+                "senderDomains": ["pilot.example"],
+                "routeNumber": "R7",
+                "csrFolder": "CSR/Pilot",
+            }
+        )
+        api.upsert_routing_rule(
+            {
+                "tenantId": "altitude",
+                "customerId": "_global",
+                "id": "general-non-order",
+                "name": "General non-order",
+                "phase": "general",
+                "outcome": "knownCustomerNonOrder",
+                "priority": 10,
+                "mailboxAccountIds": [mailbox["id"]],
+                "subjectRegex": ["Question"],
+                "subjectTemplate": "Cust: {customerCode} Rte: {routeNumber} - {originalSubject}",
+                "categoryTemplates": ["CSR: {csrName}", "Process"],
+                "nonOrderMoveMode": "customerField",
+                "nonOrderMoveCustomerField": "csrFolder",
+            }
+        )
+
+        result = api.ingest_email(
+            {
+                "tenantId": "altitude",
+                "mailboxAccountId": mailbox["id"],
+                "messageId": "message-general",
+                "sender": "buyer@pilot.example",
+                "subject": "Question about order timing",
+            }
+        )
+
+        decision = result["routingDecision"]
+        actions = decision["matchedSignals"]["emailActions"]
+        self.assertEqual(decision["outcome"], "knownCustomerNonOrder")
+        self.assertEqual(decision["customerId"], "pilot-customer")
+        self.assertEqual(result["emailMessage"]["customerId"], "pilot-customer")
+        self.assertEqual(actions["subject"]["value"], "Cust: PILOT Rte: R7 - Question about order timing")
+        self.assertEqual(actions["move"]["folderName"], "CSR/Pilot")
+        self.assertIsNone(result["orderRun"])
+        self.assertIsNone(result["exceptionTask"])
+
+    def test_order_rule_without_customer_match_creates_exception_instead_of_order_run(self) -> None:
+        repo = InMemoryRepository()
+        api = OrderProcessorApi(repo)
+        mailbox = api.upsert_mailbox(
+            {
+                "tenantId": "altitude",
+                "mailboxAddress": "orders@example.com",
+            }
+        )["mailboxAccount"]
+        api.upsert_routing_rule(
+            {
+                "tenantId": "altitude",
+                "customerId": "_global",
+                "id": "generic-order",
+                "name": "Generic order",
+                "phase": "orderCandidate",
+                "outcome": "knownOrder",
+                "priority": 10,
+                "processorProfileId": "csv-default",
+                "mailboxAccountIds": [mailbox["id"]],
+                "subjectRegex": ["Purchase Order"],
+                "attachmentExtensions": ["csv"],
+            }
+        )
+
+        result = api.ingest_email(
+            {
+                "tenantId": "altitude",
+                "mailboxAccountId": mailbox["id"],
+                "messageId": "message-order-unknown",
+                "sender": "buyer@unknown.example",
+                "subject": "Purchase Order 123",
+                "attachments": [{"name": "po.csv"}],
+            }
+        )
+
+        self.assertEqual(result["routingDecision"]["outcome"], "needsCustomerIdentification")
+        self.assertIsNone(result["orderRun"])
+        self.assertEqual(result["exceptionTask"]["type"], "routing")
+        self.assertIn("customerIdentification", result["routingDecision"]["matchedSignals"])
+
     def test_graph_ingest_applies_routing_email_actions(self) -> None:
         repo = InMemoryRepository()
         api = OrderProcessorApi(repo)

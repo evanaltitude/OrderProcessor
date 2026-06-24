@@ -502,6 +502,44 @@ th {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.routing-path-panel {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(0, 1.2fr);
+  gap: 12px;
+  align-items: end;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.routing-path-summary {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.routing-path-summary strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.form-section-title {
+  grid-column: 1 / -1;
+  margin-top: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  color: var(--ink);
+}
+
+.form-section-title:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
 .checkline {
   display: flex !important;
   min-height: 38px;
@@ -747,6 +785,7 @@ pre {
   .brand-lockup,
   .header-actions,
   .split,
+  .routing-path-panel,
   .list-controls,
   .form-grid.two,
   .form-grid.three,

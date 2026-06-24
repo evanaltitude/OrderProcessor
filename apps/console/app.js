@@ -18,6 +18,57 @@ const split = (text) => text.split(",").map((part) => part.trim()).filter(Boolea
 const checked = (form, name) => Boolean(form.elements[name]?.checked);
 
 const DEFAULT_ROUTING_PHASES = ["webstoreOrder", "previouslyProcessed", "orderCandidate", "nonOrder", "general"];
+const ROUTING_PATHS = {
+  webstoreOrder: {
+    label: "Webstore order receipt",
+    summary: "Fixed receipt format. Extract customer code, update subject, add CSR tags, and move the email without creating an order file.",
+    phase: "webstoreOrder",
+    outcome: "knownCustomerNonOrder",
+    customerCodeSource: "subject",
+    requiredAttachment: false,
+    processedMoveMode: "none",
+    processedMoveTarget: "",
+    nonOrderMoveMode: "customerField",
+    nonOrderMoveTarget: "csrFolder"
+  },
+  previouslyIdentified: {
+    label: "Previously identified email chain",
+    summary: "Subject already has the customer code format. Extract the code from the subject, refresh subject/tags, and move to the CSR folder.",
+    phase: "previouslyProcessed",
+    outcome: "knownCustomerNonOrder",
+    customerCodeSource: "subject",
+    priorProcessedSubjectRegex: "Cust:\\s*(?P<customerCode>\\d+)",
+    requiredAttachment: false,
+    processedMoveMode: "none",
+    processedMoveTarget: "",
+    nonOrderMoveMode: "customerField",
+    nonOrderMoveTarget: "csrFolder"
+  },
+  generalNonOrder: {
+    label: "General non-order email",
+    summary: "General message. Identify the customer from sender/content, update subject, add CSR tags, and move to the CSR folder.",
+    phase: "nonOrder",
+    outcome: "knownCustomerNonOrder",
+    customerCodeSource: "combined",
+    requiredAttachment: false,
+    processedMoveMode: "none",
+    processedMoveTarget: "",
+    nonOrderMoveMode: "customerField",
+    nonOrderMoveTarget: "csrFolder"
+  },
+  orderEmail: {
+    label: "Order email",
+    summary: "Order to process. Identify the customer, create the order run and universal output, then update/tag/move the source email.",
+    phase: "orderCandidate",
+    outcome: "knownOrder",
+    customerCodeSource: "combined",
+    requiredAttachment: true,
+    processedMoveMode: "customerField",
+    processedMoveTarget: "csrFolder",
+    nonOrderMoveMode: "none",
+    nonOrderMoveTarget: ""
+  }
+};
 const SYSTEM_TENANT_ID = "__system__";
 const SUPPORTED_FILE_TYPE_OPTIONS = [
   { value: "csv", label: "CSV" },
@@ -465,24 +516,65 @@ function selectedOutputFields() {
   return [...document.querySelectorAll('input[name="outputFields"]:checked')].map((input) => input.value);
 }
 
+function routingPathForRule(rule = {}) {
+  if (rule.phase === "webstoreOrder") return "webstoreOrder";
+  if (rule.phase === "previouslyProcessed") return "previouslyIdentified";
+  if (rule.outcome === "knownOrder" || rule.phase === "orderCandidate") return "orderEmail";
+  if (rule.outcome === "knownCustomerNonOrder") return "generalNonOrder";
+  return "generalNonOrder";
+}
+
+function routingPathForForm(form) {
+  return routingPathForRule({
+    phase: value(form, "phase"),
+    outcome: value(form, "outcome")
+  });
+}
+
+function renderRoutingPathSummary() {
+  const form = el("routingForm");
+  const path = ROUTING_PATHS[value(form, "routingPath")] || ROUTING_PATHS.generalNonOrder;
+  el("routingPathSummary").innerHTML = `
+    <strong>${escapeHtml(path.label)}</strong>
+    <span>${escapeHtml(path.summary)}</span>
+  `;
+}
+
+function applyRoutingPathDefaults() {
+  const form = el("routingForm");
+  const path = ROUTING_PATHS[value(form, "routingPath")] || ROUTING_PATHS.generalNonOrder;
+  setValue(form, "phase", path.phase);
+  setValue(form, "outcome", path.outcome);
+  setValue(form, "customerCodeSource", path.customerCodeSource);
+  setChecked(form, "requiredAttachment", path.requiredAttachment);
+  setValue(form, "processedMoveMode", path.processedMoveMode);
+  setValue(form, "processedMoveTarget", path.processedMoveTarget);
+  setValue(form, "nonOrderMoveMode", path.nonOrderMoveMode);
+  setValue(form, "nonOrderMoveTarget", path.nonOrderMoveTarget);
+  if (path.priorProcessedSubjectRegex && !value(form, "priorProcessedSubjectRegex")) {
+    setValue(form, "priorProcessedSubjectRegex", path.priorProcessedSubjectRegex);
+  }
+  if (path.outcome !== "knownOrder") {
+    setValue(form, "processorProfileId", "");
+  }
+  renderRoutingPathSummary();
+}
+
 function clearRoutingForm() {
   const form = el("routingForm");
   form.reset();
-  setValue(form, "phase", "webstoreOrder");
-  setValue(form, "outcome", "knownCustomerNonOrder");
+  setValue(form, "routingPath", "webstoreOrder");
   setValue(form, "priority", "100");
-  setValue(form, "customerCodeSource", "combined");
-  setValue(form, "processedMoveMode", "none");
-  setValue(form, "nonOrderMoveMode", "customerField");
-  setValue(form, "nonOrderMoveTarget", "csrFolder");
   setChecked(form, "enabled", true);
   fillSelect(form.elements.processorProfileId, processorProfileOptions(), "");
+  applyRoutingPathDefaults();
 }
 
 function loadRoutingRule(ruleId) {
   const rule = (state.dashboard?.routingRules || []).find((item) => item.id === ruleId);
   if (!rule) return;
   const form = el("routingForm");
+  setValue(form, "routingPath", routingPathForRule(rule));
   setValue(form, "id", rule.id);
   setValue(form, "name", rule.name || "");
   setValue(form, "phase", rule.phase || "general");
@@ -508,6 +600,7 @@ function loadRoutingRule(ruleId) {
   setValue(form, "nonOrderMoveTarget", moveTarget(nonOrderMove));
   setChecked(form, "requiredAttachment", rule.requiredAttachment);
   setChecked(form, "enabled", rule.enabled !== false);
+  renderRoutingPathSummary();
   form.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
@@ -516,6 +609,8 @@ function syncRoutingDefaultsForPhase() {
   if (value(form, "phase") === "webstoreOrder" && value(form, "outcome") === "knownOrder") {
     setValue(form, "outcome", "knownCustomerNonOrder");
   }
+  setValue(form, "routingPath", routingPathForForm(form));
+  renderRoutingPathSummary();
 }
 
 function clearProcessorProfileForm() {
@@ -1547,7 +1642,9 @@ el("refreshButton").addEventListener("click", refresh);
 el("distributorSelector").addEventListener("change", async (event) => {
   await switchDistributor(event.target.value);
 });
+el("routingForm").elements.routingPath.addEventListener("change", applyRoutingPathDefaults);
 el("routingForm").elements.phase.addEventListener("change", syncRoutingDefaultsForPhase);
+el("routingForm").elements.outcome.addEventListener("change", syncRoutingDefaultsForPhase);
 [
   "downstreamCustomerSearch",
   "downstreamCustomerFilterField",

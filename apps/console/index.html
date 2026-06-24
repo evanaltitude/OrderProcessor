@@ -217,27 +217,39 @@
           <section class="band split">
             <form id="routingForm" class="editor">
               <h2>Routing Rule</h2>
+              <div class="routing-path-panel">
+                <label>Email path
+                  <select name="routingPath">
+                    <option value="webstoreOrder">Webstore order receipt</option>
+                    <option value="previouslyIdentified">Previously identified email chain</option>
+                    <option value="generalNonOrder">General non-order email</option>
+                    <option value="orderEmail">Order email</option>
+                  </select>
+                </label>
+                <div id="routingPathSummary" class="routing-path-summary"></div>
+              </div>
               <div class="form-grid two">
+                <h3 class="form-section-title">Rule details</h3>
                 <label>Rule id
                   <input name="id" placeholder="auto-generated if blank">
                 </label>
                 <label>Rule name
                   <input name="name" placeholder="Webstore orders">
                 </label>
-                <label>When to check
+                <label>Backend phase
                   <select name="phase">
                     <option value="webstoreOrder">Webstore order</option>
-                    <option value="previouslyProcessed">Previously processed</option>
+                    <option value="previouslyProcessed">Previously identified</option>
                     <option value="orderCandidate">Order candidate</option>
-                    <option value="nonOrder">Non-order</option>
+                    <option value="nonOrder">General non-order</option>
                     <option value="general">General</option>
                   </select>
                 </label>
-                <label>Action
+                <label>Routing result
                   <select name="outcome">
-                    <option value="knownCustomerNonOrder">Update, tag, and move email</option>
-                    <option value="knownOrder">Create order file</option>
-                    <option value="needsCustomerIdentification">Find customer first</option>
+                    <option value="knownCustomerNonOrder">Known customer, not an order</option>
+                    <option value="knownOrder">Known order to process</option>
+                    <option value="needsCustomerIdentification">Needs customer identification</option>
                     <option value="needsHumanReview">Send to review</option>
                     <option value="ignored">Ignore</option>
                   </select>
@@ -245,9 +257,10 @@
                 <label>Priority
                   <input name="priority" type="number" min="1" step="1" placeholder="100">
                 </label>
-                <label>Processor profile
+                <label>Order processor profile
                   <select name="processorProfileId"></select>
                 </label>
+                <h3 class="form-section-title">Match conditions</h3>
                 <label>Sender emails
                   <input name="senderEquals" placeholder="buyer@example.com">
                 </label>
@@ -266,6 +279,7 @@
                 <label>Attachment name patterns
                   <input name="attachmentNameRegex" placeholder="order|po">
                 </label>
+                <h3 class="form-section-title">Customer lookup</h3>
                 <label>Customer code source
                   <select name="customerCodeSource">
                     <option value="combined">Subject and body</option>
@@ -280,6 +294,7 @@
                 <label>Processed subject pattern
                   <input name="priorProcessedSubjectRegex" placeholder="Cust:\\s*(?P<customerCode>\\d+)">
                 </label>
+                <h3 class="form-section-title">Mailbox actions</h3>
                 <label>Updated subject
                   <input name="subjectTemplate" placeholder="Cust: {customerCode} - {originalSubject}">
                 </label>
