@@ -76,7 +76,7 @@ class CustomerVectorStoreManager:
         try:
             created = self.client.create_customer_vector_store(
                 name=name,
-                filename=f"{name}.jsonl",
+                filename=f"{name}.txt",
                 content=content,
                 metadata=metadata,
             )
@@ -227,7 +227,7 @@ class AzureOpenAICustomerVectorStoreClient:
     ) -> dict[str, Any]:
         client = self._client()
         uploaded_file = client.files.create(
-            file=(filename, content, "application/jsonl"),
+            file=(filename, content, "text/plain"),
             purpose="assistants",
         )
         file_id = _object_value(uploaded_file, "id")
