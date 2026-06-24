@@ -129,6 +129,8 @@ class InfraContractTests(unittest.TestCase):
         requirements = (ROOT / "apps" / "functions" / "requirements.txt").read_text(encoding="utf-8")
 
         self.assertEqual(host["extensions"]["durableTask"]["hubName"], "OrderProcessorLocal")
+        self.assertEqual(host["extensions"]["queues"]["batchSize"], 1)
+        self.assertEqual(host["extensions"]["queues"]["newBatchThreshold"], 0)
         self.assertIn("azure-functions-durable", requirements)
 
     def test_function_package_includes_import_job_queue_bindings(self) -> None:
