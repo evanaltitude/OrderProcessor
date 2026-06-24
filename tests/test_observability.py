@@ -3,11 +3,12 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "apps" / "functions"))
 
-from function_app import _import_response_mode, _payload_with_headers
+from function_app import _chunk_import_payloads, _import_response_mode, _payload_with_headers
 from order_processor.api import OrderProcessorApi
 from order_processor.models import OrderRun, ProcessingStatus, to_dict
 from order_processor.storage import InMemoryRepository
@@ -56,6 +57,43 @@ class ObservabilityTests(unittest.TestCase):
             ),
             "sync",
         )
+
+    def test_queued_item_import_payloads_are_chunked_by_row_count(self) -> None:
+        payload = {
+            "tenantId": "test-customer",
+            "sourceName": "items.json",
+            "sourceMetadata": {"source": "unit-test"},
+            "rows": [{"part_code": f"PART-{index}"} for index in range(5)],
+        }
+
+        with patch.dict(
+            "os.environ",
+            {"ORDER_PROCESSOR_ITEM_IMPORT_JOB_CHUNK_SIZE": "2"},
+            clear=False,
+        ):
+            chunks = _chunk_import_payloads("items", payload)
+
+        self.assertEqual(len(chunks), 3)
+        self.assertEqual([len(chunk["rows"]) for chunk in chunks], [2, 2, 1])
+        self.assertEqual(chunks[0]["importChunk"]["rowStart"], 0)
+        self.assertEqual(chunks[1]["importChunk"]["rowStart"], 2)
+        self.assertEqual(chunks[2]["importChunk"]["rowEndExclusive"], 5)
+        self.assertEqual(chunks[0]["importChunk"]["chunkCount"], 3)
+        self.assertEqual(chunks[0]["sourceMetadata"]["source"], "unit-test")
+        self.assertEqual(chunks[0]["sourceMetadata"]["importChunk"], chunks[0]["importChunk"])
+        self.assertEqual({chunk["importBatchId"] for chunk in chunks}, {chunks[0]["importBatchId"]})
+
+    def test_customer_import_payloads_are_not_chunked(self) -> None:
+        payload = {"tenantId": "test-customer", "rows": [{"cust_code": str(index)} for index in range(5)]}
+
+        with patch.dict(
+            "os.environ",
+            {"ORDER_PROCESSOR_IMPORT_JOB_CHUNK_SIZE": "2"},
+            clear=False,
+        ):
+            chunks = _chunk_import_payloads("customers", payload)
+
+        self.assertEqual(chunks, [payload])
 
     def test_ingest_persists_correlation_context_to_email_order_and_audit(self) -> None:
         api, repo = self._api()

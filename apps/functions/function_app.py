@@ -26,6 +26,9 @@ if str(SRC) not in sys.path:
 
 from order_processor import api as order_api  # noqa: E402
 
+ITEM_IMPORT_TYPE = "items"
+DEFAULT_ITEM_IMPORT_JOB_CHUNK_SIZE = 250
+
 try:
     import azure.functions as func
 except ModuleNotFoundError:  # pragma: no cover - local tests do not require Azure Functions runtime.
@@ -130,6 +133,60 @@ def _import_response_mode(req: Any, payload: dict[str, Any]) -> str:
     ).strip().lower()
 
 
+def _import_job_chunk_size(import_type: str) -> int:
+    if import_type != ITEM_IMPORT_TYPE:
+        return 0
+    value = (
+        os.environ.get("ORDER_PROCESSOR_ITEM_IMPORT_JOB_CHUNK_SIZE")
+        or os.environ.get("ORDER_PROCESSOR_IMPORT_JOB_CHUNK_SIZE")
+        or str(DEFAULT_ITEM_IMPORT_JOB_CHUNK_SIZE)
+    )
+    try:
+        return max(0, int(str(value).strip()))
+    except ValueError:
+        return DEFAULT_ITEM_IMPORT_JOB_CHUNK_SIZE
+
+
+def _chunk_import_payloads(import_type: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
+    chunk_size = _import_job_chunk_size(import_type)
+    rows = payload.get("rows", [])
+    if (
+        chunk_size <= 0
+        or not isinstance(rows, list)
+        or len(rows) <= chunk_size
+        or isinstance(payload.get("importChunk"), dict)
+    ):
+        return [payload]
+
+    batch_id = uuid.uuid4().hex
+    total_rows = len(rows)
+    chunk_count = (total_rows + chunk_size - 1) // chunk_size
+    chunks: list[dict[str, Any]] = []
+    for chunk_index, start in enumerate(range(0, total_rows, chunk_size), start=1):
+        chunk_rows = rows[start : start + chunk_size]
+        source_metadata = dict(payload.get("sourceMetadata") or payload.get("source_metadata") or {})
+        chunk_details = {
+            "batchId": batch_id,
+            "chunkIndex": chunk_index,
+            "chunkCount": chunk_count,
+            "rowStart": start,
+            "rowEndExclusive": start + len(chunk_rows),
+            "rowCount": len(chunk_rows),
+            "totalRows": total_rows,
+        }
+        source_metadata["importChunk"] = chunk_details
+        chunks.append(
+            {
+                **payload,
+                "rows": chunk_rows,
+                "sourceMetadata": source_metadata,
+                "importBatchId": batch_id,
+                "importChunk": chunk_details,
+            }
+        )
+    return chunks
+
+
 def _import_blob_service_client() -> Any:
     from azure.identity import DefaultAzureCredential
     from azure.storage.blob import BlobServiceClient
@@ -199,17 +256,24 @@ def _handle_import_request(req: Any, import_type: str, queued: Any, callback: An
     if response_mode in {"inline", "sync", "synchronous", "wait"}:
         return _handle(req, callback)
 
-    job = _store_import_job_payload(import_type, payload)
-    queued.set(json.dumps(job, separators=(",", ":")))
+    payload_chunks = _chunk_import_payloads(import_type, payload)
+    jobs = [_store_import_job_payload(import_type, chunk) for chunk in payload_chunks]
+    messages = [json.dumps(job, separators=(",", ":")) for job in jobs]
+    queued.set(messages[0] if len(messages) == 1 else messages)
+    first_job = jobs[0]
     return _response(
         {
             "accepted": True,
             "queued": True,
             "status": "queued",
             "importType": import_type,
-            "tenantId": job["tenantId"],
-            "jobId": job["jobId"],
-            "receivedAt": job["receivedAt"],
+            "tenantId": first_job["tenantId"],
+            "jobId": first_job["jobId"],
+            "jobIds": [job["jobId"] for job in jobs],
+            "chunked": len(jobs) > 1,
+            "chunkCount": len(jobs),
+            "chunkSize": _import_job_chunk_size(import_type) if len(jobs) > 1 else 0,
+            "receivedAt": first_job["receivedAt"],
             "message": "Import payload was accepted and queued for background processing.",
         },
         status_code=202,

@@ -376,7 +376,7 @@ Customer alias records are generated for customer code, sender email, sender dom
 
 ## `POST /imports/items`
 
-Queues normalized distributor-wide item imports into Cosmos and archives original source rows for audit/debug. The HTTP endpoint writes the incoming import payload to Blob Storage, queues a background import job, and returns `202 Accepted` quickly. Item rows are always stored in the distributor master item catalog under the internal `_global` partition and are available for all downstream customers in that distributor tenant. `customerId` and `customerCode` are ignored for item imports; item identity is `tenantId + part_code`.
+Queues normalized distributor-wide item imports into Cosmos and archives original source rows for audit/debug. The HTTP endpoint writes the incoming import payload to Blob Storage, queues background import jobs, and returns `202 Accepted` quickly. Large queued `rows` payloads are split into smaller item import chunks using `ORDER_PROCESSOR_ITEM_IMPORT_JOB_CHUNK_SIZE` (default `250`) so row-level embedding/upsert work does not poison a single long-running queue message. Item rows are always stored in the distributor master item catalog under the internal `_global` partition and are available for all downstream customers in that distributor tenant. `customerId` and `customerCode` are ignored for item imports; item identity is `tenantId + part_code`.
 
 Request shape:
 
