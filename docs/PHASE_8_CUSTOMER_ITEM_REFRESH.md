@@ -152,11 +152,13 @@ Enable with:
 - `AZURE_AI_FOUNDRY_OPENAI_ENDPOINT` or `AZURE_OPENAI_ENDPOINT`
 - `AZURE_AI_FOUNDRY_OPENAI_API_VERSION` or `AZURE_OPENAI_API_VERSION`
 
+The Function managed identity needs Azure OpenAI data-plane permissions that include file and vector-store writes. The foundation template assigns `Cognitive Services OpenAI Contributor` for newly provisioned Azure OpenAI accounts. For external/existing Azure OpenAI accounts, assign the same role at the account scope before enabling rotation.
+
 When enabled, each successful customer import with at least one valid customer row:
 
 - Reads the full current tenant customer list from Cosmos, not just the changed rows.
 - Builds a compact JSON-lines text file with customer code, name, store number, route, location, contact fields, CSR routing, aliases, sender domains, and known subject patterns.
-- Uploads the file to Azure OpenAI with `purpose=assistants`.
+- Uploads the file to Azure OpenAI for file-search vector-store ingestion. No Assistant resource is created; the upload uses the provider's file-search-compatible file purpose.
 - Creates a new vector store and waits for file ingestion to complete.
 - Writes the active reference to `customerVectorStores`.
 - Deletes the previous file and vector store after the new reference is active.

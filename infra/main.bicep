@@ -120,7 +120,7 @@ var storageAccountContributorRoleId = subscriptionResourceId('Microsoft.Authoriz
 var keyVaultSecretsUserRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')
 var keyVaultSecretsOfficerRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7')
 var cognitiveServicesUserRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'a97b65f3-24c7-4388-baec-2e87135dc908')
-var cognitiveServicesOpenAiUserRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')
+var cognitiveServicesOpenAiContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'a001fd3d-188f-4b5d-821b-7da978bf7442')
 
 var blobContainers = [
   'email-attachments'
@@ -1022,11 +1022,11 @@ resource apimKeyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@2022-0
   }
 }
 
-resource functionOpenAiUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployAzureOpenAI) {
-  name: guid(openAi.id, functionApp.name, 'openai-user')
+resource functionOpenAiContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployAzureOpenAI) {
+  name: guid(openAi.id, functionApp.name, 'openai-contributor')
   scope: openAi
   properties: {
-    roleDefinitionId: cognitiveServicesOpenAiUserRoleId
+    roleDefinitionId: cognitiveServicesOpenAiContributorRoleId
     principalId: functionApp.identity.principalId
     principalType: 'ServicePrincipal'
   }
