@@ -7,8 +7,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from order_processor.customer_identification import (
+    CustomerAiConsensusResult,
     CustomerVectorCandidate,
+    FoundryCustomerAiConsensusIdentifier,
     StaticEmbeddingClient,
+    extract_customer_signals,
     identify_customer,
 )
 from order_processor.models import CustomerAlias, CustomerProfile, EmailMessage, MatchStatus
@@ -27,6 +30,38 @@ class FakeVectorSearch:
     ) -> list[CustomerVectorCandidate]:
         self.calls += 1
         return self.candidates[:limit]
+
+
+class FakeAiIdentifier:
+    def __init__(self, result: CustomerAiConsensusResult) -> None:
+        self.result = result
+        self.calls = 0
+        self.candidate_records: list[dict[str, object]] = []
+
+    def identify(self, email, signals, candidate_records):
+        self.calls += 1
+        self.candidate_records = candidate_records
+        return self.result
+
+
+class FakeJsonClient:
+    def __init__(self, responses: list[dict[str, object]]) -> None:
+        self.responses = list(responses)
+        self.calls: list[dict[str, object]] = []
+
+    def complete_json(self, *, system_prompt, user_payload, schema, schema_name, temperature):
+        self.calls.append(
+            {
+                "systemPrompt": system_prompt,
+                "userPayload": user_payload,
+                "schema": schema,
+                "schemaName": schema_name,
+                "temperature": temperature,
+            }
+        )
+        if not self.responses:
+            raise AssertionError("no fake AI response queued")
+        return self.responses.pop(0)
 
 
 class CustomerIdentificationTests(unittest.TestCase):
@@ -354,6 +389,183 @@ class CustomerIdentificationTests(unittest.TestCase):
         self.assertEqual(result.status, MatchStatus.POSSIBLE_MATCH)
         self.assertIsNone(result.customer_id)
         self.assertEqual(result.candidates[0]["customerId"], "pilot-customer")
+
+    def test_foundry_consensus_resolves_vector_candidates(self) -> None:
+        email = EmailMessage(
+            id="email-1",
+            tenant_id="altitude",
+            mailbox="orders@example.com",
+            message_id="message-1",
+            sender="buyer@example.com",
+            subject="Please process this order",
+            body_text="Weekly order for Pilot Customer",
+            received_at="2026-06-19T12:00:00Z",
+        )
+        customer = CustomerProfile(
+            id="pilot-customer",
+            tenant_id="altitude",
+            customer_code="PILOT",
+            name="Pilot Customer",
+        )
+        vector_search = FakeVectorSearch([CustomerVectorCandidate(customer=customer, confidence=0.72)])
+        ai_identifier = FakeAiIdentifier(
+            CustomerAiConsensusResult(
+                customer_id="pilot-customer",
+                customer_code="PILOT",
+                route_number="R12",
+                match_method="foundryCustomerConsensus",
+                confidence=0.94,
+                candidates=[{"customerId": "pilot-customer", "customerCode": "PILOT"}],
+                choices=[{"prompt": "identifierA", "customerCode": "PILOT"}],
+                reasons=["foundry customer identifiers agreed on PILOT"],
+            )
+        )
+
+        result = identify_customer(email, [customer], vector_search=vector_search, ai_identifier=ai_identifier)
+
+        self.assertEqual(result.status, MatchStatus.MATCHED)
+        self.assertEqual(result.customer_id, "pilot-customer")
+        self.assertEqual(result.match_method, "foundryCustomerConsensus")
+        self.assertEqual(ai_identifier.calls, 1)
+        self.assertEqual(ai_identifier.candidate_records[0]["cust_code"], "PILOT")
+
+    def test_foundry_no_match_prevents_vector_auto_accept(self) -> None:
+        email = EmailMessage(
+            id="email-1",
+            tenant_id="altitude",
+            mailbox="orders@example.com",
+            message_id="message-1",
+            sender="buyer@example.com",
+            subject="Please process this order",
+            body_text="Could be any customer",
+            received_at="2026-06-19T12:00:00Z",
+        )
+        customer = CustomerProfile(
+            id="pilot-customer",
+            tenant_id="altitude",
+            customer_code="PILOT",
+            name="Pilot Customer",
+        )
+        vector_search = FakeVectorSearch([CustomerVectorCandidate(customer=customer, confidence=0.99)])
+        ai_identifier = FakeAiIdentifier(
+            CustomerAiConsensusResult(
+                confidence=0.0,
+                candidates=[{"customerId": "pilot-customer", "customerCode": "PILOT"}],
+                choices=[{"prompt": "identifierA", "customerCode": "PILOT"}],
+                reasons=["foundry customer identifiers did not agree and decider returned no customer code"],
+            )
+        )
+
+        result = identify_customer(email, [customer], vector_search=vector_search, ai_identifier=ai_identifier)
+
+        self.assertEqual(result.status, MatchStatus.POSSIBLE_MATCH)
+        self.assertIsNone(result.customer_id)
+        self.assertEqual(result.match_method, "foundryCustomerConsensus")
+
+    def test_foundry_consensus_identifier_accepts_agreement(self) -> None:
+        email = EmailMessage(
+            id="email-1",
+            tenant_id="altitude",
+            mailbox="orders@example.com",
+            message_id="message-1",
+            sender="buyer@example.com",
+            subject="Pilot order",
+            received_at="2026-06-19T12:00:00Z",
+        )
+        records = [
+            {
+                "customer_name": "Pilot Customer",
+                "customer_store_number": "101",
+                "location_address1": "123 Main St",
+                "location_city": "Dayton",
+                "location_state": "OH",
+                "location_zip": "45402",
+                "phone": "",
+                "customer_website": "",
+                "customer_email": "",
+                "cust_code": "PILOT",
+                "customerId": "pilot-customer",
+                "routeNumber": "R12",
+                "sourceConfidence": 0.72,
+                "sourceMethod": "cosmosVectorSearch",
+                "sourceReason": "candidate",
+            }
+        ]
+        fake_client = FakeJsonClient(
+            [
+                {"customer_name": "Pilot Customer", "customer_store_number": "101", "location_address1": "123 Main St", "location_city": "Dayton", "location_state": "OH", "location_zip": "45402", "phone": "", "customer_website": "", "customer_email": "", "cust_code": "PILOT"},
+                {"customer_name": "Pilot Customer", "customer_store_number": "101", "location_address1": "123 Main St", "location_city": "Dayton", "location_state": "OH", "location_zip": "45402", "phone": "", "customer_website": "", "customer_email": "", "cust_code": "PILOT"},
+            ]
+        )
+        identifier = FoundryCustomerAiConsensusIdentifier(chat_client=fake_client)
+
+        result = identifier.identify(email, extract_customer_signals(email), records)
+
+        self.assertEqual(result.customer_id, "pilot-customer")
+        self.assertEqual(result.customer_code, "PILOT")
+        self.assertEqual(result.match_method, "foundryCustomerConsensus")
+        self.assertEqual(len(fake_client.calls), 2)
+
+    def test_foundry_consensus_identifier_uses_decider_after_disagreement(self) -> None:
+        email = EmailMessage(
+            id="email-1",
+            tenant_id="altitude",
+            mailbox="orders@example.com",
+            message_id="message-1",
+            sender="buyer@example.com",
+            subject="Pilot order",
+            received_at="2026-06-19T12:00:00Z",
+        )
+        records = [
+            {
+                "customer_name": "Pilot Customer",
+                "customer_store_number": "101",
+                "location_address1": "123 Main St",
+                "location_city": "Dayton",
+                "location_state": "OH",
+                "location_zip": "45402",
+                "phone": "",
+                "customer_website": "",
+                "customer_email": "",
+                "cust_code": "PILOT",
+                "customerId": "pilot-customer",
+                "routeNumber": "R12",
+                "sourceConfidence": 0.72,
+                "sourceMethod": "cosmosVectorSearch",
+                "sourceReason": "candidate",
+            },
+            {
+                "customer_name": "Other Customer",
+                "customer_store_number": "202",
+                "location_address1": "555 State St",
+                "location_city": "Columbus",
+                "location_state": "OH",
+                "location_zip": "43004",
+                "phone": "",
+                "customer_website": "",
+                "customer_email": "",
+                "cust_code": "OTHER",
+                "customerId": "other-customer",
+                "routeNumber": "",
+                "sourceConfidence": 0.7,
+                "sourceMethod": "cosmosVectorSearch",
+                "sourceReason": "candidate",
+            },
+        ]
+        fake_client = FakeJsonClient(
+            [
+                {"customer_name": "Pilot Customer", "customer_store_number": "101", "location_address1": "123 Main St", "location_city": "Dayton", "location_state": "OH", "location_zip": "45402", "phone": "", "customer_website": "", "customer_email": "", "cust_code": "PILOT"},
+                {"customer_name": "Other Customer", "customer_store_number": "202", "location_address1": "555 State St", "location_city": "Columbus", "location_state": "OH", "location_zip": "43004", "phone": "", "customer_website": "", "customer_email": "", "cust_code": "OTHER"},
+                {"customer_name": "Pilot Customer", "customer_store_number": "101", "location_address1": "123 Main St", "location_city": "Dayton", "location_state": "OH", "location_zip": "45402", "phone": "", "customer_website": "", "customer_email": "", "cust_code": "PILOT"},
+            ]
+        )
+        identifier = FoundryCustomerAiConsensusIdentifier(chat_client=fake_client, attempts=1)
+
+        result = identifier.identify(email, extract_customer_signals(email), records)
+
+        self.assertEqual(result.customer_id, "pilot-customer")
+        self.assertEqual(result.match_method, "foundryCustomerDecider")
+        self.assertEqual(len(fake_client.calls), 3)
 
     def test_static_embedding_client_is_deterministic(self) -> None:
         embedder = StaticEmbeddingClient()

@@ -9,6 +9,9 @@
     "ORDER_PROCESSOR_OUTPUT_ARCHIVE_BACKEND": "memory",
     "ORDER_PROCESSOR_ENABLE_IMPORT_EMBEDDINGS": "false",
     "ORDER_PROCESSOR_ENABLE_CUSTOMER_VECTOR_SEARCH": "false",
+    "ORDER_PROCESSOR_ENABLE_CUSTOMER_AI_CONSENSUS": "false",
+    "ORDER_PROCESSOR_CUSTOMER_AI_MAX_ATTEMPTS": "3",
+    "ORDER_PROCESSOR_CUSTOMER_AI_CANDIDATE_LIMIT": "8",
     "COSMOS_DATABASE_NAME": "orderProcessor",
     "COSMOS_ACCOUNT_ENDPOINT": "https://localhost:8081/",
     "STORAGE_ACCOUNT_NAME": "devstoreaccount1",
@@ -34,6 +37,8 @@
     "ORDER_PROCESSOR_GRAPH_SUBSCRIPTION_RENEWAL_CRON": "0 0 */6 * * *",
     "ORDER_PROCESSOR_GRAPH_SUBSCRIPTION_AUTH_MODE": "auto",
     "AZURE_OPENAI_ENDPOINT": "https://example-openai.openai.azure.com/",
+    "AZURE_AI_FOUNDRY_OPENAI_ENDPOINT": "https://example-openai.openai.azure.com/",
+    "AZURE_AI_FOUNDRY_CUSTOMER_ID_DEPLOYMENT": "customer-id-foundry-deployment",
     "AZURE_AI_SERVICES_ENDPOINT": "https://example-ai-services.cognitiveservices.azure.com/",
     "DOCUMENT_INTELLIGENCE_ENDPOINT": "https://example-docintel.cognitiveservices.azure.com/",
     "APIM_API_BASE_URL": "https://example.azure-api.net/order-processor"

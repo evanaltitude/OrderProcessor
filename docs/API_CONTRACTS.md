@@ -260,6 +260,7 @@ Vector fallback:
 - Enable with `ORDER_PROCESSOR_ENABLE_CUSTOMER_VECTOR_SEARCH=true`.
 - Requires `AZURE_OPENAI_ENDPOINT` and `AZURE_OPENAI_EMBEDDING_DEPLOYMENT`.
 - Uses `AZURE_OPENAI_API_KEY` when provided; otherwise uses managed identity through `DefaultAzureCredential`.
+- Optional Foundry AI consensus can be enabled with `ORDER_PROCESSOR_ENABLE_CUSTOMER_AI_CONSENSUS=true`. It runs two customer-record prompts over vector candidates, retries disagreement up to `ORDER_PROCESSOR_CUSTOMER_AI_MAX_ATTEMPTS` (default `3`), and falls back to a decider prompt before returning no customer code.
 - Uses Cosmos `customers.embedding` and native customer vector search when running against Cosmos.
 
 If the result is below `confidenceThreshold` or ambiguous, the API creates a `customerIdentification` exception task for console resolution. If a customer is confidently matched, the stored `emailMessages` record and associated `orderRuns` record are updated with the customer id and identification result when those records exist.

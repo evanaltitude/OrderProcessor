@@ -10,7 +10,9 @@ from urllib import parse
 
 from .customer_identification import (
     DEFAULT_CUSTOMER_CONFIDENCE_THRESHOLD,
+    CustomerAiIdentifier,
     CustomerVectorSearch,
+    customer_ai_identifier_from_environment,
     customer_vector_search_from_environment,
     identify_customer as identify_customer_from_email,
     normalize_domain,
@@ -582,6 +584,7 @@ class OrderProcessorApi:
         self,
         repository: InMemoryRepository | None = None,
         customer_vector_search: CustomerVectorSearch | None = None,
+        customer_ai_identifier: CustomerAiIdentifier | None = None,
         source_archive: SourceRowArchive | None = None,
         import_embedding_client: TextEmbeddingClient | None = None,
         output_artifact_store: OutputArtifactStore | None = None,
@@ -592,6 +595,11 @@ class OrderProcessorApi:
             customer_vector_search
             if customer_vector_search is not None
             else customer_vector_search_from_environment(self.repository)
+        )
+        self.customer_ai_identifier = (
+            customer_ai_identifier
+            if customer_ai_identifier is not None
+            else customer_ai_identifier_from_environment()
         )
         self.source_archive = source_archive or source_archive_from_environment()
         self.import_embedding_client = (
@@ -766,6 +774,7 @@ class OrderProcessorApi:
             customers,
             aliases=aliases,
             vector_search=self.customer_vector_search,
+            ai_identifier=self.customer_ai_identifier,
             confidence_threshold=DEFAULT_CUSTOMER_CONFIDENCE_THRESHOLD,
         )
         decision.matched_signals["customerIdentification"] = _api_value(result)
@@ -2151,6 +2160,7 @@ class OrderProcessorApi:
             customers,
             aliases=aliases,
             vector_search=self.customer_vector_search,
+            ai_identifier=self.customer_ai_identifier,
             confidence_threshold=confidence_threshold,
         )
 
