@@ -9,7 +9,13 @@ const state = {
   dashboard: null,
   selectedDistributorId: initialTenantId,
   customerPage: "list",
-  pendingRequests: 0
+  pendingRequests: 0,
+  lists: {
+    customers: { items: [], page: { total: 0, limit: 100, offset: 0, hasNext: false, hasPrevious: false }, loaded: false },
+    items: { items: [], page: { total: 0, limit: 100, offset: 0, hasNext: false, hasPrevious: false }, loaded: false }
+  },
+  outputs: { outputArtifacts: [], page: { total: 0, limit: 100, offset: 0, hasNext: false, hasPrevious: false }, loaded: false },
+  listTimers: {}
 };
 
 const el = (id) => document.getElementById(id);
@@ -965,7 +971,7 @@ function exceptionCustomerReference(task) {
 }
 
 function renderArtifacts() {
-  const artifacts = state.dashboard?.outputArtifacts || [];
+  const artifacts = state.outputs.outputArtifacts || state.dashboard?.outputArtifacts || [];
   el("artifactList").innerHTML = artifacts.map((artifact) => `
     <article class="artifact">
       <header>
@@ -1177,8 +1183,66 @@ function itemAlternateIds(item = {}) {
   ]).join(" | ");
 }
 
+async function loadConsoleData(section, body = {}, options = {}) {
+  const result = await post(
+    `/console/data/${section}`,
+    body,
+    { quiet: options.quiet, busyText: options.busyText || "Loading" }
+  );
+  if (result.session) state.dashboard = { ...(state.dashboard || {}), session: result.session };
+  return result;
+}
+
+function listSearchPayload(kind, offset = null) {
+  const prefix = listPrefix(kind);
+  const page = state.lists[kind]?.page || {};
+  const search = el(`${prefix}Search`)?.value.trim() || "";
+  const filterValue = el(`${prefix}FilterValue`)?.value.trim() || "";
+  return {
+    limit: page.limit || 100,
+    offset: offset === null ? page.offset || 0 : Math.max(0, offset),
+    search: [search, filterValue].filter(Boolean).join(" ")
+  };
+}
+
+async function loadCustomerDataList(kind, options = {}) {
+  const result = await loadConsoleData(
+    kind === "items" ? "items" : "customers",
+    listSearchPayload(kind, options.offset ?? null),
+    { quiet: options.quiet, busyText: kind === "items" ? "Loading items" : "Loading customers" }
+  );
+  state.lists[kind] = {
+    items: result[kind] || [],
+    page: result.page || { total: 0, limit: 100, offset: 0, hasNext: false, hasPrevious: false },
+    loaded: true
+  };
+  renderCustomerDataList(kind);
+}
+
+function scheduleCustomerDataListLoad(kind) {
+  window.clearTimeout(state.listTimers[kind]);
+  state.listTimers[kind] = window.setTimeout(() => {
+    loadCustomerDataList(kind, { offset: 0, quiet: true }).catch((error) => showDetails(payloadForError(error)));
+  }, 250);
+}
+
+async function loadOutputs(options = {}) {
+  const page = state.outputs.page || {};
+  const result = await loadConsoleData(
+    "outputs",
+    { limit: page.limit || 100, offset: options.offset ?? page.offset ?? 0 },
+    { quiet: options.quiet, busyText: "Loading outputs" }
+  );
+  state.outputs = {
+    outputArtifacts: result.outputArtifacts || [],
+    page: result.page || { total: 0, limit: 100, offset: 0, hasNext: false, hasPrevious: false },
+    loaded: true
+  };
+  renderArtifacts();
+}
+
 function listRecords(kind) {
-  return kind === "items" ? state.dashboard?.items || [] : state.dashboard?.customers || [];
+  return state.lists[kind]?.items || [];
 }
 
 function listBaseColumns(kind) {
@@ -1258,9 +1322,16 @@ function renderCustomerDataList(kind) {
   const prefix = listPrefix(kind);
   updateFilterFieldOptions(el(`${prefix}FilterField`), columns);
   const filtered = filteredListRows(kind, records, columns);
+  const page = state.lists[kind]?.page || {};
   const latest = latestDate(records);
   const metaId = kind === "items" ? "fullItemListMeta" : "downstreamCustomerListMeta";
-  el(metaId).textContent = `${filtered.length} of ${records.length} records${latest ? ` - last update ${latest}` : ""}`;
+  const start = page.total ? (page.offset || 0) + 1 : 0;
+  const end = Math.min((page.offset || 0) + records.length, page.total || records.length);
+  el(metaId).textContent = `${start}-${end} of ${page.total ?? records.length} records${latest ? ` - page latest ${latest}` : ""}`;
+  const prevButton = el(kind === "items" ? "itemListPreviousButton" : "downstreamCustomerPreviousButton");
+  const nextButton = el(kind === "items" ? "itemListNextButton" : "downstreamCustomerNextButton");
+  if (prevButton) prevButton.disabled = !page.hasPrevious;
+  if (nextButton) nextButton.disabled = !page.hasNext;
   renderListTable(kind, filtered, columns);
 }
 
@@ -1289,20 +1360,20 @@ function exportCustomerDataList(kind) {
 }
 
 function renderReadOnlyLists() {
-  const customers = state.dashboard?.customers || [];
-  const items = state.dashboard?.items || [];
-  el("customerListUpdated").textContent = `Last update ${latestDate(customers) || "not yet imported"}`;
-  el("itemListUpdated").textContent = `Last update ${latestDate(items) || "not yet imported"}`;
+  const customerStats = state.dashboard?.customerListStats || {};
+  const itemStats = state.dashboard?.itemListStats || {};
+  el("customerListUpdated").textContent = `Last update ${customerStats.latest || "not yet imported"}`;
+  el("itemListUpdated").textContent = `Last update ${itemStats.latest || "not yet imported"}`;
   renderImportTargets();
   el("downstreamCustomerPreview").innerHTML = `
-    <div><strong>Records</strong><span>${customers.length}</span></div>
-    <div><strong>Fields</strong><span>${listColumns("customers", customers).length}</span></div>
-    <div><strong>Last Update</strong><span>${escapeHtml(latestDate(customers) || "not yet imported")}</span></div>
+    <div><strong>Records</strong><span>${customerStats.count ?? 0}</span></div>
+    <div><strong>Fields</strong><span>${CUSTOMER_LIST_BASE_COLUMNS.length}</span></div>
+    <div><strong>Last Update</strong><span>${escapeHtml(customerStats.latest || "not yet imported")}</span></div>
   `;
   el("itemListPreview").innerHTML = `
-    <div><strong>Records</strong><span>${items.length}</span></div>
-    <div><strong>Fields</strong><span>${listColumns("items", items).length}</span></div>
-    <div><strong>Last Update</strong><span>${escapeHtml(latestDate(items) || "not yet imported")}</span></div>
+    <div><strong>Records</strong><span>${itemStats.count ?? 0}</span></div>
+    <div><strong>Fields</strong><span>${ITEM_LIST_BASE_COLUMNS.length}</span></div>
+    <div><strong>Last Update</strong><span>${escapeHtml(itemStats.latest || "not yet imported")}</span></div>
   `;
 }
 
@@ -1313,9 +1384,15 @@ function renderSession() {
     : `${session.reason || "unauthorized"}`;
 }
 
+function resetSectionData() {
+  state.lists.customers = { items: [], page: { total: 0, limit: 100, offset: 0, hasNext: false, hasPrevious: false }, loaded: false };
+  state.lists.items = { items: [], page: { total: 0, limit: 100, offset: 0, hasNext: false, hasPrevious: false }, loaded: false };
+  state.outputs = { outputArtifacts: [], page: { total: 0, limit: 100, offset: 0, hasNext: false, hasPrevious: false }, loaded: false };
+}
+
 async function refresh(options = {}) {
   if (options.quiet && state.pendingRequests > 0) return;
-  const dashboardView = options.full || activeConsoleView() !== "monitor" ? "full" : "monitor";
+  const dashboardView = options.full ? "full" : activeConsoleView() === "monitor" ? "monitor" : "config";
   const selectedBeforeRefresh = state.selectedDistributorId;
   state.dashboard = await post(
     "/console/dashboard",
@@ -1335,6 +1412,13 @@ async function refresh(options = {}) {
   renderSystemSettings();
   renderDistributorSelector();
   renderCustomerPage();
+  if (activeConsoleView() === "outputs") await loadOutputs({ quiet: options.quiet });
+  if (activeConsoleView() === "customers" && state.customerPage === "customer-list") {
+    await loadCustomerDataList("customers", { quiet: options.quiet });
+  }
+  if (activeConsoleView() === "customers" && state.customerPage === "item-list") {
+    await loadCustomerDataList("items", { quiet: options.quiet });
+  }
 }
 
 function activeView(id) {
@@ -1346,6 +1430,7 @@ async function openDistributor(tenantId) {
   state.tenantId = tenantId;
   state.selectedDistributorId = tenantId;
   state.customerPage = "detail";
+  resetSectionData();
   await refresh();
 }
 
@@ -1353,6 +1438,7 @@ async function switchDistributor(tenantId) {
   if (!tenantId || tenantId === state.tenantId) return;
   state.tenantId = tenantId;
   state.selectedDistributorId = tenantId;
+  resetSectionData();
   if (activeConsoleView() === "customers") {
     state.customerPage = "detail";
   }
@@ -1715,14 +1801,32 @@ document.addEventListener("click", async (event) => {
   if (target.id === "openDownstreamCustomerListButton") {
     state.customerPage = "customer-list";
     renderCustomerPage();
+    await loadCustomerDataList("customers", { offset: 0 });
   }
   if (target.id === "openItemListButton") {
     state.customerPage = "item-list";
     renderCustomerPage();
+    await loadCustomerDataList("items", { offset: 0 });
   }
   if (target.id === "backFromDownstreamCustomerListButton" || target.id === "backFromItemListButton") {
     state.customerPage = "detail";
     renderCustomerPage();
+  }
+  if (target.id === "downstreamCustomerPreviousButton") {
+    const page = state.lists.customers.page || {};
+    await loadCustomerDataList("customers", { offset: Math.max(0, (page.offset || 0) - (page.limit || 100)) });
+  }
+  if (target.id === "downstreamCustomerNextButton") {
+    const page = state.lists.customers.page || {};
+    await loadCustomerDataList("customers", { offset: (page.offset || 0) + (page.limit || 100) });
+  }
+  if (target.id === "itemListPreviousButton") {
+    const page = state.lists.items.page || {};
+    await loadCustomerDataList("items", { offset: Math.max(0, (page.offset || 0) - (page.limit || 100)) });
+  }
+  if (target.id === "itemListNextButton") {
+    const page = state.lists.items.page || {};
+    await loadCustomerDataList("items", { offset: (page.offset || 0) + (page.limit || 100) });
   }
   if (target.id === "exportDownstreamCustomersButton") exportCustomerDataList("customers");
   if (target.id === "exportItemsButton") exportCustomerDataList("items");
@@ -1768,14 +1872,14 @@ el("routingForm").elements.outcome.addEventListener("change", syncRoutingDefault
   "downstreamCustomerFilterField",
   "downstreamCustomerFilterValue"
 ].forEach((id) => {
-  el(id).addEventListener(id.endsWith("Field") ? "change" : "input", () => renderCustomerDataList("customers"));
+  el(id).addEventListener(id.endsWith("Field") ? "change" : "input", () => scheduleCustomerDataListLoad("customers"));
 });
 [
   "itemListSearch",
   "itemListFilterField",
   "itemListFilterValue"
 ].forEach((id) => {
-  el(id).addEventListener(id.endsWith("Field") ? "change" : "input", () => renderCustomerDataList("items"));
+  el(id).addEventListener(id.endsWith("Field") ? "change" : "input", () => scheduleCustomerDataListLoad("items"));
 });
 wireForms();
 window.addEventListener("unhandledrejection", (event) => {

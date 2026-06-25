@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 import json
 import os
 import re
+import time
 from typing import Any
 from urllib import parse
 
@@ -172,6 +173,62 @@ CONSOLE_EMAIL_FIELDS = [
     "customerIdentification",
     "createdAt",
     "updatedAt",
+]
+CONSOLE_MONITOR_RECORD_FIELDS = [
+    "id",
+    "tenantId",
+    "section",
+    "emailMessageId",
+    "orderRunId",
+    "exceptionId",
+    "pathway",
+    "status",
+    "sender",
+    "recipient",
+    "subject",
+    "receivedAt",
+    "updatedAt",
+    "categorizedAs",
+    "customerId",
+    "customerCode",
+    "customerName",
+    "csr",
+    "csrEmail",
+    "actionTaken",
+    "movedTo",
+    "emailUrl",
+    "poNumber",
+    "orderNumber",
+    "lineCount",
+    "artifactCount",
+    "type",
+    "exception",
+    "prompt",
+    "createdAt",
+]
+CONSOLE_CUSTOMER_SEARCH_FIELDS = [
+    "id",
+    "customerCode",
+    "name",
+    "routeNumber",
+    "csrName",
+    "csrEmail",
+    "csrFolder",
+    "storeNumber",
+    "city",
+    "state",
+    "postalCode",
+    "phone",
+    "website",
+    "customerEmail",
+]
+CONSOLE_ITEM_SEARCH_FIELDS = [
+    "id",
+    "customerId",
+    "internalItemNumber",
+    "description",
+    "upc",
+    "sourceName",
 ]
 
 
@@ -720,6 +777,8 @@ class OrderProcessorApi:
         )
         self.output_artifact_store = output_artifact_store or output_artifact_store_from_environment()
         self.secret_store = secret_store if secret_store is not None else secret_store_from_environment()
+        self._console_cache: dict[tuple[Any, ...], tuple[float, Any]] = {}
+        self._monitor_backfill_checked_tenants: set[str] = set()
 
     def ingest_email(self, payload: dict[str, Any]) -> dict[str, Any]:
         email = _email_from_payload(payload)
@@ -739,7 +798,8 @@ class OrderProcessorApi:
 
         email.status = ProcessingStatus.PROCESSING
         self._set_email_processing_state(email, stage="received", pathway="routing")
-        self.repository.upsert("emailMessages", to_dict(email))
+        email_doc = self.repository.upsert("emailMessages", to_dict(email))
+        self._upsert_monitor_record_for_email(email_doc)
 
         rules: list[RoutingRule] = []
         customers: list[CustomerProfile] = []
@@ -802,7 +862,8 @@ class OrderProcessorApi:
             stage=self._processing_stage_for_routing_decision(decision),
             pathway=self._pathway_for_routing_decision(decision),
         )
-        self.repository.upsert("emailMessages", to_dict(email))
+        email_doc = self.repository.upsert("emailMessages", to_dict(email))
+        self._upsert_monitor_record_for_email(email_doc)
 
         order_run = None
         if decision.outcome == RoutingOutcome.KNOWN_ORDER:
@@ -825,8 +886,9 @@ class OrderProcessorApi:
             )
             email.order_run_id = order_run.id
             email.updated_at = utc_now()
-            self.repository.upsert("orderRuns", to_dict(order_run))
-            self.repository.upsert("emailMessages", to_dict(email))
+            order_doc = self.repository.upsert("orderRuns", to_dict(order_run))
+            email_doc = self.repository.upsert("emailMessages", to_dict(email))
+            self._upsert_monitor_record_for_email(email_doc, order=order_doc)
 
         exception_task = None
         if decision.outcome in {
@@ -900,7 +962,8 @@ class OrderProcessorApi:
             pathway=self._pathway_for_routing_decision(decision),
             details={"routingDecision": to_dict(decision)},
         )
-        self.repository.upsert("emailMessages", to_dict(email))
+        email_doc = self.repository.upsert("emailMessages", to_dict(email))
+        self._upsert_monitor_record_for_email(email_doc)
 
         result = identify_customer_from_email(
             email,
@@ -1913,7 +1976,8 @@ class OrderProcessorApi:
         source["processing"] = processing
         email["source"] = source
         email["updatedAt"] = now
-        self.repository.upsert("emailMessages", email)
+        stored_email = self.repository.upsert("emailMessages", email)
+        self._upsert_monitor_record_for_email(stored_email)
 
         if action_status not in {"failed", "partial"}:
             return
@@ -2528,7 +2592,8 @@ class OrderProcessorApi:
                 context={"error": str(exc), "outputProfiles": [to_dict(profile) for profile in output_profiles]},
             )
         order.processing_completed_at = utc_now()
-        self.repository.upsert("orderRuns", to_dict(order))
+        order_doc = self.repository.upsert("orderRuns", to_dict(order))
+        self._upsert_monitor_record_for_order(order_doc)
         self._audit(
             order.tenant_id,
             "order.processed",
@@ -2649,7 +2714,8 @@ class OrderProcessorApi:
             existing_email["customerId"] = result.customer_id
             existing_email["customerIdentification"] = _api_value(result)
             existing_email["updatedAt"] = utc_now()
-            self.repository.upsert("emailMessages", existing_email)
+            stored_email = self.repository.upsert("emailMessages", existing_email)
+            self._upsert_monitor_record_for_email(stored_email)
 
             order_run_id = _pick(existing_email, "orderRunId", "order_run_id", default=email.order_run_id)
             if order_run_id:
@@ -2657,13 +2723,15 @@ class OrderProcessorApi:
                 if existing_order is not None:
                     existing_order["customerId"] = result.customer_id
                     existing_order["updatedAt"] = utc_now()
-                    self.repository.upsert("orderRuns", existing_order)
+                    order_doc = self.repository.upsert("orderRuns", existing_order)
+                    self._upsert_monitor_record_for_order(order_doc)
         elif email.order_run_id:
             existing_order = self.repository.get("orderRuns", email.order_run_id)
             if existing_order is not None:
                 existing_order["customerId"] = result.customer_id
                 existing_order["updatedAt"] = utc_now()
-                self.repository.upsert("orderRuns", existing_order)
+                order_doc = self.repository.upsert("orderRuns", existing_order)
+                self._upsert_monitor_record_for_order(order_doc)
 
     def validate_item(self, payload: dict[str, Any]) -> dict[str, Any]:
         tenant_id = _pick(payload, "tenantId", "tenant_id", default="default")
@@ -2825,7 +2893,8 @@ class OrderProcessorApi:
         if order.status != ProcessingStatus.FAILED:
             order.status = ProcessingStatus.NEEDS_REVIEW if unresolved else ProcessingStatus.COMPLETED
         order.updated_at = utc_now()
-        self.repository.upsert("orderRuns", to_dict(order))
+        order_doc = self.repository.upsert("orderRuns", to_dict(order))
+        self._upsert_monitor_record_for_order(order_doc)
         return updated_line
 
     def _item_validation_request_context(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -2955,6 +3024,7 @@ class OrderProcessorApi:
             archive.import_run_id,
             _compact_import_audit_details(result, ["customers", "customerAliases"]),
         )
+        self._clear_console_cache(tenant_id)
         return result
 
     def import_items(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -3046,6 +3116,7 @@ class OrderProcessorApi:
             _compact_import_audit_details(result, ["items"]),
             customer_id=customer_id,
         )
+        self._clear_console_cache(tenant_id)
         return result
 
     def _existing_item_documents_by_number(self, tenant_id: str) -> dict[str, list[dict[str, Any]]]:
@@ -3184,6 +3255,103 @@ class OrderProcessorApi:
             for item in self.repository.query_by_tenant(container, tenant_id)
         ]
 
+    def _cached_console_value(self, key: tuple[Any, ...], factory: Any, ttl_seconds: int = 45) -> Any:
+        now = time.monotonic()
+        cached = self._console_cache.get(key)
+        if cached and now - cached[0] < ttl_seconds:
+            return cached[1]
+        value = factory()
+        self._console_cache[key] = (now, value)
+        return value
+
+    def _clear_console_cache(self, tenant_id: str | None = None) -> None:
+        if tenant_id is None:
+            self._console_cache.clear()
+            return
+        prefix = str(tenant_id)
+        self._console_cache = {
+            key: value
+            for key, value in self._console_cache.items()
+            if len(key) < 2 or str(key[1]) != prefix
+        }
+
+    @staticmethod
+    def _console_page_request(payload: dict[str, Any]) -> dict[str, Any]:
+        limit = int(_pick(payload, "limit", "pageSize", "page_size", default=100) or 100)
+        offset = int(_pick(payload, "offset", default=0) or 0)
+        page = int(_pick(payload, "page", default=0) or 0)
+        limit = max(1, min(limit, 500))
+        if page > 0 and not offset:
+            offset = (page - 1) * limit
+        return {
+            "limit": limit,
+            "offset": max(0, offset),
+            "search": str(_pick(payload, "search", "q", default="") or "").strip(),
+        }
+
+    def _query_console_page(
+        self,
+        container: str,
+        tenant_id: str,
+        *,
+        fields: list[str],
+        search_fields: list[str],
+        order_by: str,
+        descending: bool,
+        payload: dict[str, Any],
+        customer_filter: set[str] | None | str = None,
+        include_global: bool = False,
+    ) -> dict[str, Any]:
+        page = self._console_page_request(payload)
+        query_page = getattr(self.repository, "query_by_tenant_page", None)
+        customer_ids = None if customer_filter is None else sorted(customer_filter) if isinstance(customer_filter, set) else []
+        if callable(query_page):
+            result = query_page(
+                container,
+                tenant_id,
+                fields=fields,
+                limit=page["limit"],
+                offset=page["offset"],
+                search=page["search"],
+                search_fields=search_fields,
+                order_by=order_by,
+                descending=descending,
+                customer_ids=customer_ids,
+                include_global=include_global,
+            )
+        else:
+            documents = self._filter_customer_documents(
+                self._query_console_records(container, tenant_id, fields),
+                customer_filter,
+                {"isPlatformAdmin": True, "permissions": ["viewAllCustomers"], "allowedCustomerIds": []},
+                include_global=include_global,
+            )
+            result = {
+                "items": documents[page["offset"] : page["offset"] + page["limit"]],
+                "total": len(documents),
+                "limit": page["limit"],
+                "offset": page["offset"],
+            }
+        result["items"] = [_without_heavy_console_fields(item) for item in _as_list(result.get("items")) if isinstance(item, dict)]
+        result["hasNext"] = int(result.get("offset", 0)) + len(result["items"]) < int(result.get("total", 0))
+        result["hasPrevious"] = int(result.get("offset", 0)) > 0
+        result["search"] = page["search"]
+        return result
+
+    def _query_console_stats(self, container: str, tenant_id: str) -> dict[str, Any]:
+        stats = getattr(self.repository, "query_by_tenant_stats", None)
+        if callable(stats):
+            return dict(stats(container, tenant_id, "lastImportedAt"))
+        documents = self.repository.query_by_tenant(container, tenant_id)
+        latest = sorted(
+            [
+                str(_pick(item, "lastImportedAt", "last_imported_at", "updatedAt", "updated_at", default=""))
+                for item in documents
+                if _pick(item, "lastImportedAt", "last_imported_at", "updatedAt", "updated_at", default="")
+            ]
+        )
+        return {"count": len(documents), "latest": latest[-1] if latest else ""}
+
     @staticmethod
     def _pathway_from_email_doc(email: dict[str, Any], order: dict[str, Any] | None = None) -> str:
         source = _as_dict(_pick(email, "source", default={}))
@@ -3206,6 +3374,205 @@ class OrderProcessorApi:
         if outcome == RoutingOutcome.NEEDS_HUMAN_REVIEW.value:
             return "humanReview"
         return outcome or "email"
+
+    def _upsert_monitor_record_for_email(
+        self,
+        email: dict[str, Any],
+        order: dict[str, Any] | None = None,
+        exception: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        tenant_id = str(_pick(email, "tenantId", "tenant_id", default=""))
+        email_id = str(_pick(email, "id", default=""))
+        if not tenant_id or not email_id:
+            return None
+        order = order or (
+            self.repository.get("orderRuns", str(_pick(email, "orderRunId", "order_run_id", default="")))
+            if _pick(email, "orderRunId", "order_run_id", default="")
+            else None
+        )
+        exception = exception or self._open_exception_for_monitor(tenant_id, email_id, str(_pick(order or {}, "id", default="")))
+        customer = self.repository.get("customers", str(_document_customer_id(email) or _document_customer_id(order or {}) or ""))
+        customer_by_id = {str(_pick(customer or {}, "id", default="")): customer} if customer else {}
+        entry = (
+            self._monitor_entry_from_exception(
+                exception,
+                customer_by_id,
+                {email_id: email},
+                {str(_pick(order or {}, "id", default="")): order} if order else {},
+            )
+            if exception
+            else self._monitor_entry_from_order(order, customer_by_id, email) if order else self._monitor_entry_from_email(email, customer_by_id, None)
+        )
+        record = self._monitor_record_from_entry(entry, tenant_id)
+        return self.repository.upsert("monitorRecords", record)
+
+    def _upsert_monitor_record_for_order(self, order: dict[str, Any]) -> dict[str, Any] | None:
+        tenant_id = str(_pick(order, "tenantId", "tenant_id", default=""))
+        if not tenant_id:
+            return None
+        email_id = str(_pick(order, "emailMessageId", "email_message_id", default=""))
+        email = self.repository.get("emailMessages", email_id) if email_id else None
+        if email:
+            return self._upsert_monitor_record_for_email(email, order=order)
+        customer = self.repository.get("customers", str(_document_customer_id(order) or ""))
+        customer_by_id = {str(_pick(customer or {}, "id", default="")): customer} if customer else {}
+        exception = self._open_exception_for_monitor(tenant_id, "", str(_pick(order, "id", default="")))
+        entry = (
+            self._monitor_entry_from_exception(exception, customer_by_id, {}, {str(_pick(order, "id", default="")): order})
+            if exception
+            else self._monitor_entry_from_order(order, customer_by_id, None)
+        )
+        return self.repository.upsert("monitorRecords", self._monitor_record_from_entry(entry, tenant_id))
+
+    def _upsert_monitor_record_for_exception(self, task: dict[str, Any]) -> dict[str, Any] | None:
+        tenant_id = str(_pick(task, "tenantId", "tenant_id", default=""))
+        if not tenant_id:
+            return None
+        email_id = str(_pick(task, "emailMessageId", "email_message_id", default=""))
+        order_id = str(_pick(task, "orderRunId", "order_run_id", default=""))
+        email = self.repository.get("emailMessages", email_id) if email_id else None
+        order = self.repository.get("orderRuns", order_id) if order_id else None
+        if email:
+            return self._upsert_monitor_record_for_email(
+                email,
+                order=order,
+                exception=task if _document_status(task) == ExceptionStatus.OPEN.value else None,
+            )
+        if order:
+            return self._upsert_monitor_record_for_order(order)
+        customer = self.repository.get("customers", str(self._exception_customer_id(task) or ""))
+        customer_by_id = {str(_pick(customer or {}, "id", default="")): customer} if customer else {}
+        entry = self._monitor_entry_from_exception(task, customer_by_id, {}, {})
+        return self.repository.upsert("monitorRecords", self._monitor_record_from_entry(entry, tenant_id))
+
+    def _open_exception_for_monitor(
+        self,
+        tenant_id: str,
+        email_message_id: str,
+        order_run_id: str,
+    ) -> dict[str, Any] | None:
+        if not email_message_id and not order_run_id:
+            return None
+        for task in self.repository.query_by_tenant("exceptionTasks", tenant_id):
+            if _document_status(task) != ExceptionStatus.OPEN.value:
+                continue
+            if email_message_id and _pick(task, "emailMessageId", "email_message_id", default="") == email_message_id:
+                return task
+            if order_run_id and _pick(task, "orderRunId", "order_run_id", default="") == order_run_id:
+                return task
+        return None
+
+    @staticmethod
+    def _monitor_record_from_entry(entry: dict[str, Any], tenant_id: str) -> dict[str, Any]:
+        active_statuses = {
+            ProcessingStatus.RECEIVED.value,
+            ProcessingStatus.ROUTED.value,
+            ProcessingStatus.PROCESSING.value,
+        }
+        status = str(_pick(entry, "status", default=""))
+        section = "nonOrderEmails"
+        if _pick(entry, "exceptionId", default="") and status == ExceptionStatus.OPEN.value:
+            section = "exceptions"
+        elif status in active_statuses:
+            section = "active"
+        elif _pick(entry, "orderRunId", default="") and entry.get("pathway") == "orderProcessing":
+            section = "processedOrders"
+        elif entry.get("pathway") == "webstoreOrder":
+            section = "webstoreOrders"
+        record_id = ""
+        for key in ("emailMessageId", "orderRunId", "exceptionId", "id"):
+            value = str(_pick(entry, key, default="") or "").strip()
+            if value:
+                record_id = value
+                break
+        record = {
+            field: entry[field]
+            for field in CONSOLE_MONITOR_RECORD_FIELDS
+            if field in entry and entry[field] is not None
+        }
+        record.update(
+            {
+                "id": record_id or stable_id(tenant_id, utc_now()),
+                "tenantId": tenant_id,
+                "section": section,
+                "updatedAt": str(_pick(entry, "updatedAt", "createdAt", default=utc_now())),
+            }
+        )
+        return record
+
+    def _monitor_sections_from_records(self, records: list[dict[str, Any]]) -> dict[str, Any]:
+        sections = {
+            "active": [],
+            "exceptions": [],
+            "processedOrders": [],
+            "webstoreOrders": [],
+            "nonOrderEmails": [],
+        }
+        for record in records:
+            section = str(_pick(record, "section", default="nonOrderEmails"))
+            sections.setdefault(section, []).append(record)
+        return {key: self._sort_recent(value) for key, value in sections.items()}
+
+    def _backfill_monitor_records_for_console(
+        self,
+        tenant_id: str,
+        customer_filter: set[str] | None | str,
+        session: dict[str, Any],
+    ) -> dict[str, Any]:
+        customers = self._filter_customer_documents(
+            self._query_console_records("customers", tenant_id, CONSOLE_CUSTOMER_FIELDS),
+            customer_filter,
+            session,
+        )
+        order_runs = self._filter_customer_documents(
+            self.repository.query_by_tenant("orderRuns", tenant_id),
+            customer_filter,
+            session,
+        )
+        email_messages = self._filter_customer_documents(
+            self._query_console_records("emailMessages", tenant_id, CONSOLE_EMAIL_FIELDS),
+            customer_filter,
+            session,
+        )
+        exceptions = self._filter_exceptions_for_console(
+            self.repository.query_by_tenant("exceptionTasks", tenant_id),
+            order_runs,
+            customer_filter,
+            session,
+        )
+        monitor = self._monitor_sections(email_messages, order_runs, exceptions, customers)
+        for entries in monitor.values():
+            for entry in _as_list(entries):
+                if isinstance(entry, dict):
+                    self.repository.upsert("monitorRecords", self._monitor_record_from_entry(entry, tenant_id))
+        return monitor
+
+    @staticmethod
+    def _console_summary_from_monitor(monitor: dict[str, Any], item_stats: dict[str, Any] | None = None) -> dict[str, Any]:
+        processed_orders = _as_list(monitor.get("processedOrders"))
+        exceptions = _as_list(monitor.get("exceptions"))
+        completed = [item for item in processed_orders if _document_status(item) == ProcessingStatus.COMPLETED.value]
+        failed = [item for item in processed_orders if _document_status(item) == ProcessingStatus.FAILED.value]
+        total_finished = len(completed) + len(failed)
+        return {
+            "activeRunCount": len(_as_list(monitor.get("active"))),
+            "processedOrderCount": len(processed_orders),
+            "successRate": round(len(completed) / total_finished, 4) if total_finished else 0.0,
+            "openExceptionCount": len(exceptions),
+            "unresolvedLineCount": 0,
+            "itemRecordCount": int((item_stats or {}).get("count") or 0),
+            "customerIdentificationFailureCount": len(
+                [item for item in exceptions if str(_pick(item, "type", default="")) == "customerIdentification"]
+            ),
+            "processorFailureCount": len(
+                [item for item in exceptions if str(_pick(item, "type", default="")) == "parserFailure"]
+            ),
+            "outputGenerationFailureCount": len(
+                [item for item in exceptions if str(_pick(item, "type", default="")) == "outputGeneration"]
+            ),
+            "averageProcessingLatencyMs": None,
+            "p95ProcessingLatencyMs": None,
+        }
 
     def _monitor_sections(
         self,
@@ -3469,33 +3836,102 @@ class OrderProcessorApi:
         tenant_id = session["tenantId"]
         dashboard_view = str(_pick(payload, "view", "dashboardView", "dashboard_view", default="full") or "full").lower()
         compact_monitor = dashboard_view == "monitor"
+        config_view = dashboard_view == "config"
         requested_customer_id = _pick(payload, "customerId", "customer_id", default=None)
         customer_filter = self._authorized_customer_filter(session, requested_customer_id)
         if customer_filter == "__denied__":
             return {"session": session, "error": "forbidden", "message": "Customer is outside this user's assignments."}
 
-        customers = self._filter_customer_documents(
+        tenant = self.repository.get("tenants", tenant_id) or {
+            "id": tenant_id,
+            "tenantId": tenant_id,
+            "name": tenant_id,
+            "environment": "",
+            "status": "active",
+            "settings": {},
+        }
+        system_tenant = self.repository.get("tenants", SYSTEM_TENANT_ID) or {
+            "id": SYSTEM_TENANT_ID,
+            "tenantId": SYSTEM_TENANT_ID,
+            "name": "System Settings",
+            "environment": "system",
+            "status": "active",
+            "settings": {},
+        }
+        distributor_customers = self._cached_console_value(
+            ("distributorCustomers", tenant_id, tuple(_as_list(session.get("permissions", [])))),
+            lambda: self._distributor_customers_for_console(session, tenant),
+        )
+        item_stats = self._query_console_stats("items", tenant_id)
+        customer_stats = self._query_console_stats("customers", tenant_id)
+
+        if compact_monitor:
+            monitor_page = self._query_console_page(
+                "monitorRecords",
+                tenant_id,
+                fields=CONSOLE_MONITOR_RECORD_FIELDS,
+                search_fields=["sender", "recipient", "subject", "customerCode", "customerName", "csr", "status", "pathway"],
+                order_by="updatedAt",
+                descending=True,
+                payload={**payload, "limit": _pick(payload, "limit", default=250)},
+                customer_filter=customer_filter,
+            )
+            monitor = self._monitor_sections_from_records(monitor_page["items"])
+            if tenant_id not in self._monitor_backfill_checked_tenants and int(monitor_page.get("total", 0) or 0) < 250:
+                monitor = self._backfill_monitor_records_for_console(tenant_id, customer_filter, session)
+                self._monitor_backfill_checked_tenants.add(tenant_id)
+            return {
+                "session": session,
+                "dashboardView": "monitor",
+                "tenant": tenant,
+                "systemSettings": dict(_pick(system_tenant, "settings", default={}) or {}),
+                "distributorCustomers": distributor_customers,
+                "summary": self._console_summary_from_monitor(monitor, item_stats),
+                "observabilityMetrics": {},
+                "recentAuditEvents": [],
+                "monitor": monitor,
+                "monitorPage": monitor_page,
+                "activeRuns": monitor["active"],
+                "processedOrders": monitor["processedOrders"],
+                "exceptionQueue": monitor["exceptions"],
+                "mailboxes": [],
+                "customerIdentificationRules": [],
+                "routingRules": [],
+                "customers": [],
+                "items": [],
+                "customerListStats": customer_stats,
+                "itemListStats": item_stats,
+                "customerDataStatus": [],
+                "itemDataStatus": [],
+                "importTargets": {},
+                "processorProfiles": [],
+                "outputProfiles": [],
+                "microsoftAuthConnections": [],
+                "outputArtifacts": [],
+            }
+
+        customers = [] if config_view else self._filter_customer_documents(
             self._query_console_records("customers", tenant_id, CONSOLE_CUSTOMER_FIELDS),
             customer_filter,
             session,
         )
-        order_runs = self._filter_customer_documents(
+        order_runs = [] if config_view else self._filter_customer_documents(
             self.repository.query_by_tenant("orderRuns", tenant_id),
             customer_filter,
             session,
         )
-        email_messages = self._filter_customer_documents(
+        email_messages = [] if config_view else self._filter_customer_documents(
             self._query_console_records("emailMessages", tenant_id, CONSOLE_EMAIL_FIELDS),
             customer_filter,
             session,
         )
-        exceptions = self._filter_exceptions_for_console(
+        exceptions = [] if config_view else self._filter_exceptions_for_console(
             self.repository.query_by_tenant("exceptionTasks", tenant_id),
             order_runs,
             customer_filter,
             session,
         )
-        if compact_monitor:
+        if compact_monitor or config_view:
             mailboxes: list[dict[str, Any]] = []
             customer_identification_rules: list[dict[str, Any]] = []
             routing_rules: list[dict[str, Any]] = []
@@ -3504,6 +3940,106 @@ class OrderProcessorApi:
             processor_profiles: list[dict[str, Any]] = []
             output_profiles: list[dict[str, Any]] = []
             microsoft_auth_connections: list[dict[str, Any]] = []
+            if config_view:
+                mailboxes = self._cached_console_value(
+                    ("mailboxes", tenant_id, str(customer_filter)),
+                    lambda: self._filter_customer_documents(
+                        self.repository.query_by_tenant("mailboxAccounts", tenant_id),
+                        customer_filter,
+                        session,
+                        include_global=True,
+                    ),
+                )
+                customer_identification_rules = self._cached_console_value(
+                    ("customerAliases", tenant_id, str(customer_filter)),
+                    lambda: self._filter_customer_documents(
+                        self.repository.query_by_tenant("customerAliases", tenant_id),
+                        customer_filter,
+                        session,
+                    ),
+                )
+                routing_rules = self._cached_console_value(
+                    ("routingRules", tenant_id, str(customer_filter)),
+                    lambda: self._filter_customer_documents(
+                        self.repository.query_by_tenant("routingRules", tenant_id),
+                        customer_filter,
+                        session,
+                        include_global=True,
+                    ),
+                )
+                processor_profiles = self._cached_console_value(
+                    ("processorProfiles", tenant_id, str(customer_filter)),
+                    lambda: self._filter_customer_documents(
+                        self.repository.query_by_tenant("processorProfiles", tenant_id),
+                        customer_filter,
+                        session,
+                        include_global=True,
+                    ),
+                )
+                output_profiles = self._cached_console_value(
+                    ("outputProfiles", tenant_id, str(customer_filter)),
+                    lambda: self._filter_customer_documents(
+                        self.repository.query_by_tenant("outputProfiles", tenant_id),
+                        customer_filter,
+                        session,
+                        include_global=True,
+                    ),
+                )
+                microsoft_auth_connections = self._cached_console_value(
+                    ("microsoftAuthConnections", tenant_id, str(customer_filter)),
+                    lambda: self._filter_customer_documents(
+                        self.repository.query_by_tenant("microsoftAuthConnections", tenant_id),
+                        customer_filter,
+                        session,
+                        include_global=True,
+                    ),
+                )
+                monitor_page = self._query_console_page(
+                    "monitorRecords",
+                    tenant_id,
+                    fields=CONSOLE_MONITOR_RECORD_FIELDS,
+                    search_fields=[],
+                    order_by="updatedAt",
+                    descending=True,
+                    payload={**payload, "limit": 250},
+                    customer_filter=customer_filter,
+                )
+                monitor = self._monitor_sections_from_records(monitor_page["items"])
+                if tenant_id not in self._monitor_backfill_checked_tenants and int(monitor_page.get("total", 0) or 0) < 250:
+                    monitor = self._backfill_monitor_records_for_console(tenant_id, customer_filter, session)
+                    self._monitor_backfill_checked_tenants.add(tenant_id)
+                return {
+                    "session": session,
+                    "dashboardView": "config",
+                    "tenant": tenant,
+                    "systemSettings": dict(_pick(system_tenant, "settings", default={}) or {}),
+                    "distributorCustomers": distributor_customers,
+                    "summary": self._console_summary_from_monitor(monitor, item_stats),
+                    "observabilityMetrics": {},
+                    "recentAuditEvents": [],
+                    "monitor": monitor,
+                    "monitorPage": monitor_page,
+                    "activeRuns": monitor["active"],
+                    "processedOrders": monitor["processedOrders"],
+                    "exceptionQueue": monitor["exceptions"],
+                    "mailboxes": self._sort_recent(mailboxes),
+                    "customerIdentificationRules": self._sort_recent(customer_identification_rules),
+                    "routingRules": sorted(
+                        routing_rules,
+                        key=lambda rule: int(_pick(rule, "priority", default=100) or 100),
+                    ),
+                    "customers": [],
+                    "items": [],
+                    "customerListStats": customer_stats,
+                    "itemListStats": item_stats,
+                    "customerDataStatus": [],
+                    "itemDataStatus": [],
+                    "importTargets": self._console_import_targets(tenant_id),
+                    "processorProfiles": processor_profiles,
+                    "outputProfiles": output_profiles,
+                    "microsoftAuthConnections": microsoft_auth_connections,
+                    "outputArtifacts": [],
+                }
         else:
             mailboxes = self._filter_customer_documents(
                 self.repository.query_by_tenant("mailboxAccounts", tenant_id),
@@ -3574,7 +4110,11 @@ class OrderProcessorApi:
         ]
 
         monitor = self._monitor_sections(email_messages, order_runs, exceptions, customers)
-        summary = self._console_summary(order_runs, exceptions, items, email_messages)
+        summary = (
+            self._console_summary_from_monitor(monitor, item_stats)
+            if config_view
+            else self._console_summary(order_runs, exceptions, items, email_messages)
+        )
         observability_metrics = dashboard_observability_metrics(order_runs, exceptions, audit_events)
         summary.update(
             {
@@ -3585,27 +4125,9 @@ class OrderProcessorApi:
                 "p95ProcessingLatencyMs": observability_metrics["processingLatency"]["p95Ms"],
             }
         )
-        tenant = self.repository.get("tenants", tenant_id) or {
-            "id": tenant_id,
-            "tenantId": tenant_id,
-            "name": tenant_id,
-            "environment": "",
-            "status": "active",
-            "settings": {},
-        }
-        system_tenant = self.repository.get("tenants", SYSTEM_TENANT_ID) or {
-            "id": SYSTEM_TENANT_ID,
-            "tenantId": SYSTEM_TENANT_ID,
-            "name": "System Settings",
-            "environment": "system",
-            "status": "active",
-            "settings": {},
-        }
-        distributor_customers = self._distributor_customers_for_console(session, tenant)
-
         return {
             "session": session,
-            "dashboardView": "monitor" if compact_monitor else "full",
+            "dashboardView": "config" if config_view else "full",
             "tenant": tenant,
             "systemSettings": dict(_pick(system_tenant, "settings", default={}) or {}),
             "distributorCustomers": distributor_customers,
@@ -3623,6 +4145,8 @@ class OrderProcessorApi:
             "routingRules": sorted(routing_rules, key=lambda rule: int(_pick(rule, "priority", default=100) or 100)),
             "customers": sorted(customers, key=lambda customer: str(_pick(customer, "name", default="")).lower()),
             "items": sorted(items, key=lambda item: str(_pick(item, "internalItemNumber", "id", default="")).lower()),
+            "customerListStats": customer_stats,
+            "itemListStats": item_stats,
             "customerDataStatus": self._customer_data_status(customers),
             "itemDataStatus": self._item_data_status(items),
             "importTargets": self._console_import_targets(tenant_id),
@@ -3631,6 +4155,119 @@ class OrderProcessorApi:
             "microsoftAuthConnections": microsoft_auth_connections,
             "outputArtifacts": output_artifacts,
         }
+
+    def console_data(self, section: str, payload: dict[str, Any]) -> dict[str, Any]:
+        session = self.console_session(payload)
+        if not session.get("authorized"):
+            return {"session": session}
+
+        tenant_id = session["tenantId"]
+        requested_customer_id = _pick(payload, "customerId", "customer_id", default=None)
+        customer_filter = self._authorized_customer_filter(session, requested_customer_id)
+        if customer_filter == "__denied__":
+            return {"session": session, "error": "forbidden", "message": "Customer is outside this user's assignments."}
+
+        section_key = str(section or "").strip().lower()
+        if section_key in {"customers", "customer-list", "customerlist"}:
+            if isinstance(customer_filter, set) and customer_filter:
+                records = []
+                for customer_id in sorted(customer_filter):
+                    document = self.repository.get("customers", customer_id)
+                    if document and str(_pick(document, "tenantId", "tenant_id", default="")) == tenant_id:
+                        records.append({field: document[field] for field in CONSOLE_CUSTOMER_FIELDS if field in document})
+                search = str(_pick(payload, "search", "q", default="") or "").strip().lower()
+                if search:
+                    records = [
+                        record for record in records
+                        if any(search in str(_pick(record, field, default="")).lower() for field in CONSOLE_CUSTOMER_SEARCH_FIELDS)
+                    ]
+                page = self._console_page_request(payload)
+                total = len(records)
+                items = records[page["offset"] : page["offset"] + page["limit"]]
+                result = {"items": items, "total": total, "limit": page["limit"], "offset": page["offset"], "search": page["search"]}
+                result["hasNext"] = page["offset"] + len(items) < total
+                result["hasPrevious"] = page["offset"] > 0
+            else:
+                result = self._query_console_page(
+                    "customers",
+                    tenant_id,
+                    fields=CONSOLE_CUSTOMER_FIELDS,
+                    search_fields=CONSOLE_CUSTOMER_SEARCH_FIELDS,
+                    order_by="name",
+                    descending=False,
+                    payload=payload,
+                )
+            return {"session": session, "section": "customers", "customers": result["items"], "page": result}
+
+        if section_key in {"items", "item-list", "itemlist"}:
+            result = self._query_console_page(
+                "items",
+                tenant_id,
+                fields=CONSOLE_ITEM_FIELDS,
+                search_fields=CONSOLE_ITEM_SEARCH_FIELDS,
+                order_by="internalItemNumber",
+                descending=False,
+                payload=payload,
+                customer_filter={GLOBAL_CUSTOMER_ID},
+                include_global=True,
+            )
+            return {"session": session, "section": "items", "items": result["items"], "page": result}
+
+        if section_key in {"outputs", "artifacts"}:
+            page = self._console_page_request(payload)
+            order_page = self._query_console_page(
+                "orderRuns",
+                tenant_id,
+                fields=[],
+                search_fields=["id", "poNumber", "orderNumber", "customerId"],
+                order_by="updatedAt",
+                descending=True,
+                payload=payload,
+                customer_filter=customer_filter,
+            )
+            artifacts = [
+                {
+                    "orderRunId": order["id"],
+                    "customerId": _document_customer_id(order),
+                    **artifact,
+                }
+                for order in order_page["items"]
+                for artifact in _as_list(_pick(order, "outputArtifacts", "output_artifacts", default=[]))
+                if isinstance(artifact, dict)
+            ]
+            return {
+                "session": session,
+                "section": "outputs",
+                "outputArtifacts": artifacts,
+                "page": {
+                    **page,
+                    "total": order_page["total"],
+                    "hasNext": order_page["hasNext"],
+                    "hasPrevious": order_page["hasPrevious"],
+                },
+            }
+
+        if section_key == "monitor":
+            monitor_page = self._query_console_page(
+                "monitorRecords",
+                tenant_id,
+                fields=CONSOLE_MONITOR_RECORD_FIELDS,
+                search_fields=["sender", "recipient", "subject", "customerCode", "customerName", "csr", "status", "pathway"],
+                order_by="updatedAt",
+                descending=True,
+                payload={**payload, "limit": _pick(payload, "limit", default=250)},
+                customer_filter=customer_filter,
+            )
+            monitor = self._monitor_sections_from_records(monitor_page["items"])
+            return {
+                "session": session,
+                "section": "monitor",
+                "monitor": monitor,
+                "page": monitor_page,
+                "summary": self._console_summary_from_monitor(monitor, self._query_console_stats("items", tenant_id)),
+            }
+
+        return {"session": session, "error": "unknownSection", "message": f"Unknown console data section {section}."}
 
     def order_observability_timeline(self, order_run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         order = self.repository.get("orderRuns", order_run_id)
@@ -4162,6 +4799,7 @@ class OrderProcessorApi:
         }
         rule = _routing_rule_from_doc(rule_doc)
         stored = self.repository.upsert("routingRules", to_dict(rule))
+        self._clear_console_cache(tenant_id)
         self._audit(tenant_id, "routingRule.upserted", stored["id"], stored["id"], {"customerId": customer_id})
         return {"routingRule": stored}
 
@@ -4245,6 +4883,7 @@ class OrderProcessorApi:
             created_at=_pick(existing, "createdAt", "created_at", default=utc_now()),
         )
         stored = self.repository.upsert("tenants", to_dict(tenant))
+        self._clear_console_cache(tenant_id)
         self._audit(tenant_id, "tenantConfig.upserted", stored["id"], stored["id"], {"name": stored["name"]})
         return {"tenant": stored}
 
@@ -4279,6 +4918,7 @@ class OrderProcessorApi:
             raw_source=dict(_pick(payload, "rawSource", "raw_source", default={}) or {}),
         )
         stored = self.repository.upsert("customers", to_dict(customer))
+        self._clear_console_cache(tenant_id)
         self._audit(tenant_id, "customerConfig.upserted", stored["id"], stored["id"], {"customerCode": customer_code})
         return {"customer": stored}
 
@@ -4302,6 +4942,7 @@ class OrderProcessorApi:
             raw_source=dict(_pick(payload, "rawSource", "raw_source", default={}) or {}),
         )
         stored = self.repository.upsert("customerAliases", to_dict(rule))
+        self._clear_console_cache(tenant_id)
         self._audit(
             tenant_id,
             "customerIdentificationRule.upserted",
@@ -4325,6 +4966,7 @@ class OrderProcessorApi:
             settings=dict(_pick(payload, "settings", default={}) or {}),
         )
         stored = self.repository.upsert("processorProfiles", to_dict(profile))
+        self._clear_console_cache(tenant_id)
         self._audit(tenant_id, "processorProfile.upserted", stored["id"], stored["id"], {"customerId": customer_id})
         return {"processorProfile": stored}
 
@@ -4341,6 +4983,7 @@ class OrderProcessorApi:
             settings=dict(_pick(payload, "settings", default={}) or {}),
         )
         stored = self.repository.upsert("outputProfiles", to_dict(profile))
+        self._clear_console_cache(tenant_id)
         self._audit(tenant_id, "outputProfile.upserted", stored["id"], stored["id"], {"customerId": customer_id})
         return {"outputProfile": stored}
 
@@ -4392,6 +5035,7 @@ class OrderProcessorApi:
             settings=settings,
         )
         stored = self.repository.upsert("mailboxAccounts", to_dict(mailbox))
+        self._clear_console_cache(tenant_id)
         self._audit(
             tenant_id,
             "mailbox.upserted",
@@ -4468,6 +5112,7 @@ class OrderProcessorApi:
             "mailboxAccess": status,
         }
         stored_connection = self.repository.upsert("microsoftAuthConnections", connection)
+        self._clear_console_cache(str(_pick(stored_mailbox, "tenantId", "tenant_id", default="")))
         return {"mailboxAccount": stored_mailbox, "microsoftAuthConnection": stored_connection, "connectionStatus": status}
 
     def upsert_console_user(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -4488,6 +5133,7 @@ class OrderProcessorApi:
             microsoft_user_id=_pick(payload, "microsoftUserId", "microsoft_user_id", default=""),
         )
         stored = self.repository.upsert("consoleUsers", to_dict(user))
+        self._clear_console_cache(tenant_id)
         self._audit(tenant_id, "consoleUser.upserted", stored["id"], stored["id"], {"email": email})
         return {"consoleUser": stored}
 
@@ -4503,6 +5149,7 @@ class OrderProcessorApi:
             enabled=bool(_pick(payload, "enabled", default=True)),
         )
         stored = self.repository.upsert("customerUserAssignments", to_dict(assignment))
+        self._clear_console_cache(tenant_id)
         self._audit(
             tenant_id,
             "customerUser.assigned",
@@ -4541,6 +5188,7 @@ class OrderProcessorApi:
             metadata=dict(_pick(payload, "metadata", default={}) or {}),
         )
         stored = self.repository.upsert("microsoftAuthConnections", to_dict(connection))
+        self._clear_console_cache(tenant_id)
         self._audit(tenant_id, "microsoftAuthConnection.upserted", stored["id"], stored["id"], {"provider": provider})
         return {"microsoftAuthConnection": stored}
 
@@ -4561,6 +5209,7 @@ class OrderProcessorApi:
         if existing["status"] == ExceptionStatus.RESOLVED.value:
             existing["resolved_at"] = utc_now()
         stored = self.repository.upsert("exceptionTasks", existing)
+        self._upsert_monitor_record_for_exception(stored)
         event_type = "exception.resolved" if existing["status"] == ExceptionStatus.RESOLVED.value else "exception.resolutionFailed"
         self._audit(
             _pick(existing, "tenantId", "tenant_id", default="default"),
@@ -4646,7 +5295,8 @@ class OrderProcessorApi:
             if order is not None:
                 order["customerId"] = customer_id
                 order["updatedAt"] = utc_now()
-                self.repository.upsert("orderRuns", order)
+                order_doc = self.repository.upsert("orderRuns", order)
+                self._upsert_monitor_record_for_order(order_doc)
                 updated["orderRunId"] = order_run_id
 
         email_message_id = _pick(task, "emailMessageId", "email_message_id", default=None) or _pick(
@@ -4657,7 +5307,8 @@ class OrderProcessorApi:
             if email is not None:
                 email["customerId"] = customer_id
                 email["updatedAt"] = utc_now()
-                self.repository.upsert("emailMessages", email)
+                email_doc = self.repository.upsert("emailMessages", email)
+                self._upsert_monitor_record_for_email(email_doc)
                 updated["emailMessageId"] = email_message_id
         return updated
 
@@ -4737,7 +5388,8 @@ class OrderProcessorApi:
         if order.status != ProcessingStatus.FAILED:
             order.status = ProcessingStatus.NEEDS_REVIEW if unresolved else ProcessingStatus.COMPLETED
         order.updated_at = utc_now()
-        self.repository.upsert("orderRuns", to_dict(order))
+        order_doc = self.repository.upsert("orderRuns", to_dict(order))
+        self._upsert_monitor_record_for_order(order_doc)
         return {"orderRunId": order_run_id, "lineNumber": line_number, "matchedInternalItemNumber": matched_item_number}
 
     def reprocess_order(self, order_run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -4758,7 +5410,8 @@ class OrderProcessorApi:
         order.processing_started_at = None
         order.processing_completed_at = None
         order.updated_at = utc_now()
-        self.repository.upsert("orderRuns", to_dict(order))
+        order_doc = self.repository.upsert("orderRuns", to_dict(order))
+        self._upsert_monitor_record_for_order(order_doc)
         self._audit(
             order.tenant_id,
             "order.reprocessRequested",
@@ -5367,6 +6020,7 @@ class OrderProcessorApi:
         )
         doc = to_dict(task)
         stored = self.repository.upsert("exceptionTasks", doc)
+        self._upsert_monitor_record_for_exception(stored)
         self._audit(
             tenant_id,
             "exception.created",
@@ -5479,6 +6133,10 @@ def console_session(payload: dict[str, Any]) -> dict[str, Any]:
 
 def console_dashboard(payload: dict[str, Any]) -> dict[str, Any]:
     return default_api.console_dashboard(payload)
+
+
+def console_data(section: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return default_api.console_data(section, payload)
 
 
 def order_observability_timeline(order_run_id: str, payload: dict[str, Any]) -> dict[str, Any]:

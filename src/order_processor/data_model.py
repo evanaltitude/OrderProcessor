@@ -140,6 +140,12 @@ CONTAINER_DEFINITIONS: tuple[ContainerDefinition, ...] = (
         "Human review queue for routing, customer ID, item validation, and parser failures.",
     ),
     ContainerDefinition(
+        "monitorRecords",
+        ("/tenantId",),
+        "MonitorRecord",
+        "Small denormalized email/order lifecycle records for fast console monitor reads.",
+    ),
+    ContainerDefinition(
         "auditEvents",
         ("/tenantId",),
         "AuditEvent",

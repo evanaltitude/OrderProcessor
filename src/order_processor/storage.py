@@ -18,6 +18,11 @@ class RepositoryError(RuntimeError):
     pass
 
 
+def _safe_cosmos_field(value: Any) -> bool:
+    field = str(value or "").strip()
+    return bool(field) and field.replace("_", "").isalnum()
+
+
 class InMemoryRepository:
     """Tiny repository used by local tests and the function facade scaffold."""
 
@@ -55,6 +60,62 @@ class InMemoryRepository:
             {field: document[field] for field in fields if field in document}
             for document in self.query_by_tenant(container, tenant_id)
         ]
+
+    def query_by_tenant_page(
+        self,
+        container: str,
+        tenant_id: str,
+        *,
+        fields: list[str] | None = None,
+        limit: int = 100,
+        offset: int = 0,
+        search: str = "",
+        search_fields: list[str] | None = None,
+        order_by: str = "updatedAt",
+        descending: bool = True,
+        customer_ids: list[str] | None = None,
+        include_global: bool = False,
+    ) -> dict[str, Any]:
+        self._ensure_container(container)
+        documents = list(self.query_by_tenant(container, tenant_id))
+        if customer_ids is not None:
+            allowed = {str(value) for value in customer_ids if str(value)}
+            documents = [
+                document
+                for document in documents
+                if (queryable_customer_id(container, document) or document_value(document, "customerId", None)) in allowed
+                or (
+                    include_global
+                    and (queryable_customer_id(container, document) or document_value(document, "customerId", None)) == "_global"
+                )
+            ]
+        search_text = search.strip().lower()
+        if search_text:
+            searchable = search_fields or fields or []
+            documents = [
+                document
+                for document in documents
+                if any(search_text in str(document_value(document, field, "")).lower() for field in searchable)
+            ]
+        reverse = bool(descending)
+        documents.sort(
+            key=lambda document: str(document_value(document, order_by, "") or document_value(document, "id", "")),
+            reverse=reverse,
+        )
+        total = len(documents)
+        page = documents[max(0, offset) : max(0, offset) + max(1, limit)]
+        if fields:
+            page = [{field: document[field] for field in fields if field in document} for document in page]
+        return {"items": page, "total": total, "limit": max(1, limit), "offset": max(0, offset)}
+
+    def query_by_tenant_stats(self, container: str, tenant_id: str, date_field: str = "lastImportedAt") -> dict[str, Any]:
+        documents = self.query_by_tenant(container, tenant_id)
+        dates = [
+            str(document_value(document, date_field, "") or document_value(document, "updatedAt", ""))
+            for document in documents
+            if document_value(document, date_field, "") or document_value(document, "updatedAt", "")
+        ]
+        return {"count": len(documents), "latest": sorted(dates)[-1] if dates else ""}
 
     def query_by_customer(self, container: str, tenant_id: str, customer_id: str) -> list[dict[str, Any]]:
         self._ensure_container(container)
@@ -147,6 +208,97 @@ class CosmosRepository:
                 enable_cross_partition_query=True,
             )
         )
+
+    def query_by_tenant_page(
+        self,
+        container: str,
+        tenant_id: str,
+        *,
+        fields: list[str] | None = None,
+        limit: int = 100,
+        offset: int = 0,
+        search: str = "",
+        search_fields: list[str] | None = None,
+        order_by: str = "updatedAt",
+        descending: bool = True,
+        customer_ids: list[str] | None = None,
+        include_global: bool = False,
+    ) -> dict[str, Any]:
+        self._container(container)
+        safe_limit = max(1, min(int(limit or 100), 500))
+        safe_offset = max(0, int(offset or 0))
+        where = ["c.tenantId = @tenantId"]
+        parameters: list[dict[str, Any]] = [{"name": "@tenantId", "value": tenant_id}]
+
+        if customer_ids is not None:
+            allowed = [str(value) for value in customer_ids if str(value)]
+            if include_global and "_global" not in allowed:
+                allowed.append("_global")
+            if allowed:
+                where.append("ARRAY_CONTAINS(@customerIds, c.customerId)")
+                parameters.append({"name": "@customerIds", "value": allowed})
+            else:
+                where.append("1 = 0")
+
+        search_text = str(search or "").strip()
+        searchable_fields = [field for field in (search_fields or []) if _safe_cosmos_field(field)]
+        if search_text and searchable_fields:
+            parameters.append({"name": "@search", "value": search_text})
+            where.append(
+                "("
+                + " OR ".join(
+                    f"(IS_DEFINED(c.{field}) AND CONTAINS(c.{field}, @search, true))"
+                    for field in searchable_fields
+                )
+                + ")"
+            )
+
+        where_clause = " AND ".join(where)
+        selected_fields = [field for field in (fields or []) if _safe_cosmos_field(field)]
+        if selected_fields:
+            projection = ", ".join(f'"{field}": c.{field}' for field in selected_fields)
+            select = f"SELECT VALUE {{{projection}}}"
+        else:
+            select = "SELECT *"
+
+        order_field = order_by if _safe_cosmos_field(order_by) else "updatedAt"
+        direction = "DESC" if descending else "ASC"
+        query = (
+            f"{select} FROM c WHERE {where_clause} "
+            f"ORDER BY c.{order_field} {direction} OFFSET {safe_offset} LIMIT {safe_limit}"
+        )
+        count_query = f"SELECT VALUE COUNT(1) FROM c WHERE {where_clause}"
+        items = list(
+            self._container(container).query_items(
+                query=query,
+                parameters=parameters,
+                enable_cross_partition_query=True,
+            )
+        )
+        counts = list(
+            self._container(container).query_items(
+                query=count_query,
+                parameters=parameters,
+                enable_cross_partition_query=True,
+            )
+        )
+        return {"items": items, "total": int(counts[0] if counts else 0), "limit": safe_limit, "offset": safe_offset}
+
+    def query_by_tenant_stats(self, container: str, tenant_id: str, date_field: str = "lastImportedAt") -> dict[str, Any]:
+        field = date_field if _safe_cosmos_field(date_field) else "lastImportedAt"
+        query = (
+            f"SELECT VALUE {{\"count\": COUNT(1), \"latest\": MAX(c.{field})}} "
+            "FROM c WHERE c.tenantId = @tenantId"
+        )
+        rows = list(
+            self._container(container).query_items(
+                query=query,
+                parameters=[{"name": "@tenantId", "value": tenant_id}],
+                enable_cross_partition_query=True,
+            )
+        )
+        row = dict(rows[0] or {}) if rows else {}
+        return {"count": int(row.get("count") or 0), "latest": str(row.get("latest") or "")}
 
     def query_by_customer(self, container: str, tenant_id: str, customer_id: str) -> list[dict[str, Any]]:
         query = "SELECT * FROM c WHERE c.tenantId = @tenantId AND c.customerId = @customerId"

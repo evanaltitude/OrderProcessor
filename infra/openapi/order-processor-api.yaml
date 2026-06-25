@@ -209,6 +209,29 @@ paths:
             application/json:
               schema:
                 type: object
+  /console/data/{section}:
+    post:
+      operationId: consoleData
+      summary: Return a paged, section-specific console dataset for the signed-in Microsoft user.
+      parameters:
+        - name: section
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Section-specific console data result.
+          content:
+            application/json:
+              schema:
+                type: object
   /console/artifacts/download:
     post:
       operationId: consoleArtifactsDownload

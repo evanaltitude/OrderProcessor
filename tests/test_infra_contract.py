@@ -81,6 +81,7 @@ class InfraContractTests(unittest.TestCase):
             "/mailboxes/{id}/test-connection",
             "/console/session",
             "/console/dashboard",
+            "/console/data/{section}",
             "/console/artifacts/download",
             "/console/mailboxes",
             "/console/mailboxes/{id}/test-connection",

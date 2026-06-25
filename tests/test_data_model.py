@@ -39,10 +39,11 @@ class DataModelTests(unittest.TestCase):
                 "orderRuns",
                 "orderLines",
                 "exceptionTasks",
+                "monitorRecords",
                 "auditEvents",
             },
         )
-        self.assertEqual(len(container_manifest()), 17)
+        self.assertEqual(len(container_manifest()), 18)
 
     def test_customer_scoped_partition_contract(self) -> None:
         self.assertEqual(CONTAINER_BY_NAME["customers"].partition_key_paths, ("/tenantId",))

@@ -351,6 +351,13 @@ p {
   margin-bottom: 14px;
 }
 
+.pager {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: -4px 0 14px;
+}
+
 .list-controls label {
   display: grid;
   gap: 6px;

@@ -224,6 +224,12 @@ var operationalContainers = [
     ]
   }
   {
+    name: 'monitorRecords'
+    partitionKeyPaths: [
+      '/tenantId'
+    ]
+  }
+  {
     name: 'auditEvents'
     partitionKeyPaths: [
       '/tenantId'

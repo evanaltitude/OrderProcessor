@@ -56,6 +56,7 @@ $routes = @(
     @{ Name = "orders_timeline"; EntryPoint = "orders_timeline"; Route = "orders/{orderRunId}/timeline" },
     @{ Name = "console_session"; EntryPoint = "console_session"; Route = "console/session" },
     @{ Name = "console_dashboard"; EntryPoint = "console_dashboard"; Route = "console/dashboard" },
+    @{ Name = "console_data"; EntryPoint = "console_data"; Route = "console/data/{section}" },
     @{ Name = "console_artifacts_download"; EntryPoint = "console_artifacts_download"; Route = "console/artifacts/download" },
     @{ Name = "console_routing_rules_upsert"; EntryPoint = "console_routing_rules_upsert"; Route = "console/routing-rules" },
     @{ Name = "console_customers_upsert"; EntryPoint = "console_customers_upsert"; Route = "console/customers" },
