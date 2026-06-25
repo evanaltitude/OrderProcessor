@@ -155,6 +155,79 @@ class ConsoleBackendTests(unittest.TestCase):
         self.assertIn("distributorCustomers", tenant_dashboard)
         self.assertEqual(tenant_dashboard["tenant"]["tenantId"], "altitude")
 
+    def test_console_monitor_sections_include_email_lifecycle_rows(self) -> None:
+        api, repo, _ = self._api()
+        headers = {"x-ms-client-principal": _easy_auth_header("connect@focuseautomate.com")}
+        api.upsert_customer_config(
+            {
+                "tenantId": "altitude",
+                "id": "pilot-customer",
+                "customerCode": "PILOT",
+                "name": "Pilot",
+                "csrFolder": "Jane",
+                "csrEmail": "jane@example.com",
+            }
+        )
+        repo.upsert(
+            "emailMessages",
+            {
+                "id": "email-active",
+                "tenantId": "altitude",
+                "mailbox": "orders@example.com",
+                "messageId": "message-active",
+                "sender": "store@example.com",
+                "subject": "Question",
+                "receivedAt": "2026-06-24T12:00:00Z",
+                "status": "processing",
+                "customerId": "pilot-customer",
+                "routing": {"outcome": "knownCustomerNonOrder", "matchedSignals": {"triagePhase": "nonOrder"}},
+                "source": {"processing": {"pathway": "nonOrder", "stage": "identifyingCustomer"}},
+            },
+        )
+        repo.upsert(
+            "emailMessages",
+            {
+                "id": "email-webstore",
+                "tenantId": "altitude",
+                "mailbox": "orders@example.com",
+                "messageId": "message-webstore",
+                "sender": "webstore@example.com",
+                "subject": "Cust: PILOT - Web order",
+                "receivedAt": "2026-06-24T12:05:00Z",
+                "status": "completed",
+                "customerId": "pilot-customer",
+                "categories": ["CSR: Jane"],
+                "routing": {"outcome": "knownCustomerNonOrder", "matchedSignals": {"triagePhase": "webstoreOrder"}},
+                "source": {
+                    "webLink": "https://outlook.office.com/mail/id/1",
+                    "graphEmailActions": {
+                        "status": "applied",
+                        "patched": {"categories": ["CSR: Jane"]},
+                        "applied": [{"action": "move", "folderName": "Jane"}],
+                    },
+                },
+            },
+        )
+        api._create_exception(
+            tenant_id="altitude",
+            task_type="routing",
+            prompt="Resolve customer",
+            email_message_id="email-active",
+            customer_id="pilot-customer",
+        )
+
+        dashboard = api.console_dashboard({"tenantId": "altitude", "headers": headers, "view": "monitor"})
+        monitor = dashboard["monitor"]
+
+        self.assertEqual(dashboard["dashboardView"], "monitor")
+        self.assertEqual(dashboard["items"], [])
+        self.assertEqual(len(monitor["active"]), 0)
+        self.assertEqual(len(monitor["exceptions"]), 1)
+        self.assertEqual(monitor["exceptions"][0]["customerCode"], "PILOT")
+        self.assertEqual(len(monitor["webstoreOrders"]), 1)
+        self.assertEqual(monitor["webstoreOrders"][0]["movedTo"], "Jane")
+        self.assertEqual(monitor["webstoreOrders"][0]["emailUrl"], "https://outlook.office.com/mail/id/1")
+
     def test_console_dashboard_lists_distributor_customers_and_read_only_import_lists(self) -> None:
         api, repo, _ = self._api()
         admin_headers = {"x-ms-client-principal": _easy_auth_header("connect@focuseautomate.com")}

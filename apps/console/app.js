@@ -233,7 +233,8 @@ function endBusy() {
 
 async function post(path, body = {}, options = {}) {
   const tenantId = options.tenantId || state.tenantId;
-  beginBusy(options.busyText || "Working");
+  const showBusy = options.quiet !== true;
+  if (showBusy) beginBusy(options.busyText || "Working");
   try {
     const response = await fetch(`${apiBase}${path}`, {
       method: "POST",
@@ -257,7 +258,7 @@ async function post(path, body = {}, options = {}) {
     }
     return payload || {};
   } finally {
-    endBusy();
+    if (showBusy) endBusy();
   }
 }
 
@@ -759,51 +760,160 @@ function renderMetrics(summary = {}) {
     .join("");
 }
 
-function renderRows() {
-  const dashboard = state.dashboard || {};
-  el("activeRunsBody").innerHTML = (dashboard.activeRuns || []).map((run) => `
-    <tr>
-      <td>${escapeHtml(run.id)}</td>
-      <td>${escapeHtml(run.customerId || "")}</td>
-      <td>${statusPill(run.status)}</td>
-      <td>${escapeHtml(run.poNumber || run.orderNumber || "")}</td>
-      <td>${(run.lines || []).length}</td>
-      <td>${escapeHtml(run.updatedAt || run.createdAt || "")}</td>
-      <td><button class="secondary" data-action="timeline" data-run="${escapeHtml(run.id)}" type="button">Timeline</button></td>
-    </tr>
-  `).join("");
-
-  el("processedOrdersBody").innerHTML = (dashboard.processedOrders || []).map((run) => `
-    <tr>
-      <td>${escapeHtml(run.id)}</td>
-      <td>${escapeHtml(run.customerId || "")}</td>
-      <td>${statusPill(run.status)}</td>
-      <td>${(run.outputArtifacts || []).length}</td>
-      <td>${escapeHtml(run.updatedAt || run.createdAt || "")}</td>
-      <td>
-        <button class="secondary" data-action="timeline" data-run="${escapeHtml(run.id)}" type="button">Timeline</button>
-        <button class="secondary" data-action="reprocess" data-run="${escapeHtml(run.id)}" type="button">Reprocess</button>
-      </td>
-    </tr>
-  `).join("");
+function pathLabel(pathway = "") {
+  const labels = {
+    webstoreOrder: "Webstore order",
+    previouslyProcessed: "Known chain",
+    orderCandidate: "Order processing",
+    orderProcessing: "Order processing",
+    nonOrder: "Inquiry",
+    general: "Inquiry",
+    customerIdentification: "Customer ID",
+    humanReview: "Review"
+  };
+  return labels[pathway] || pathway || "";
 }
 
-function renderExceptions() {
-  const tasks = state.dashboard?.exceptionQueue || [];
-  el("exceptionList").innerHTML = tasks.map((task) => `
+function monitorCustomer(entry = {}) {
+  const code = entry.customerCode || entry.customerId || "";
+  const name = entry.customerName || "";
+  return [code, name].filter(Boolean).join(" - ");
+}
+
+function monitorEmailLink(entry = {}) {
+  if (!entry.emailUrl) return "";
+  return `<a class="table-link" href="${escapeHtml(entry.emailUrl)}" target="_blank" rel="noopener">Open</a>`;
+}
+
+function monitorOrderCell(entry = {}) {
+  const orderLabel = entry.poNumber || entry.orderNumber || entry.orderRunId || "";
+  const details = [
+    entry.lineCount == null ? "" : `${entry.lineCount} lines`,
+    entry.artifactCount == null ? "" : `${entry.artifactCount} files`
+  ].filter(Boolean).join(" / ");
+  const actions = entry.orderRunId ? `
+    <div class="row-actions">
+      <button class="secondary" data-action="timeline" data-run="${escapeHtml(entry.orderRunId)}" type="button">Timeline</button>
+      <button class="secondary" data-action="reprocess" data-run="${escapeHtml(entry.orderRunId)}" type="button">Reprocess</button>
+    </div>
+  ` : "";
+  return `
+    <div>${escapeHtml(orderLabel)}</div>
+    <div class="muted">${escapeHtml(details)}</div>
+    ${actions}
+  `;
+}
+
+function monitorActionCell(entry = {}) {
+  const moved = entry.movedTo ? `Moved to ${entry.movedTo}` : "";
+  return [entry.actionTaken || "", moved].filter(Boolean).map(escapeHtml).join("<br>");
+}
+
+function emptyTableRow(colspan, message) {
+  return `<tr><td colspan="${colspan}" class="muted">${escapeHtml(message)}</td></tr>`;
+}
+
+function activeMonitorRow(entry = {}) {
+  return `
+    <tr>
+      <td>${escapeHtml(entry.receivedAt || entry.updatedAt || "")}</td>
+      <td>${escapeHtml(pathLabel(entry.pathway))}</td>
+      <td>${statusPill(entry.status)}</td>
+      <td class="wrap-cell">${escapeHtml(entry.sender || "")}</td>
+      <td class="wrap-cell">${escapeHtml(entry.recipient || "")}</td>
+      <td class="wrap-cell">${escapeHtml(entry.subject || "")}</td>
+      <td class="wrap-cell">${escapeHtml(monitorCustomer(entry))}</td>
+      <td class="wrap-cell">${escapeHtml(entry.csr || entry.csrEmail || "")}</td>
+      <td class="wrap-cell">${monitorActionCell(entry)}</td>
+      <td>${monitorEmailLink(entry)}</td>
+    </tr>
+  `;
+}
+
+function processedOrderRow(entry = {}) {
+  return `
+    <tr>
+      <td>${escapeHtml(entry.receivedAt || entry.updatedAt || "")}</td>
+      <td>${statusPill(entry.status)}</td>
+      <td class="wrap-cell">${escapeHtml(entry.sender || "")}</td>
+      <td class="wrap-cell">${escapeHtml(entry.subject || "")}</td>
+      <td class="wrap-cell">${escapeHtml(monitorCustomer(entry))}</td>
+      <td class="wrap-cell">${escapeHtml(entry.csr || entry.csrEmail || "")}</td>
+      <td class="wrap-cell">${monitorOrderCell(entry)}</td>
+      <td class="wrap-cell">${monitorActionCell(entry)}</td>
+      <td>${monitorEmailLink(entry)}</td>
+    </tr>
+  `;
+}
+
+function completedEmailRow(entry = {}) {
+  return `
+    <tr>
+      <td>${escapeHtml(entry.receivedAt || entry.updatedAt || "")}</td>
+      <td>${statusPill(entry.status)}</td>
+      <td class="wrap-cell">${escapeHtml(entry.sender || "")}</td>
+      <td class="wrap-cell">${escapeHtml(entry.subject || "")}</td>
+      <td class="wrap-cell">${escapeHtml(monitorCustomer(entry))}</td>
+      <td class="wrap-cell">${escapeHtml(entry.csr || entry.csrEmail || "")}</td>
+      <td class="wrap-cell">${escapeHtml(entry.categorizedAs || "")}</td>
+      <td class="wrap-cell">${monitorActionCell(entry)}</td>
+      <td>${monitorEmailLink(entry)}</td>
+    </tr>
+  `;
+}
+
+function renderRows() {
+  const dashboard = state.dashboard || {};
+  const monitor = dashboard.monitor || {};
+  const active = monitor.active || [];
+  const processedOrders = monitor.processedOrders || [];
+  const webstoreOrders = monitor.webstoreOrders || [];
+  const nonOrderEmails = monitor.nonOrderEmails || [];
+  el("activeRunsBody").innerHTML = active.length
+    ? active.map(activeMonitorRow).join("")
+    : emptyTableRow(10, "No active email processing.");
+  el("processedOrdersBody").innerHTML = processedOrders.length
+    ? processedOrders.map(processedOrderRow).join("")
+    : emptyTableRow(9, "No processed orders yet.");
+  el("webstoreOrdersBody").innerHTML = webstoreOrders.length
+    ? webstoreOrders.map(completedEmailRow).join("")
+    : emptyTableRow(9, "No webstore order emails completed yet.");
+  el("nonOrderEmailsBody").innerHTML = nonOrderEmails.length
+    ? nonOrderEmails.map(completedEmailRow).join("")
+    : emptyTableRow(9, "No non-order emails completed yet.");
+}
+
+function exceptionCard(task) {
+  return `
     <article class="task">
       <header>
         <strong>${escapeHtml(task.type)}</strong>
         ${statusPill(task.status)}
       </header>
-      <div>${escapeHtml(task.prompt || task.id)}</div>
+      <div>${escapeHtml(task.exception || task.prompt || task.id)}</div>
+      <div class="task-meta">
+        <span>${escapeHtml(task.sender || "")}</span>
+        <span>${escapeHtml(task.subject || "")}</span>
+        <span>${escapeHtml(monitorCustomer(task))}</span>
+        <span>${escapeHtml(task.actionTaken || "")}</span>
+        ${task.emailUrl ? monitorEmailLink(task) : ""}
+      </div>
       <div class="pill">${escapeHtml(task.orderRunId ? `Run ${task.orderRunId}` : `Email ${task.emailMessageId || ""}`)}</div>
       ${exceptionResolutionControls(task)}
       <div class="header-actions">
         <button class="secondary" data-action="inspect" data-payload="${escapeHtml(JSON.stringify(task))}" type="button">Inspect</button>
       </div>
     </article>
-  `).join("");
+  `;
+}
+
+function renderExceptions() {
+  const tasks = state.dashboard?.monitor?.exceptions || state.dashboard?.exceptionQueue || [];
+  const html = tasks.length
+    ? tasks.map(exceptionCard).join("")
+    : '<p class="muted">No open exceptions.</p>';
+  if (el("monitorExceptionList")) el("monitorExceptionList").innerHTML = html;
+  el("exceptionList").innerHTML = html;
 }
 
 function exceptionResolutionControls(task) {
@@ -1203,9 +1313,15 @@ function renderSession() {
     : `${session.reason || "unauthorized"}`;
 }
 
-async function refresh() {
+async function refresh(options = {}) {
+  if (options.quiet && state.pendingRequests > 0) return;
+  const dashboardView = options.full || activeConsoleView() !== "monitor" ? "full" : "monitor";
   const selectedBeforeRefresh = state.selectedDistributorId;
-  state.dashboard = await post("/console/dashboard", {});
+  state.dashboard = await post(
+    "/console/dashboard",
+    { view: dashboardView },
+    { quiet: options.quiet, busyText: dashboardView === "monitor" ? "Refreshing monitor" : "Working" }
+  );
   const distributors = state.dashboard?.distributorCustomers || [];
   state.selectedDistributorId = distributors.some((distributor) => distributor.tenantId === selectedBeforeRefresh)
     ? selectedBeforeRefresh
@@ -1577,6 +1693,8 @@ document.addEventListener("click", async (event) => {
     activeView(target.dataset.view);
     if (target.dataset.view === "customers") {
       state.customerPage = "list";
+    }
+    if (["customers", "outputs", "users", "settings"].includes(target.dataset.view)) {
       await refresh();
     }
   }
@@ -1672,3 +1790,7 @@ if (params.get("authStatus")) {
   showDetails({ microsoftAuthStatus: params.get("authStatus"), connectionId: params.get("connectionId") });
 }
 refresh().catch(showDetails);
+window.setInterval(() => {
+  if (activeConsoleView() !== "monitor") return;
+  refresh({ quiet: true }).catch((error) => showDetails(payloadForError(error)));
+}, 12000);

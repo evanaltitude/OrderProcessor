@@ -42,19 +42,22 @@
         <div class="metrics" id="metrics"></div>
         <section class="band">
           <div class="section-title">
-            <h2 id="monitor-title">Active Runs</h2>
+            <h2 id="monitor-title">Active Processing</h2>
           </div>
           <div class="table-wrap">
-            <table>
+            <table class="monitor-table">
               <thead>
                 <tr>
-                  <th>Run</th>
-                  <th>Downstream Customer</th>
+                  <th>Received</th>
+                  <th>Path</th>
                   <th>Status</th>
-                  <th>PO</th>
-                  <th>Lines</th>
-                  <th>Updated</th>
-                  <th></th>
+                  <th>Sender</th>
+                  <th>Recipient</th>
+                  <th>Subject</th>
+                  <th>Customer</th>
+                  <th>CSR</th>
+                  <th>Action</th>
+                  <th>Email</th>
                 </tr>
               </thead>
               <tbody id="activeRunsBody"></tbody>
@@ -63,21 +66,76 @@
         </section>
         <section class="band">
           <div class="section-title">
+            <h2>Exceptions</h2>
+          </div>
+          <div id="monitorExceptionList" class="task-list"></div>
+        </section>
+        <section class="band">
+          <div class="section-title">
             <h2>Processed Orders</h2>
           </div>
           <div class="table-wrap">
-            <table>
+            <table class="monitor-table">
               <thead>
                 <tr>
-                  <th>Run</th>
-                  <th>Downstream Customer</th>
+                  <th>Received</th>
                   <th>Status</th>
-                  <th>Artifacts</th>
-                  <th>Updated</th>
-                  <th></th>
+                  <th>Sender</th>
+                  <th>Subject</th>
+                  <th>Customer</th>
+                  <th>CSR</th>
+                  <th>Order</th>
+                  <th>Action</th>
+                  <th>Email</th>
                 </tr>
               </thead>
               <tbody id="processedOrdersBody"></tbody>
+            </table>
+          </div>
+        </section>
+        <section class="band">
+          <div class="section-title">
+            <h2>Webstore Orders</h2>
+          </div>
+          <div class="table-wrap">
+            <table class="monitor-table">
+              <thead>
+                <tr>
+                  <th>Received</th>
+                  <th>Status</th>
+                  <th>Sender</th>
+                  <th>Subject</th>
+                  <th>Customer</th>
+                  <th>CSR</th>
+                  <th>Categorized</th>
+                  <th>Action</th>
+                  <th>Email</th>
+                </tr>
+              </thead>
+              <tbody id="webstoreOrdersBody"></tbody>
+            </table>
+          </div>
+        </section>
+        <section class="band">
+          <div class="section-title">
+            <h2>Non-Order Emails</h2>
+          </div>
+          <div class="table-wrap">
+            <table class="monitor-table">
+              <thead>
+                <tr>
+                  <th>Received</th>
+                  <th>Status</th>
+                  <th>Sender</th>
+                  <th>Subject</th>
+                  <th>Customer</th>
+                  <th>CSR</th>
+                  <th>Categorized</th>
+                  <th>Action</th>
+                  <th>Email</th>
+                </tr>
+              </thead>
+              <tbody id="nonOrderEmailsBody"></tbody>
             </table>
           </div>
         </section>

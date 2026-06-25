@@ -439,6 +439,40 @@ td {
   white-space: nowrap;
 }
 
+.monitor-table {
+  min-width: 1180px;
+}
+
+.monitor-table .wrap-cell {
+  max-width: 260px;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.table-link {
+  color: var(--brand-blue);
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.table-link:hover {
+  color: var(--brand-indigo);
+  text-decoration: underline;
+}
+
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.row-actions button {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
 tbody tr:last-child td {
   border-bottom: 0;
 }
@@ -621,6 +655,15 @@ th {
   display: flex;
   justify-content: space-between;
   gap: 12px;
+}
+
+.task-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .exception-resolution-form {

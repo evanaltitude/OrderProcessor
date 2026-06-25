@@ -488,7 +488,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(
             patch_calls[1][1],
             {
-                "categories": ["Existing", "Processing", "CSR: Jane", "Process"],
+                "categories": ["CSR: Jane", "Process"],
                 "subject": "Cust: 100029 Rte: R12 - New webstore order",
             },
         )

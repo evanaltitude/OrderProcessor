@@ -20,7 +20,7 @@ from .customer_identification import (
 )
 from .customer_vector_store import customer_vector_store_manager_from_environment
 from .data_model import GLOBAL_CUSTOMER_ID, keys_to_camel
-from .email_triage import build_email_action_plan, evaluate_email_triage, find_customer_by_code
+from .email_triage import build_email_action_plan, evaluate_email_triage, find_customer_by_code, normalize_triage_phase
 from .imports import legacy_item_record_id, normalize_customer_row, normalize_item_row, scoped_item_record_id, stable_id
 from .imports import (
     CUSTOMER_IMPORT_TYPE,
@@ -105,7 +105,7 @@ from .output_generation import (
     generate_order_output_artifacts,
     output_artifact_store_from_environment,
 )
-from .routing import default_order_signal
+from .routing import default_order_signal, rule_matches
 from .storage import InMemoryRepository, repository_from_environment
 
 
@@ -152,6 +152,26 @@ CONSOLE_ITEM_FIELDS = [
     "sourceRowsBlobUrl",
     "lastImportedAt",
     "rawSource",
+]
+CONSOLE_EMAIL_FIELDS = [
+    "id",
+    "tenantId",
+    "mailbox",
+    "messageId",
+    "subject",
+    "sender",
+    "receivedAt",
+    "categories",
+    "status",
+    "mailboxAccountId",
+    "customerId",
+    "orderRunId",
+    "correlationId",
+    "routing",
+    "source",
+    "customerIdentification",
+    "createdAt",
+    "updatedAt",
 ]
 
 
@@ -287,6 +307,15 @@ def _graph_email_address(value: Any) -> str:
     if isinstance(email_address, dict):
         return str(email_address.get("address", "") or "").strip().lower()
     return str(value.get("address", "") or "").strip().lower()
+
+
+def _graph_recipient_addresses(values: Any) -> list[str]:
+    recipients: list[str] = []
+    for value in _as_list(values):
+        address = _graph_email_address(value)
+        if address:
+            recipients.append(address)
+    return recipients
 
 
 def _email_from_payload(payload: dict[str, Any]) -> EmailMessage:
@@ -708,6 +737,10 @@ class OrderProcessorApi:
             if not email.mailbox:
                 email.mailbox = _pick(mailbox_account, "mailboxAddress", "mailbox_address", default="")
 
+        email.status = ProcessingStatus.PROCESSING
+        self._set_email_processing_state(email, stage="received", pathway="routing")
+        self.repository.upsert("emailMessages", to_dict(email))
+
         rules: list[RoutingRule] = []
         customers: list[CustomerProfile] = []
         aliases: list[CustomerAlias] = []
@@ -764,6 +797,11 @@ class OrderProcessorApi:
         email.routing = to_dict(decision)
         email.updated_at = utc_now()
         email.status = self._status_for_routing_decision(decision)
+        self._set_email_processing_state(
+            email,
+            stage=self._processing_stage_for_routing_decision(decision),
+            pathway=self._pathway_for_routing_decision(decision),
+        )
         self.repository.upsert("emailMessages", to_dict(email))
 
         order_run = None
@@ -848,8 +886,21 @@ class OrderProcessorApi:
     ) -> RoutingDecision:
         if decision.customer_id:
             return decision
-        if decision.outcome not in {RoutingOutcome.KNOWN_ORDER, RoutingOutcome.KNOWN_CUSTOMER_NON_ORDER}:
+        if decision.outcome not in {
+            RoutingOutcome.KNOWN_ORDER,
+            RoutingOutcome.KNOWN_CUSTOMER_NON_ORDER,
+            RoutingOutcome.NEEDS_CUSTOMER_IDENTIFICATION,
+        }:
             return decision
+
+        email.status = ProcessingStatus.PROCESSING
+        self._set_email_processing_state(
+            email,
+            stage="identifyingCustomer",
+            pathway=self._pathway_for_routing_decision(decision),
+            details={"routingDecision": to_dict(decision)},
+        )
+        self.repository.upsert("emailMessages", to_dict(email))
 
         result = identify_customer_from_email(
             email,
@@ -867,6 +918,31 @@ class OrderProcessorApi:
             decision.reasons.append(f"customer identification matched customer {result.customer_id}")
             customer = next((item for item in customers if item.id == result.customer_id), None)
             rule = next((item for item in rules if item.id == decision.rule_id), None)
+            if decision.outcome == RoutingOutcome.NEEDS_CUSTOMER_IDENTIFICATION:
+                rule = self._non_order_rule_for_identified_customer(email, result.customer_id, rules)
+                if rule:
+                    decision.outcome = RoutingOutcome.KNOWN_CUSTOMER_NON_ORDER
+                    decision.rule_id = rule.id
+                    decision.processor_profile_id = None
+                    decision.confidence = max(decision.confidence, result.confidence)
+                    decision.matched_signals.update(
+                        {
+                            "ruleName": rule.name,
+                            "tags": list(rule.tags),
+                            "triagePhase": normalize_triage_phase(rule.phase),
+                            "promotedByCustomerIdentification": True,
+                        }
+                    )
+                    decision.reasons.append(
+                        f"customer identification promoted email to non-order rule {rule.name or rule.id}"
+                    )
+                else:
+                    decision.outcome = RoutingOutcome.NEEDS_HUMAN_REVIEW
+                    decision.processor_profile_id = None
+                    decision.confidence = result.confidence
+                    decision.reasons.append(
+                        "customer identification matched a customer but no non-order routing rule matched"
+                    )
             if rule and customer:
                 action_plan = build_email_action_plan(
                     email,
@@ -887,6 +963,27 @@ class OrderProcessorApi:
             f"{original_outcome.value} rule matched but customer identification did not produce a confident customer"
         )
         return decision
+
+    @staticmethod
+    def _non_order_rule_for_identified_customer(
+        email: EmailMessage,
+        customer_id: str,
+        rules: list[RoutingRule],
+    ) -> RoutingRule | None:
+        original_customer_id = email.customer_id
+        email.customer_id = customer_id
+        try:
+            for rule in sorted([item for item in rules if item.enabled], key=lambda item: item.priority):
+                if rule.outcome != RoutingOutcome.KNOWN_CUSTOMER_NON_ORDER:
+                    continue
+                if normalize_triage_phase(rule.phase) not in {"nonOrder", "general"}:
+                    continue
+                matches, _ = rule_matches(email, rule)
+                if matches:
+                    return rule
+        finally:
+            email.customer_id = original_customer_id
+        return None
 
     def poll_mailboxes(self, payload: dict[str, Any]) -> dict[str, Any]:
         tenant_id = str(_pick(payload, "tenantId", "tenant_id", default="")).strip()
@@ -1505,6 +1602,8 @@ class OrderProcessorApi:
                 "categories",
                 "hasAttachments",
                 "isRead",
+                "toRecipients",
+                "webLink",
             ]
         )
 
@@ -1662,13 +1761,14 @@ class OrderProcessorApi:
         if subject_value:
             patch_payload["subject"] = subject_value
 
-        categories = self._merged_graph_categories(existing_categories, _as_list(_pick(action_plan, "categories", default=[])))
+        categories = self._merged_graph_categories([], _as_list(_pick(action_plan, "categories", default=[])))
         if categories:
             patch_payload["categories"] = categories
 
         if patch_payload:
             try:
                 graph_patch(access_token, message_url, patch_payload)
+                result["patched"] = patch_payload
                 result["applied"].append({"action": "patch", "fields": sorted(patch_payload)})
             except MicrosoftGraphError as exc:
                 result["errors"].append(
@@ -1742,6 +1842,102 @@ class OrderProcessorApi:
                 email_message_id=email_message_id,
             )
         return result
+
+    def _update_email_after_graph_actions(
+        self,
+        email_message_id: str,
+        ingest_result: dict[str, Any],
+        action_result: dict[str, Any],
+    ) -> None:
+        email = self.repository.get("emailMessages", email_message_id)
+        if email is None:
+            return
+
+        now = utc_now()
+        source = dict(_pick(email, "source", default={}) or {})
+        source["graphEmailActions"] = action_result
+        patched = _as_dict(_pick(action_result, "patched", default={}))
+        if "subject" in patched:
+            email["subject"] = str(patched.get("subject") or "")
+        if "categories" in patched:
+            email["categories"] = [str(value) for value in _as_list(patched.get("categories")) if str(value).strip()]
+
+        decision = _as_dict(_pick(ingest_result, "routingDecision", "routing_decision", default={}))
+        outcome = str(_pick(decision, "outcome", default=""))
+        order_run_id = str(_pick(email, "orderRunId", "order_run_id", default="") or "")
+        action_status = str(_pick(action_result, "status", default="")).lower()
+        pathway = self._pathway_from_email_doc(email)
+        stage = "actioned"
+
+        if action_status in {"failed", "partial"}:
+            email["status"] = ProcessingStatus.NEEDS_REVIEW.value
+            stage = "graphActionsFailed"
+        elif outcome == RoutingOutcome.IGNORED.value:
+            email["status"] = ProcessingStatus.IGNORED.value
+            stage = "ignored"
+        elif order_run_id:
+            order = self.repository.get("orderRuns", order_run_id)
+            order_status = _document_status(order or {})
+            if order_status in {
+                ProcessingStatus.COMPLETED.value,
+                ProcessingStatus.FAILED.value,
+                ProcessingStatus.NEEDS_REVIEW.value,
+            }:
+                email["status"] = order_status
+                stage = "orderCompleted" if order_status == ProcessingStatus.COMPLETED.value else "orderNeedsReview"
+            else:
+                email["status"] = ProcessingStatus.PROCESSING.value
+                stage = "orderProcessing"
+        elif outcome == RoutingOutcome.KNOWN_CUSTOMER_NON_ORDER.value:
+            email["status"] = ProcessingStatus.COMPLETED.value
+            stage = "actioned" if action_status == "applied" else "routed"
+        elif outcome in {
+            RoutingOutcome.NEEDS_CUSTOMER_IDENTIFICATION.value,
+            RoutingOutcome.NEEDS_HUMAN_REVIEW.value,
+        }:
+            email["status"] = ProcessingStatus.NEEDS_REVIEW.value
+            stage = "needsReview"
+        else:
+            email["status"] = ProcessingStatus.ROUTED.value
+            stage = "routed"
+
+        processing = dict(source.get("processing") or {})
+        processing.update(
+            {
+                "stage": stage,
+                "status": email["status"],
+                "pathway": pathway,
+                "updatedAt": now,
+            }
+        )
+        source["processing"] = processing
+        email["source"] = source
+        email["updatedAt"] = now
+        self.repository.upsert("emailMessages", email)
+
+        if action_status not in {"failed", "partial"}:
+            return
+
+        tenant_id = str(_pick(email, "tenantId", "tenant_id", default=""))
+        if not tenant_id:
+            return
+        self._create_exception(
+            tenant_id=tenant_id,
+            task_type="routing",
+            prompt="Resolve Microsoft Graph email action failure.",
+            order_run_id=order_run_id or None,
+            email_message_id=email_message_id,
+            customer_id=_document_customer_id(email),
+            correlation_id=str(_pick(email, "correlationId", "correlation_id", default=email_message_id)),
+            context={
+                "routingDecision": decision,
+                "graphEmailActions": action_result,
+                "subject": _pick(email, "subject", default=""),
+                "sender": _pick(email, "sender", default=""),
+                "mailbox": _pick(email, "mailbox", default=""),
+            },
+            dedupe_key="graphEmailActions",
+        )
 
     @staticmethod
     def _email_action_plan_from_ingest_result(ingest_result: dict[str, Any]) -> dict[str, Any]:
@@ -1950,6 +2146,8 @@ class OrderProcessorApi:
                 "graphMessageId": graph_message_id,
                 "mailboxAccountId": mailbox_id,
                 "isRead": bool(message.get("isRead")),
+                "webLink": str(_pick(message, "webLink", "web_link", default="")),
+                "toRecipients": _graph_recipient_addresses(_pick(message, "toRecipients", "to_recipients", default=[])),
             },
         }
         ingest_result = self.ingest_email(ingest_payload)
@@ -1982,6 +2180,7 @@ class OrderProcessorApi:
             ingest_result,
             current_categories,
         )
+        self._update_email_after_graph_actions(email_id, ingest_result, email_action_result)
         return {
             "status": "ingested",
             "emailMessageId": email_id,
@@ -2051,6 +2250,58 @@ class OrderProcessorApi:
         profile = self.repository.get("processorProfiles", profile_id) if profile_id else None
         processor_type = str(_pick(profile or {}, "processorType", "processor_type", default="")).lower()
         return bool(body_text.strip() and processor_type in {"emailbody", "customeroverride"})
+
+    @staticmethod
+    def _set_email_processing_state(
+        email: EmailMessage,
+        *,
+        stage: str,
+        pathway: str = "",
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        source = dict(email.source or {})
+        processing = dict(source.get("processing") or {})
+        processing.update(
+            {
+                "stage": stage,
+                "status": email.status.value if isinstance(email.status, ProcessingStatus) else str(email.status),
+                "updatedAt": utc_now(),
+            }
+        )
+        if pathway:
+            processing["pathway"] = pathway
+        if details:
+            processing["details"] = details
+        source["processing"] = processing
+        email.source = source
+
+    @staticmethod
+    def _pathway_for_routing_decision(decision: RoutingDecision) -> str:
+        phase = str(_pick(decision.matched_signals, "triagePhase", "phase", default="")).strip()
+        if phase:
+            return phase
+        if decision.outcome == RoutingOutcome.KNOWN_ORDER:
+            return "orderProcessing"
+        if decision.outcome == RoutingOutcome.KNOWN_CUSTOMER_NON_ORDER:
+            return "nonOrder"
+        if decision.outcome == RoutingOutcome.NEEDS_CUSTOMER_IDENTIFICATION:
+            return "customerIdentification"
+        if decision.outcome == RoutingOutcome.NEEDS_HUMAN_REVIEW:
+            return "humanReview"
+        return str(decision.outcome.value if isinstance(decision.outcome, RoutingOutcome) else decision.outcome)
+
+    @staticmethod
+    def _processing_stage_for_routing_decision(decision: RoutingDecision) -> str:
+        if decision.outcome == RoutingOutcome.IGNORED:
+            return "ignored"
+        if decision.outcome in {
+            RoutingOutcome.NEEDS_CUSTOMER_IDENTIFICATION,
+            RoutingOutcome.NEEDS_HUMAN_REVIEW,
+        }:
+            return "needsReview"
+        if decision.outcome == RoutingOutcome.KNOWN_ORDER:
+            return "orderRouted"
+        return "routed"
 
     def _resolve_mailbox_account(self, email: EmailMessage) -> dict[str, Any] | None:
         if email.mailbox_account_id:
@@ -2933,12 +3184,291 @@ class OrderProcessorApi:
             for item in self.repository.query_by_tenant(container, tenant_id)
         ]
 
+    @staticmethod
+    def _pathway_from_email_doc(email: dict[str, Any], order: dict[str, Any] | None = None) -> str:
+        source = _as_dict(_pick(email, "source", default={}))
+        processing = _as_dict(_pick(source, "processing", default={}))
+        pathway = str(_pick(processing, "pathway", default="")).strip()
+        if pathway:
+            return pathway
+        routing = _as_dict(_pick(email, "routing", default={}))
+        matched_signals = _as_dict(_pick(routing, "matchedSignals", "matched_signals", default={}))
+        phase = str(_pick(matched_signals, "triagePhase", "triage_phase", default="")).strip()
+        if phase:
+            return phase
+        if order or _pick(email, "orderRunId", "order_run_id", default=""):
+            return "orderProcessing"
+        outcome = str(_pick(routing, "outcome", default=""))
+        if outcome == RoutingOutcome.KNOWN_CUSTOMER_NON_ORDER.value:
+            return "nonOrder"
+        if outcome == RoutingOutcome.NEEDS_CUSTOMER_IDENTIFICATION.value:
+            return "customerIdentification"
+        if outcome == RoutingOutcome.NEEDS_HUMAN_REVIEW.value:
+            return "humanReview"
+        return outcome or "email"
+
+    def _monitor_sections(
+        self,
+        email_messages: list[dict[str, Any]],
+        order_runs: list[dict[str, Any]],
+        exceptions: list[dict[str, Any]],
+        customers: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        customer_by_id = {str(_pick(customer, "id", default="")): customer for customer in customers}
+        email_by_id = {str(_pick(email, "id", default="")): email for email in email_messages}
+        order_by_id = {str(_pick(order, "id", default="")): order for order in order_runs}
+        order_by_email = {
+            str(_pick(order, "emailMessageId", "email_message_id", default="")): order
+            for order in order_runs
+            if _pick(order, "emailMessageId", "email_message_id", default="")
+        }
+        open_exceptions = [
+            task for task in exceptions if _document_status(task) == ExceptionStatus.OPEN.value
+        ]
+        exception_email_ids = {
+            str(_pick(task, "emailMessageId", "email_message_id", default=""))
+            for task in open_exceptions
+            if _pick(task, "emailMessageId", "email_message_id", default="")
+        }
+        exception_order_ids = {
+            str(_pick(task, "orderRunId", "order_run_id", default=""))
+            for task in open_exceptions
+            if _pick(task, "orderRunId", "order_run_id", default="")
+        }
+        active_statuses = {
+            ProcessingStatus.RECEIVED.value,
+            ProcessingStatus.ROUTED.value,
+            ProcessingStatus.PROCESSING.value,
+        }
+
+        active: list[dict[str, Any]] = []
+        for email in email_messages:
+            email_id = str(_pick(email, "id", default=""))
+            order = order_by_email.get(email_id)
+            order_id = str(_pick(order or {}, "id", default=""))
+            if email_id in exception_email_ids or order_id in exception_order_ids:
+                continue
+            if _document_status(email) in active_statuses:
+                active.append(self._monitor_entry_from_email(email, customer_by_id, order))
+
+        for order in order_runs:
+            email_id = str(_pick(order, "emailMessageId", "email_message_id", default=""))
+            if email_id in email_by_id:
+                continue
+            order_id = str(_pick(order, "id", default=""))
+            if order_id in exception_order_ids:
+                continue
+            if _document_status(order) in active_statuses:
+                active.append(self._monitor_entry_from_order(order, customer_by_id, None))
+
+        processed_orders = [
+            self._monitor_entry_from_order(order, customer_by_id, email_by_id.get(str(_pick(order, "emailMessageId", "email_message_id", default=""))))
+            for order in order_runs
+            if _document_status(order) not in active_statuses
+        ]
+
+        webstore_orders: list[dict[str, Any]] = []
+        non_order_emails: list[dict[str, Any]] = []
+        for email in email_messages:
+            email_id = str(_pick(email, "id", default=""))
+            if email_id in exception_email_ids or email_id in order_by_email:
+                continue
+            status = _document_status(email)
+            if status in active_statuses or status in {ProcessingStatus.NEEDS_REVIEW.value, ProcessingStatus.IGNORED.value}:
+                continue
+            entry = self._monitor_entry_from_email(email, customer_by_id, None)
+            if entry["pathway"] == "webstoreOrder":
+                webstore_orders.append(entry)
+            else:
+                non_order_emails.append(entry)
+
+        exception_entries = [
+            self._monitor_entry_from_exception(task, customer_by_id, email_by_id, order_by_id)
+            for task in open_exceptions
+        ]
+
+        return {
+            "active": self._sort_recent(active),
+            "exceptions": self._sort_recent(exception_entries),
+            "processedOrders": self._sort_recent(processed_orders),
+            "webstoreOrders": self._sort_recent(webstore_orders),
+            "nonOrderEmails": self._sort_recent(non_order_emails),
+        }
+
+    def _monitor_entry_from_email(
+        self,
+        email: dict[str, Any],
+        customer_by_id: dict[str, dict[str, Any]],
+        order: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        customer = customer_by_id.get(str(_document_customer_id(email) or ""))
+        source = _as_dict(_pick(email, "source", default={}))
+        graph_actions = _as_dict(_pick(source, "graphEmailActions", "graph_email_actions", default={}))
+        return {
+            "id": str(_pick(email, "id", default="")),
+            "emailMessageId": str(_pick(email, "id", default="")),
+            "orderRunId": str(_pick(order or {}, "id", default=_pick(email, "orderRunId", "order_run_id", default="")) or ""),
+            "pathway": self._pathway_from_email_doc(email, order),
+            "status": _document_status(order or {}) or _document_status(email),
+            "sender": str(_pick(email, "sender", default="")),
+            "recipient": self._monitor_recipient(email),
+            "subject": str(_pick(email, "subject", default="")),
+            "receivedAt": str(_pick(email, "receivedAt", "received_at", default="")),
+            "updatedAt": str(_pick(email, "updatedAt", "updated_at", "createdAt", "created_at", default="")),
+            "categorizedAs": self._monitor_category(email),
+            "customerId": str(_document_customer_id(email) or _document_customer_id(order or {}) or ""),
+            "customerCode": str(_pick(customer or {}, "customerCode", "customer_code", default="")),
+            "customerName": str(_pick(customer or {}, "name", default="")),
+            "csr": str(_pick(customer or {}, "csrName", "csr_name", "csrFolder", "csr_folder", default="")),
+            "csrEmail": str(_pick(customer or {}, "csrEmail", "csr_email", default="")),
+            "actionTaken": self._monitor_action_summary(email, order, graph_actions),
+            "movedTo": self._monitor_moved_to(graph_actions),
+            "emailUrl": self._monitor_email_url(email, graph_actions),
+            "createdAt": str(_pick(email, "createdAt", "created_at", default="")),
+        }
+
+    def _monitor_entry_from_order(
+        self,
+        order: dict[str, Any],
+        customer_by_id: dict[str, dict[str, Any]],
+        email: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        customer = customer_by_id.get(str(_document_customer_id(order) or _document_customer_id(email or {}) or ""))
+        source_metadata = _as_dict(_pick(order, "sourceMetadata", "source_metadata", default={}))
+        entry = self._monitor_entry_from_email(email, customer_by_id, order) if email else {
+            "id": str(_pick(order, "id", default="")),
+            "emailMessageId": str(_pick(order, "emailMessageId", "email_message_id", default="")),
+            "sender": str(source_metadata.get("sender", "")),
+            "recipient": str(source_metadata.get("mailbox", "")),
+            "subject": "",
+            "receivedAt": str(source_metadata.get("receivedAt", "")),
+            "categorizedAs": "order",
+            "emailUrl": "",
+            "createdAt": str(_pick(order, "createdAt", "created_at", default="")),
+        }
+        entry.update(
+            {
+                "id": str(_pick(order, "id", default=entry.get("id", ""))),
+                "orderRunId": str(_pick(order, "id", default="")),
+                "pathway": "orderProcessing",
+                "status": _document_status(order),
+                "updatedAt": str(_pick(order, "updatedAt", "updated_at", "createdAt", "created_at", default="")),
+                "customerId": str(_document_customer_id(order) or entry.get("customerId", "")),
+                "customerCode": str(_pick(customer or {}, "customerCode", "customer_code", default=entry.get("customerCode", ""))),
+                "customerName": str(_pick(customer or {}, "name", default=entry.get("customerName", ""))),
+                "csr": str(_pick(customer or {}, "csrName", "csr_name", "csrFolder", "csr_folder", default=entry.get("csr", ""))),
+                "csrEmail": str(_pick(customer or {}, "csrEmail", "csr_email", default=entry.get("csrEmail", ""))),
+                "poNumber": str(_pick(order, "poNumber", "po_number", default="")),
+                "orderNumber": str(_pick(order, "orderNumber", "order_number", default="")),
+                "lineCount": len(_as_list(_pick(order, "lines", default=[]))),
+                "artifactCount": len(_as_list(_pick(order, "outputArtifacts", "output_artifacts", default=[]))),
+                "actionTaken": self._monitor_action_summary(email or {}, order, _as_dict(_pick(_as_dict(_pick(email or {}, "source", default={})), "graphEmailActions", default={}))),
+            }
+        )
+        return entry
+
+    def _monitor_entry_from_exception(
+        self,
+        task: dict[str, Any],
+        customer_by_id: dict[str, dict[str, Any]],
+        email_by_id: dict[str, dict[str, Any]],
+        order_by_id: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
+        order = order_by_id.get(str(_pick(task, "orderRunId", "order_run_id", default="")))
+        email = email_by_id.get(str(_pick(task, "emailMessageId", "email_message_id", default="")))
+        base = (
+            self._monitor_entry_from_email(email, customer_by_id, order)
+            if email
+            else self._monitor_entry_from_order(order, customer_by_id, None) if order else {}
+        )
+        customer = customer_by_id.get(str(_document_customer_id(task) or base.get("customerId", "")))
+        return {
+            **task,
+            **base,
+            "id": str(_pick(task, "id", default=base.get("id", ""))),
+            "exceptionId": str(_pick(task, "id", default="")),
+            "type": str(_pick(task, "type", default="")),
+            "status": _document_status(task),
+            "exception": str(_pick(task, "prompt", default="")),
+            "prompt": str(_pick(task, "prompt", default="")),
+            "customerId": str(_document_customer_id(task) or base.get("customerId", "")),
+            "customerCode": str(_pick(customer or {}, "customerCode", "customer_code", default=base.get("customerCode", ""))),
+            "customerName": str(_pick(customer or {}, "name", default=base.get("customerName", ""))),
+            "updatedAt": str(_pick(task, "updatedAt", "updated_at", "createdAt", "created_at", default=base.get("updatedAt", ""))),
+        }
+
+    @staticmethod
+    def _monitor_recipient(email: dict[str, Any]) -> str:
+        source = _as_dict(_pick(email, "source", default={}))
+        recipients = [str(value) for value in _as_list(_pick(source, "toRecipients", "to_recipients", default=[])) if str(value).strip()]
+        return "; ".join(recipients) or str(_pick(email, "mailbox", default=""))
+
+    @staticmethod
+    def _monitor_category(email: dict[str, Any]) -> str:
+        categories = [str(value) for value in _as_list(_pick(email, "categories", default=[])) if str(value).strip()]
+        if categories:
+            return ", ".join(categories)
+        routing = _as_dict(_pick(email, "routing", default={}))
+        return str(_pick(routing, "outcome", default=""))
+
+    @staticmethod
+    def _monitor_moved_to(graph_actions: dict[str, Any]) -> str:
+        for item in _as_list(_pick(graph_actions, "applied", default=[])):
+            if not isinstance(item, dict) or _pick(item, "action", default="") != "move":
+                continue
+            return str(_pick(item, "folderName", "folder_name", "destinationId", default=""))
+        return ""
+
+    @staticmethod
+    def _monitor_email_url(email: dict[str, Any], graph_actions: dict[str, Any]) -> str:
+        source = _as_dict(_pick(email, "source", default={}))
+        web_link = str(_pick(source, "webLink", "web_link", default=""))
+        if web_link:
+            return web_link
+        for item in _as_list(_pick(graph_actions, "applied", default=[])):
+            if isinstance(item, dict) and _pick(item, "action", default="") == "move":
+                moved_id = str(_pick(item, "movedGraphMessageId", "moved_graph_message_id", default=""))
+                if moved_id:
+                    return ""
+        return ""
+
+    @staticmethod
+    def _monitor_action_summary(
+        email: dict[str, Any],
+        order: dict[str, Any] | None,
+        graph_actions: dict[str, Any],
+    ) -> str:
+        parts: list[str] = []
+        if order:
+            status = _document_status(order)
+            parts.append(f"Order {status}" if status else "Order created")
+        patched = _as_dict(_pick(graph_actions, "patched", default={}))
+        if "subject" in patched:
+            parts.append("subject updated")
+        if "categories" in patched:
+            parts.append("category applied")
+        moved_to = OrderProcessorApi._monitor_moved_to(graph_actions)
+        if moved_to:
+            parts.append(f"moved to {moved_to}")
+        if not parts:
+            status = str(_pick(graph_actions, "status", default="")).strip()
+            if status:
+                parts.append(f"Graph actions {status}")
+        if not parts:
+            routing = _as_dict(_pick(email, "routing", default={}))
+            outcome = str(_pick(routing, "outcome", default="")).strip()
+            if outcome:
+                parts.append(outcome)
+        return "; ".join(parts)
+
     def console_dashboard(self, payload: dict[str, Any]) -> dict[str, Any]:
         session = self.console_session(payload)
         if not session.get("authorized"):
             return {"session": session}
 
         tenant_id = session["tenantId"]
+        dashboard_view = str(_pick(payload, "view", "dashboardView", "dashboard_view", default="full") or "full").lower()
+        compact_monitor = dashboard_view == "monitor"
         requested_customer_id = _pick(payload, "customerId", "customer_id", default=None)
         customer_filter = self._authorized_customer_filter(session, requested_customer_id)
         if customer_filter == "__denied__":
@@ -2954,42 +3484,75 @@ class OrderProcessorApi:
             customer_filter,
             session,
         )
+        email_messages = self._filter_customer_documents(
+            self._query_console_records("emailMessages", tenant_id, CONSOLE_EMAIL_FIELDS),
+            customer_filter,
+            session,
+        )
         exceptions = self._filter_exceptions_for_console(
             self.repository.query_by_tenant("exceptionTasks", tenant_id),
             order_runs,
             customer_filter,
             session,
         )
-        mailboxes = self._filter_customer_documents(
-            self.repository.query_by_tenant("mailboxAccounts", tenant_id),
-            customer_filter,
-            session,
-            include_global=True,
-        )
-        customer_identification_rules = self._filter_customer_documents(
-            self.repository.query_by_tenant("customerAliases", tenant_id),
-            customer_filter,
-            session,
-        )
-        routing_rules = self._filter_customer_documents(
-            self.repository.query_by_tenant("routingRules", tenant_id),
-            customer_filter,
-            session,
-            include_global=True,
-        )
-        items = self._filter_customer_documents(
-            self._query_console_records("items", tenant_id, CONSOLE_ITEM_FIELDS),
-            customer_filter,
-            session,
-            include_global=True,
-        )
-        audit_events = self._filter_audit_events_for_console(
-            self.repository.query_by_tenant("auditEvents", tenant_id),
-            order_runs,
-            exceptions,
-            customer_filter,
-            session,
-        )
+        if compact_monitor:
+            mailboxes: list[dict[str, Any]] = []
+            customer_identification_rules: list[dict[str, Any]] = []
+            routing_rules: list[dict[str, Any]] = []
+            items: list[dict[str, Any]] = []
+            audit_events: list[dict[str, Any]] = []
+            processor_profiles: list[dict[str, Any]] = []
+            output_profiles: list[dict[str, Any]] = []
+            microsoft_auth_connections: list[dict[str, Any]] = []
+        else:
+            mailboxes = self._filter_customer_documents(
+                self.repository.query_by_tenant("mailboxAccounts", tenant_id),
+                customer_filter,
+                session,
+                include_global=True,
+            )
+            customer_identification_rules = self._filter_customer_documents(
+                self.repository.query_by_tenant("customerAliases", tenant_id),
+                customer_filter,
+                session,
+            )
+            routing_rules = self._filter_customer_documents(
+                self.repository.query_by_tenant("routingRules", tenant_id),
+                customer_filter,
+                session,
+                include_global=True,
+            )
+            items = self._filter_customer_documents(
+                self._query_console_records("items", tenant_id, CONSOLE_ITEM_FIELDS),
+                customer_filter,
+                session,
+                include_global=True,
+            )
+            audit_events = self._filter_audit_events_for_console(
+                self.repository.query_by_tenant("auditEvents", tenant_id),
+                order_runs,
+                exceptions,
+                customer_filter,
+                session,
+            )
+            processor_profiles = self._filter_customer_documents(
+                self.repository.query_by_tenant("processorProfiles", tenant_id),
+                customer_filter,
+                session,
+                include_global=True,
+            )
+            output_profiles = self._filter_customer_documents(
+                self.repository.query_by_tenant("outputProfiles", tenant_id),
+                customer_filter,
+                session,
+                include_global=True,
+            )
+            microsoft_auth_connections = self._filter_customer_documents(
+                self.repository.query_by_tenant("microsoftAuthConnections", tenant_id),
+                customer_filter,
+                session,
+                include_global=True,
+            )
 
         active_statuses = {
             ProcessingStatus.RECEIVED.value,
@@ -3010,7 +3573,8 @@ class OrderProcessorApi:
             if isinstance(artifact, dict)
         ]
 
-        summary = self._console_summary(order_runs, exceptions, items)
+        monitor = self._monitor_sections(email_messages, order_runs, exceptions, customers)
+        summary = self._console_summary(order_runs, exceptions, items, email_messages)
         observability_metrics = dashboard_observability_metrics(order_runs, exceptions, audit_events)
         summary.update(
             {
@@ -3041,12 +3605,14 @@ class OrderProcessorApi:
 
         return {
             "session": session,
+            "dashboardView": "monitor" if compact_monitor else "full",
             "tenant": tenant,
             "systemSettings": dict(_pick(system_tenant, "settings", default={}) or {}),
             "distributorCustomers": distributor_customers,
             "summary": summary,
             "observabilityMetrics": observability_metrics,
             "recentAuditEvents": self._sort_recent(audit_events)[:50],
+            "monitor": monitor,
             "activeRuns": self._sort_recent(active_runs),
             "processedOrders": self._sort_recent(processed_orders),
             "exceptionQueue": self._sort_recent(
@@ -3060,24 +3626,9 @@ class OrderProcessorApi:
             "customerDataStatus": self._customer_data_status(customers),
             "itemDataStatus": self._item_data_status(items),
             "importTargets": self._console_import_targets(tenant_id),
-            "processorProfiles": self._filter_customer_documents(
-                self.repository.query_by_tenant("processorProfiles", tenant_id),
-                customer_filter,
-                session,
-                include_global=True,
-            ),
-            "outputProfiles": self._filter_customer_documents(
-                self.repository.query_by_tenant("outputProfiles", tenant_id),
-                customer_filter,
-                session,
-                include_global=True,
-            ),
-            "microsoftAuthConnections": self._filter_customer_documents(
-                self.repository.query_by_tenant("microsoftAuthConnections", tenant_id),
-                customer_filter,
-                session,
-                include_global=True,
-            ),
+            "processorProfiles": processor_profiles,
+            "outputProfiles": output_profiles,
+            "microsoftAuthConnections": microsoft_auth_connections,
             "outputArtifacts": output_artifacts,
         }
 
@@ -4502,8 +5053,7 @@ class OrderProcessorApi:
             if order_run_id and order_run_id in orders_by_id:
                 visible.append(task)
                 continue
-            context = dict(_pick(task, "context", default={}) or {})
-            customer_id = _pick(context, "customerId", "customer_id", "mailboxCustomerId", default=None)
+            customer_id = self._exception_customer_id(task)
             if self._session_can_access_customer(session, customer_id):
                 visible.append(task)
             elif "viewAllCustomers" in set(_as_list(session.get("permissions", []))):
@@ -4601,10 +5151,30 @@ class OrderProcessorApi:
         order_runs: list[dict[str, Any]],
         exceptions: list[dict[str, Any]],
         items: list[dict[str, Any]],
+        email_messages: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         completed = [order for order in order_runs if _document_status(order) == ProcessingStatus.COMPLETED.value]
         failed = [order for order in order_runs if _document_status(order) == ProcessingStatus.FAILED.value]
         open_exceptions = [task for task in exceptions if _document_status(task) == ExceptionStatus.OPEN.value]
+        active_statuses = {
+            ProcessingStatus.RECEIVED.value,
+            ProcessingStatus.ROUTED.value,
+            ProcessingStatus.PROCESSING.value,
+            ProcessingStatus.NEEDS_REVIEW.value,
+        }
+        active_order_email_ids = {
+            str(_pick(order, "emailMessageId", "email_message_id", default=""))
+            for order in order_runs
+            if _document_status(order) in active_statuses
+        }
+        active_email_count = len(
+            [
+                email
+                for email in email_messages or []
+                if _document_status(email) in active_statuses
+                and str(_pick(email, "id", default="")) not in active_order_email_ids
+            ]
+        )
         unresolved_lines = 0
         for order in order_runs:
             for line in _as_list(_pick(order, "lines", default=[])):
@@ -4616,12 +5186,7 @@ class OrderProcessorApi:
         total_finished = len(completed) + len(failed)
         success_rate = round(len(completed) / total_finished, 4) if total_finished else 0.0
         return {
-            "activeRunCount": len([order for order in order_runs if _document_status(order) in {
-                ProcessingStatus.RECEIVED.value,
-                ProcessingStatus.ROUTED.value,
-                ProcessingStatus.PROCESSING.value,
-                ProcessingStatus.NEEDS_REVIEW.value,
-            }]),
+            "activeRunCount": len([order for order in order_runs if _document_status(order) in active_statuses]) + active_email_count,
             "processedOrderCount": len(order_runs),
             "successRate": success_rate,
             "openExceptionCount": len(open_exceptions),
