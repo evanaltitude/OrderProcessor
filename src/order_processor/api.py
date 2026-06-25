@@ -204,6 +204,9 @@ CONSOLE_MONITOR_RECORD_FIELDS = [
     "type",
     "exception",
     "prompt",
+    "lineNumber",
+    "context",
+    "resolutionActions",
     "createdAt",
 ]
 CONSOLE_CUSTOMER_SEARCH_FIELDS = [
@@ -1878,14 +1881,20 @@ class OrderProcessorApi:
                     }
                 )
         elif move_plan:
-            result["skipped"].append(
-                {
-                    "action": "move",
-                    "reason": "move disabled or destination folder was blank",
-                    "mode": str(_pick(move_plan, "mode", default="")),
-                    "customerField": str(_pick(move_plan, "customerField", "customer_field", default="")),
-                }
-            )
+            skipped_move = {
+                "action": "move",
+                "reason": "move disabled or destination folder was blank",
+                "mode": str(_pick(move_plan, "mode", default="")),
+                "customerField": str(_pick(move_plan, "customerField", "customer_field", default="")),
+            }
+            if (
+                str(_pick(move_plan, "mode", default="")).lower() == "customerfield"
+                and str(_pick(move_plan, "customerField", "customer_field", default="")).strip()
+            ):
+                skipped_move["reason"] = "customer field did not resolve to a destination folder"
+                result["errors"].append(skipped_move)
+            else:
+                result["skipped"].append(skipped_move)
 
         if result["errors"]:
             result["status"] = "failed" if not result["applied"] else "partial"
@@ -2002,6 +2011,177 @@ class OrderProcessorApi:
             },
             dedupe_key="graphEmailActions",
         )
+
+    def _email_for_exception(self, task: dict[str, Any], resolution: dict[str, Any]) -> dict[str, Any] | None:
+        email_message_id = str(
+            _pick(task, "emailMessageId", "email_message_id", default="")
+            or _pick(resolution, "emailMessageId", "email_message_id", default="")
+            or ""
+        )
+        return self.repository.get("emailMessages", email_message_id) if email_message_id else None
+
+    def _mailbox_for_email_document(self, email: dict[str, Any]) -> dict[str, Any] | None:
+        mailbox_id = str(_pick(email, "mailboxAccountId", "mailbox_account_id", default="") or "")
+        if mailbox_id:
+            mailbox = self.repository.get("mailboxAccounts", mailbox_id)
+            if mailbox:
+                return mailbox
+        tenant_id = str(_pick(email, "tenantId", "tenant_id", default=""))
+        mailbox_address = _normalized_mailbox_address(str(_pick(email, "mailbox", default="") or ""))
+        if not tenant_id or not mailbox_address:
+            return None
+        for mailbox in self.repository.query_by_tenant("mailboxAccounts", tenant_id):
+            if _normalized_mailbox_address(str(_pick(mailbox, "mailboxAddress", "mailbox_address", default="") or "")) == mailbox_address:
+                return mailbox
+        return None
+
+    @staticmethod
+    def _graph_message_id_for_email(email: dict[str, Any]) -> str:
+        source = _as_dict(_pick(email, "source", default={}))
+        graph_actions = _as_dict(_pick(source, "graphEmailActions", "graph_email_actions", default={}))
+        for item in reversed(_as_list(_pick(graph_actions, "applied", default=[]))):
+            if isinstance(item, dict) and _pick(item, "action", default="") == "move":
+                moved_id = str(_pick(item, "movedGraphMessageId", "moved_graph_message_id", default="") or "")
+                if moved_id:
+                    return moved_id
+        return str(_pick(source, "graphMessageId", "graph_message_id", default="") or "")
+
+    def _manual_graph_email_action(
+        self,
+        email: dict[str, Any],
+        *,
+        subject: str = "",
+        move_folder: str = "",
+    ) -> dict[str, Any]:
+        tenant_id = str(_pick(email, "tenantId", "tenant_id", default=""))
+        email_id = str(_pick(email, "id", default=""))
+        mailbox = self._mailbox_for_email_document(email)
+        mailbox_address = str(
+            _pick(mailbox or {}, "mailboxAddress", "mailbox_address", default=_pick(email, "mailbox", default="")) or ""
+        ).strip().lower()
+        graph_message_id = self._graph_message_id_for_email(email)
+        result: dict[str, Any] = {
+            "status": "skipped",
+            "emailMessageId": email_id,
+            "graphMessageId": graph_message_id,
+            "applied": [],
+            "errors": [],
+        }
+        if not mailbox or not mailbox_address or not graph_message_id:
+            result.update({"status": "failed", "reason": "missing Microsoft Graph mailbox or message context"})
+            return result
+
+        auth_mode = str(
+            _pick(
+                dict(_pick(mailbox, "settings", default={}) or {}).get("graphSubscription", {}) or {},
+                "authMethod",
+                default=os.environ.get("ORDER_PROCESSOR_GRAPH_SUBSCRIPTION_AUTH_MODE", "auto"),
+            )
+        ).lower() or "auto"
+        encoded_mailbox = parse.quote(mailbox_address, safe="")
+        encoded_message = parse.quote(graph_message_id, safe="")
+        message_url = f"https://graph.microsoft.com/v1.0/users/{encoded_mailbox}/messages/{encoded_message}"
+        last_error: MicrosoftGraphError | None = None
+        for candidate in self._graph_access_token_candidates(mailbox, auth_mode=auth_mode):
+            candidate_result = {**result, "authMethod": candidate["authMethod"], "applied": [], "errors": []}
+            current_message_url = message_url
+            try:
+                if subject:
+                    graph_patch(candidate["accessToken"], current_message_url, {"subject": subject})
+                    candidate_result["patched"] = {"subject": subject}
+                    candidate_result["applied"].append({"action": "patch", "fields": ["subject"]})
+                if move_folder:
+                    destination_id = self._graph_mail_folder_id(
+                        candidate["accessToken"],
+                        mailbox_address,
+                        move_folder,
+                        create_missing=True,
+                    )
+                    if not destination_id:
+                        candidate_result["errors"].append(
+                            {"action": "move", "folderName": move_folder, "reason": "destination folder not found"}
+                        )
+                    else:
+                        move_response = graph_post(
+                            candidate["accessToken"],
+                            f"{current_message_url}/move",
+                            {"destinationId": destination_id},
+                        )
+                        moved_graph_message_id = str(_pick(move_response, "id", default="") or "")
+                        candidate_result["applied"].append(
+                            {
+                                "action": "move",
+                                "folderName": move_folder,
+                                "destinationId": destination_id,
+                                "movedGraphMessageId": moved_graph_message_id,
+                            }
+                        )
+                        if moved_graph_message_id:
+                            graph_message_id = moved_graph_message_id
+                candidate_result["status"] = (
+                    "failed" if candidate_result["errors"] and not candidate_result["applied"]
+                    else "partial" if candidate_result["errors"]
+                    else "applied" if candidate_result["applied"]
+                    else "skipped"
+                )
+                result = candidate_result
+                break
+            except MicrosoftGraphError as exc:
+                last_error = exc
+                if exc.status_code not in {401, 403}:
+                    result = {
+                        **candidate_result,
+                        "status": "failed",
+                        "errors": [
+                            {
+                                "action": "manualGraphEmailAction",
+                                "reason": str(exc),
+                                "statusCode": exc.status_code,
+                                "details": exc.details,
+                            }
+                        ],
+                    }
+                    break
+        else:
+            if last_error:
+                result.update(
+                    {
+                        "status": "failed",
+                        "reason": str(last_error),
+                        "statusCode": last_error.status_code,
+                        "details": last_error.details,
+                    }
+                )
+            else:
+                result.update({"status": "failed", "reason": "No Microsoft Graph access token is available."})
+
+        source = dict(_pick(email, "source", default={}) or {})
+        source["manualGraphEmailActions"] = result
+        prior_actions = dict(_pick(source, "graphEmailActions", "graph_email_actions", default={}) or {})
+        applied = list(_as_list(_pick(prior_actions, "applied", default=[])))
+        applied.extend(_as_list(result.get("applied")))
+        patched = dict(_pick(prior_actions, "patched", default={}) or {})
+        patched.update(dict(result.get("patched") or {}))
+        prior_actions.update({"status": result["status"], "applied": applied, "patched": patched})
+        source["graphEmailActions"] = prior_actions
+        if graph_message_id:
+            source["graphMessageId"] = graph_message_id
+        if subject and result["status"] in {"applied", "partial"}:
+            email["subject"] = subject
+        email["source"] = source
+        email["updatedAt"] = utc_now()
+        stored = self.repository.upsert("emailMessages", email)
+        self._upsert_monitor_record_for_email(stored)
+        self._audit(
+            tenant_id,
+            "email.manualGraphAction",
+            str(_pick(email, "correlationId", "correlation_id", default=email_id)),
+            email_id,
+            result,
+            customer_id=_document_customer_id(email),
+            email_message_id=email_id,
+        )
+        return result
 
     @staticmethod
     def _email_action_plan_from_ingest_result(ingest_result: dict[str, Any]) -> dict[str, Any]:
@@ -3001,6 +3181,7 @@ class OrderProcessorApi:
             "customers": [_api_value(item) for item in imported],
             "customerAliases": [_api_value(item) for item in aliases],
         }
+        result["csrDirectory"] = self._refresh_tenant_csr_directory(tenant_id)
         observability = correlation_context(payload, archive.import_run_id)
         result["observability"] = observability
         if self.customer_vector_store_manager and len(imported) > 0:
@@ -3255,6 +3436,61 @@ class OrderProcessorApi:
             for item in self.repository.query_by_tenant(container, tenant_id)
         ]
 
+    def _refresh_tenant_csr_directory(self, tenant_id: str) -> list[dict[str, Any]]:
+        directory = self._csr_directory_from_customers(self.repository.query_by_tenant("customers", tenant_id))
+        tenant = self.repository.get("tenants", tenant_id) or {
+            "id": tenant_id,
+            "tenantId": tenant_id,
+            "name": tenant_id,
+            "environment": "",
+            "status": "active",
+            "createdAt": utc_now(),
+        }
+        settings = dict(_pick(tenant, "settings", default={}) or {})
+        settings["csrDirectory"] = directory
+        settings["csrDirectoryUpdatedAt"] = utc_now()
+        tenant["settings"] = settings
+        tenant["updatedAt"] = utc_now()
+        self.repository.upsert("tenants", tenant)
+        return directory
+
+    def _csr_directory_for_console(self, tenant_id: str, tenant: dict[str, Any]) -> list[dict[str, Any]]:
+        settings = dict(_pick(tenant, "settings", default={}) or {})
+        configured = [item for item in _as_list(settings.get("csrDirectory")) if isinstance(item, dict)]
+        if configured:
+            return sorted(configured, key=lambda item: str(_pick(item, "label", "name", "folder", default="")).lower())
+        return self._cached_console_value(
+            ("csrDirectory", tenant_id),
+            lambda: self._csr_directory_from_customers(self.repository.query_by_tenant("customers", tenant_id)),
+        )
+
+    @staticmethod
+    def _csr_directory_from_customers(customers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        by_key: dict[str, dict[str, Any]] = {}
+        for customer in customers:
+            name = str(_pick(customer, "csrName", "csr_name", default="") or "").strip()
+            folder = str(_pick(customer, "csrFolder", "csr_folder", default="") or "").strip()
+            email = str(_pick(customer, "csrEmail", "csr_email", default="") or "").strip().lower()
+            if not name and not folder and not email:
+                continue
+            display_name = name or folder or email
+            folder_name = folder or name
+            key = stable_id("csr", display_name.lower(), folder_name.lower(), email)
+            existing = by_key.get(key, {})
+            customer_codes = set(_as_list(existing.get("customerCodes")))
+            customer_code = str(_pick(customer, "customerCode", "customer_code", default="") or "").strip()
+            if customer_code:
+                customer_codes.add(customer_code)
+            by_key[key] = {
+                "id": key,
+                "name": display_name,
+                "folder": folder_name,
+                "email": email,
+                "label": display_name if not email else f"{display_name} ({email})",
+                "customerCodes": sorted(customer_codes),
+            }
+        return sorted(by_key.values(), key=lambda item: str(item.get("label") or item.get("name") or "").lower())
+
     def _cached_console_value(self, key: tuple[Any, ...], factory: Any, ttl_seconds: int = 45) -> Any:
         now = time.monotonic()
         cached = self._console_cache.get(key)
@@ -3479,8 +3715,10 @@ class OrderProcessorApi:
             section = "processedOrders"
         elif entry.get("pathway") == "webstoreOrder":
             section = "webstoreOrders"
-        record_id = ""
+        record_id = str(_pick(entry, "exceptionId", default="") or "") if section == "exceptions" else ""
         for key in ("emailMessageId", "orderRunId", "exceptionId", "id"):
+            if record_id:
+                break
             value = str(_pick(entry, key, default="") or "").strip()
             if value:
                 record_id = value
@@ -3761,8 +3999,45 @@ class OrderProcessorApi:
             "customerId": str(_document_customer_id(task) or base.get("customerId", "")),
             "customerCode": str(_pick(customer or {}, "customerCode", "customer_code", default=base.get("customerCode", ""))),
             "customerName": str(_pick(customer or {}, "name", default=base.get("customerName", ""))),
+            "resolutionActions": self._exception_resolution_actions(task, base, customer),
             "updatedAt": str(_pick(task, "updatedAt", "updated_at", "createdAt", "created_at", default=base.get("updatedAt", ""))),
         }
+
+    @staticmethod
+    def _exception_resolution_actions(
+        task: dict[str, Any],
+        base: dict[str, Any],
+        customer: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        task_type = str(_pick(task, "type", default=""))
+        email_id = str(_pick(task, "emailMessageId", "email_message_id", default=base.get("emailMessageId", "")) or "")
+        order_id = str(_pick(task, "orderRunId", "order_run_id", default=base.get("orderRunId", "")) or "")
+        customer_id = str(_document_customer_id(task) or base.get("customerId", "") or "")
+        actions: list[dict[str, Any]] = []
+        if task_type in {"customerIdentification", "routing"}:
+            actions.append({"key": "customer", "label": "Set customer code", "requires": ["customerCode"]})
+        if email_id:
+            if customer_id:
+                actions.append(
+                    {
+                        "key": "csr",
+                        "label": "Set CSR / move email",
+                        "requires": ["csr"],
+                        "customerHasCsr": bool(
+                            _pick(customer or {}, "csrName", "csr_name", "csrFolder", "csr_folder", default="")
+                        ),
+                    }
+                )
+            actions.append({"key": "emailSubject", "label": "Update email subject", "requires": ["subject"]})
+            actions.append({"key": "emailReprocess", "label": "Reprocess email from start", "requires": []})
+            actions.append({"key": "forceOrder", "label": "Force to order processor", "requires": ["processorProfileId"]})
+        if task_type == "itemValidation":
+            actions.append({"key": "item", "label": "Set ERP item", "requires": ["matchedInternalItemNumber"]})
+        if task_type in {"parserFailure", "outputGeneration"} and order_id:
+            actions.append({"key": "orderReprocess", "label": "Reprocess order", "requires": []})
+        if not actions:
+            actions.append({"key": "notes", "label": "Resolve with notes", "requires": ["notes"]})
+        return actions
 
     @staticmethod
     def _monitor_recipient(email: dict[str, Any]) -> str:
@@ -3864,6 +4139,16 @@ class OrderProcessorApi:
         )
         item_stats = self._query_console_stats("items", tenant_id)
         customer_stats = self._query_console_stats("customers", tenant_id)
+        csr_directory = self._csr_directory_for_console(tenant_id, tenant)
+        lightweight_processor_profiles = self._cached_console_value(
+            ("processorProfiles", tenant_id, str(customer_filter)),
+            lambda: self._filter_customer_documents(
+                self.repository.query_by_tenant("processorProfiles", tenant_id),
+                customer_filter,
+                session,
+                include_global=True,
+            ),
+        )
 
         if compact_monitor:
             monitor_page = self._query_console_page(
@@ -3904,7 +4189,8 @@ class OrderProcessorApi:
                 "customerDataStatus": [],
                 "itemDataStatus": [],
                 "importTargets": {},
-                "processorProfiles": [],
+                "csrDirectory": csr_directory,
+                "processorProfiles": lightweight_processor_profiles,
                 "outputProfiles": [],
                 "microsoftAuthConnections": [],
                 "outputArtifacts": [],
@@ -4035,6 +4321,7 @@ class OrderProcessorApi:
                     "customerDataStatus": [],
                     "itemDataStatus": [],
                     "importTargets": self._console_import_targets(tenant_id),
+                    "csrDirectory": csr_directory,
                     "processorProfiles": processor_profiles,
                     "outputProfiles": output_profiles,
                     "microsoftAuthConnections": microsoft_auth_connections,
@@ -4150,6 +4437,7 @@ class OrderProcessorApi:
             "customerDataStatus": self._customer_data_status(customers),
             "itemDataStatus": self._item_data_status(items),
             "importTargets": self._console_import_targets(tenant_id),
+            "csrDirectory": csr_directory,
             "processorProfiles": processor_profiles,
             "outputProfiles": output_profiles,
             "microsoftAuthConnections": microsoft_auth_connections,
@@ -4265,6 +4553,13 @@ class OrderProcessorApi:
                 "monitor": monitor,
                 "page": monitor_page,
                 "summary": self._console_summary_from_monitor(monitor, self._query_console_stats("items", tenant_id)),
+                "csrDirectory": self._csr_directory_for_console(tenant_id, self.repository.get("tenants", tenant_id) or {}),
+                "processorProfiles": self._filter_customer_documents(
+                    self.repository.query_by_tenant("processorProfiles", tenant_id),
+                    customer_filter,
+                    session,
+                    include_global=True,
+                ),
             }
 
         return {"session": session, "error": "unknownSection", "message": f"Unknown console data section {section}."}
@@ -4918,6 +5213,7 @@ class OrderProcessorApi:
             raw_source=dict(_pick(payload, "rawSource", "raw_source", default={}) or {}),
         )
         stored = self.repository.upsert("customers", to_dict(customer))
+        self._refresh_tenant_csr_directory(tenant_id)
         self._clear_console_cache(tenant_id)
         self._audit(tenant_id, "customerConfig.upserted", stored["id"], stored["id"], {"customerCode": customer_code})
         return {"customer": stored}
@@ -5239,6 +5535,23 @@ class OrderProcessorApi:
         task: dict[str, Any],
         resolution: dict[str, Any],
     ) -> dict[str, Any]:
+        action = str(_pick(resolution, "action", "resolutionAction", "resolution_action", default="") or "").strip()
+        if action in {"csr", "setCsr", "moveToCsr"}:
+            return self._apply_csr_resolution(task, resolution)
+        if action in {"emailSubject", "updateSubject"}:
+            return self._apply_email_subject_resolution(task, resolution)
+        if action in {"emailReprocess", "reprocessEmail"}:
+            return self._apply_email_reprocess_resolution(task, resolution)
+        if action in {"forceOrder", "forceOrderProcessor"}:
+            return self._apply_force_order_resolution(task, resolution)
+        if action in {"orderReprocess", "reprocessOrder"}:
+            order_run_id = _pick(task, "orderRunId", "order_run_id", default=None) or _pick(
+                resolution, "orderRunId", "order_run_id", default=None
+            )
+            if order_run_id:
+                return {"status": "reprocessed", "reprocess": self.reprocess_order(order_run_id, {"source": "exceptionResolution"})}
+            return {"status": "invalid", "message": "No order run is attached to this exception."}
+
         task_type = _pick(task, "type", default="")
         if task_type in {"customerIdentification", "routing"}:
             return self._apply_customer_resolution(task, resolution)
@@ -5251,6 +5564,259 @@ class OrderProcessorApi:
                     return {"reprocess": self.reprocess_order(order_run_id, {"source": "exceptionResolution"})}
             return {"status": "triaged"}
         return {"status": "recorded"}
+
+    def _customer_for_exception(self, task: dict[str, Any], resolution: dict[str, Any]) -> dict[str, Any] | None:
+        customer_id = str(
+            _pick(resolution, "selectedCustomerId", "customerId", "customer_id", default="")
+            or self._exception_customer_id(task)
+            or ""
+        )
+        if customer_id:
+            customer = self.repository.get("customers", customer_id)
+            if customer:
+                return customer
+        email = self._email_for_exception(task, resolution)
+        if email:
+            customer_id = str(_document_customer_id(email) or "")
+            if customer_id:
+                return self.repository.get("customers", customer_id)
+        order_run_id = str(
+            _pick(task, "orderRunId", "order_run_id", default="")
+            or _pick(resolution, "orderRunId", "order_run_id", default="")
+            or ""
+        )
+        order = self.repository.get("orderRuns", order_run_id) if order_run_id else None
+        customer_id = str(_document_customer_id(order or {}) or "")
+        return self.repository.get("customers", customer_id) if customer_id else None
+
+    def _apply_csr_resolution(self, task: dict[str, Any], resolution: dict[str, Any]) -> dict[str, Any]:
+        customer = self._customer_for_exception(task, resolution)
+        if not customer:
+            return {"status": "invalid", "message": "Resolve the customer before assigning a CSR."}
+
+        csr_name = str(_pick(resolution, "csrName", "csr_name", default="") or "").strip()
+        csr_folder = str(_pick(resolution, "csrFolder", "csr_folder", default="") or "").strip()
+        csr_email = str(_pick(resolution, "csrEmail", "csr_email", default="") or "").strip().lower()
+        if not csr_name and not csr_folder and not csr_email:
+            return {"status": "invalid", "message": "Choose or enter a CSR before submitting."}
+
+        customer["csrName"] = csr_name or str(_pick(customer, "csrName", "csr_name", default="") or csr_folder)
+        customer["csrFolder"] = csr_folder or str(_pick(customer, "csrFolder", "csr_folder", default="") or csr_name)
+        if csr_email:
+            customer["csrEmail"] = csr_email
+        customer["updatedAt"] = utc_now()
+        stored_customer = self.repository.upsert("customers", customer)
+        tenant_id = str(_pick(stored_customer, "tenantId", "tenant_id", default="default"))
+        csr_directory = self._refresh_tenant_csr_directory(tenant_id)
+        self._clear_console_cache(tenant_id)
+
+        email = self._email_for_exception(task, resolution)
+        graph_result = None
+        subject = str(_pick(resolution, "subject", "updatedSubject", "updated_subject", default="") or "").strip()
+        force_move = bool(_pick(resolution, "forceMove", "forceMoveToCsr", "move", default=False))
+        if email is not None:
+            email["customerId"] = str(_pick(stored_customer, "id", default=""))
+            email["updatedAt"] = utc_now()
+            stored_email = self.repository.upsert("emailMessages", email)
+            self._upsert_monitor_record_for_email(stored_email)
+            if subject or force_move:
+                graph_result = self._manual_graph_email_action(
+                    stored_email,
+                    subject=subject,
+                    move_folder=str(_pick(stored_customer, "csrFolder", "csr_folder", default="")) if force_move else "",
+                )
+                if str(_pick(graph_result, "status", default="")) in {"failed", "partial"}:
+                    return {
+                        "status": "failed",
+                        "customer": stored_customer,
+                        "csrDirectory": csr_directory,
+                        "graphEmailAction": graph_result,
+                    }
+
+        order_run_id = str(_pick(task, "orderRunId", "order_run_id", default="") or "")
+        order = self.repository.get("orderRuns", order_run_id) if order_run_id else None
+        if order:
+            order["customerId"] = str(_pick(stored_customer, "id", default=""))
+            order["updatedAt"] = utc_now()
+            self._upsert_monitor_record_for_order(self.repository.upsert("orderRuns", order))
+
+        return {
+            "status": "resolved",
+            "customer": stored_customer,
+            "csrDirectory": csr_directory,
+            "graphEmailAction": graph_result,
+        }
+
+    def _apply_email_subject_resolution(self, task: dict[str, Any], resolution: dict[str, Any]) -> dict[str, Any]:
+        subject = str(_pick(resolution, "subject", "updatedSubject", "updated_subject", default="") or "").strip()
+        if not subject:
+            return {"status": "invalid", "message": "Enter the subject to apply."}
+        email = self._email_for_exception(task, resolution)
+        if email is None:
+            return {"status": "notFound", "message": "No email is attached to this exception."}
+        graph_result = self._manual_graph_email_action(email, subject=subject)
+        if str(_pick(graph_result, "status", default="")) in {"failed", "partial"}:
+            return {"status": "failed", "graphEmailAction": graph_result}
+        return {"status": "resolved", "graphEmailAction": graph_result}
+
+    def _apply_email_reprocess_resolution(self, task: dict[str, Any], resolution: dict[str, Any]) -> dict[str, Any]:
+        email = self._email_for_exception(task, resolution)
+        if email is None:
+            return {"status": "notFound", "message": "No email is attached to this exception."}
+        ingest_payload = {
+            "tenantId": _pick(email, "tenantId", "tenant_id", default="default"),
+            "id": _pick(email, "id", default=""),
+            "mailboxAccountId": _pick(email, "mailboxAccountId", "mailbox_account_id", default=None),
+            "mailbox": _pick(email, "mailbox", default=""),
+            "messageId": _pick(email, "messageId", "message_id", default=""),
+            "subject": _pick(email, "subject", default=""),
+            "sender": _pick(email, "sender", default=""),
+            "receivedAt": _pick(email, "receivedAt", "received_at", default=utc_now()),
+            "bodyText": _pick(email, "bodyText", "body_text", default=""),
+            "bodyHtml": _pick(email, "bodyHtml", "body_html", default=""),
+            "categories": list(_as_list(_pick(email, "categories", default=[]))),
+            "attachments": list(_as_list(_pick(email, "attachments", default=[]))),
+            "source": dict(_pick(email, "source", default={}) or {}),
+        }
+        ingest_result = self.ingest_email(ingest_payload)
+        email_message = _as_dict(_pick(ingest_result, "emailMessage", "email_message", default={}))
+        order_run = _as_dict(_pick(ingest_result, "orderRun", "order_run", default={}))
+        processed = None
+        if order_run:
+            processed = self.process_order(
+                str(_pick(order_run, "id", default="")),
+                {
+                    "tenantId": _pick(email_message, "tenantId", "tenant_id", default=_pick(email, "tenantId", "tenant_id", default="default")),
+                    "emailMessageId": _pick(email_message, "id", default=_pick(email, "id", default="")),
+                    "customerId": _pick(order_run, "customerId", "customer_id", default=_document_customer_id(email_message)),
+                    "processorProfileId": _pick(order_run, "processorProfileId", "processor_profile_id", default=None),
+                    "mailbox": _pick(email_message, "mailbox", default=_pick(email, "mailbox", default="")),
+                    "sender": _pick(email_message, "sender", default=_pick(email, "sender", default="")),
+                    "subject": _pick(email_message, "subject", default=_pick(email, "subject", default="")),
+                    "receivedAt": _pick(email_message, "receivedAt", "received_at", default=_pick(email, "receivedAt", "received_at", default=utc_now())),
+                    "bodyText": _pick(email, "bodyText", "body_text", default=""),
+                    "bodyHtml": _pick(email, "bodyHtml", "body_html", default=""),
+                    "attachments": list(_as_list(_pick(email, "attachments", default=[]))),
+                    "sourceMetadata": {
+                        "provider": "exceptionResolution",
+                        "emailMessageId": _pick(email, "id", default=""),
+                    },
+                },
+            )
+        graph_result = None
+        latest_email = self.repository.get("emailMessages", str(_pick(email, "id", default="")))
+        if latest_email:
+            graph_message_id = self._graph_message_id_for_email(latest_email)
+            mailbox = self._mailbox_for_email_document(latest_email)
+            if graph_message_id and mailbox:
+                action_plan = self._email_action_plan_from_ingest_result(ingest_result)
+                if action_plan:
+                    try:
+                        candidates = self._graph_access_token_candidates(mailbox, auth_mode="auto")
+                    except MicrosoftGraphError as exc:
+                        candidates = []
+                        graph_result = {
+                            "status": "failed",
+                            "reason": str(exc),
+                            "statusCode": exc.status_code,
+                            "details": exc.details,
+                        }
+                    if candidates:
+                        graph_result = self._apply_graph_email_actions(
+                            candidates[0]["accessToken"],
+                            str(_pick(mailbox, "mailboxAddress", "mailbox_address", default=_pick(latest_email, "mailbox", default=""))),
+                            graph_message_id,
+                            ingest_result,
+                            list(_as_list(_pick(latest_email, "categories", default=[]))),
+                        )
+                        self._update_email_after_graph_actions(str(_pick(latest_email, "id", default="")), ingest_result, graph_result)
+        return {
+            "status": "reprocessed",
+            "ingestResult": ingest_result,
+            "processResult": processed,
+            "graphEmailAction": graph_result,
+        }
+
+    def _apply_force_order_resolution(self, task: dict[str, Any], resolution: dict[str, Any]) -> dict[str, Any]:
+        email = self._email_for_exception(task, resolution)
+        if email is None:
+            return {"status": "notFound", "message": "No email is attached to this exception."}
+        processor_profile_id = str(_pick(resolution, "processorProfileId", "processor_profile_id", default="") or "").strip()
+        if not processor_profile_id:
+            return {"status": "invalid", "message": "Choose an order processor."}
+        processor_profile = self.repository.get("processorProfiles", processor_profile_id)
+        if processor_profile is None:
+            return {"status": "notFound", "message": f"Processor profile {processor_profile_id} was not found."}
+
+        tenant_id = str(_pick(email, "tenantId", "tenant_id", default="default"))
+        if str(_pick(processor_profile, "tenantId", "tenant_id", default="")) != tenant_id:
+            return {"status": "invalid", "message": "Processor profile belongs to a different distributor."}
+        customer_id = str(
+            _pick(resolution, "customerId", "customer_id", default="")
+            or _document_customer_id(email)
+            or self._exception_customer_id(task)
+            or ""
+        )
+        order_run_id = str(
+            _pick(task, "orderRunId", "order_run_id", default="")
+            or stable_id(tenant_id, _pick(email, "id", default=""), "forcedOrder", processor_profile_id)
+        )
+        order = OrderRun(
+            id=order_run_id,
+            tenant_id=tenant_id,
+            email_message_id=str(_pick(email, "id", default="")),
+            customer_id=customer_id or None,
+            processor_profile_id=processor_profile_id,
+            correlation_id=str(_pick(email, "correlationId", "correlation_id", default=order_run_id)),
+            status=ProcessingStatus.RECEIVED,
+            source_metadata={
+                "emailMessageId": _pick(email, "id", default=""),
+                "mailbox": _pick(email, "mailbox", default=""),
+                "sender": _pick(email, "sender", default=""),
+                "subject": _pick(email, "subject", default=""),
+                "receivedAt": _pick(email, "receivedAt", "received_at", default=""),
+                "manualOverride": True,
+            },
+        )
+        order_doc = self.repository.upsert("orderRuns", to_dict(order))
+        email["orderRunId"] = order_run_id
+        if customer_id:
+            email["customerId"] = customer_id
+        email["routing"] = {
+            **dict(_pick(email, "routing", default={}) or {}),
+            "outcome": RoutingOutcome.KNOWN_ORDER.value,
+            "processorProfileId": processor_profile_id,
+            "matchedSignals": {
+                **dict(_pick(_as_dict(_pick(email, "routing", default={})), "matchedSignals", "matched_signals", default={}) or {}),
+                "manualOverride": True,
+            },
+        }
+        email["status"] = ProcessingStatus.PROCESSING.value
+        email["updatedAt"] = utc_now()
+        email_doc = self.repository.upsert("emailMessages", email)
+        self._upsert_monitor_record_for_email(email_doc, order=order_doc)
+        processed = self.process_order(
+            order_run_id,
+            {
+                "tenantId": tenant_id,
+                "emailMessageId": _pick(email, "id", default=""),
+                "customerId": customer_id or None,
+                "processorProfileId": processor_profile_id,
+                "mailbox": _pick(email, "mailbox", default=""),
+                "sender": _pick(email, "sender", default=""),
+                "subject": _pick(email, "subject", default=""),
+                "receivedAt": _pick(email, "receivedAt", "received_at", default=utc_now()),
+                "bodyText": _pick(email, "bodyText", "body_text", default=""),
+                "bodyHtml": _pick(email, "bodyHtml", "body_html", default=""),
+                "attachments": list(_as_list(_pick(email, "attachments", default=[]))),
+                "sourceMetadata": {
+                    "provider": "exceptionResolution",
+                    "manualOverride": True,
+                    "emailMessageId": _pick(email, "id", default=""),
+                },
+            },
+        )
+        return {"status": "forcedOrder", "orderRun": self.repository.get("orderRuns", order_run_id), "processResult": processed}
 
     def _apply_customer_resolution(
         self,

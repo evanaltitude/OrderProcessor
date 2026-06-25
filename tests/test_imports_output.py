@@ -261,6 +261,42 @@ class ImportsOutputTests(unittest.TestCase):
         self.assertIn("senderDomain", {alias["aliasType"] for alias in aliases})
         self.assertIn("knownSubjectPattern", {alias["aliasType"] for alias in aliases})
 
+    def test_import_customers_compiles_unique_csr_directory(self) -> None:
+        repo = InMemoryRepository()
+        api = OrderProcessorApi(repo, source_archive=InMemorySourceRowArchive())
+
+        result = api.import_customers(
+            {
+                "tenantId": "altitude",
+                "rows": [
+                    {
+                        "cust_code": "100025",
+                        "bus_name": "Classic Pet",
+                        "cust_csr": "mwoodward",
+                        "csr_email": "melissa.woodward@example.com",
+                    },
+                    {
+                        "cust_code": "100028",
+                        "bus_name": "Chow Hound",
+                        "cust_csr": "rrussell",
+                        "csr_email": "richele.russell@example.com",
+                    },
+                    {
+                        "cust_code": "100029",
+                        "bus_name": "Chow Hound 4",
+                        "cust_csr": "rrussell",
+                        "csr_email": "richele.russell@example.com",
+                    },
+                ],
+            }
+        )
+
+        tenant = repo.get("tenants", "altitude")
+        directory = tenant["settings"]["csrDirectory"]
+        self.assertEqual(result["csrDirectory"], directory)
+        self.assertEqual([item["name"] for item in directory], ["mwoodward", "rrussell"])
+        self.assertEqual(directory[1]["customerCodes"], ["100028", "100029"])
+
     def test_import_customers_rotates_vector_store_after_customer_update(self) -> None:
         repo = InMemoryRepository()
         fake_vector_store = FakeCustomerVectorStoreClient()

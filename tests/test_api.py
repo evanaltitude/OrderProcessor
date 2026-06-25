@@ -521,6 +521,63 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(result["status"], "skipped")
         self.assertEqual(result["reason"], "production email actions disabled")
 
+    def test_customer_field_move_without_csr_creates_action_exception(self) -> None:
+        repo = InMemoryRepository()
+        api = OrderProcessorApi(repo)
+        repo.upsert(
+            "emailMessages",
+            {
+                "id": "email-1",
+                "tenantId": "altitude",
+                "mailbox": "orders@example.com",
+                "messageId": "message-1",
+                "subject": "Question",
+                "sender": "buyer@example.com",
+                "receivedAt": "2026-06-24T12:00:00Z",
+                "customerId": "customer-1",
+                "source": {},
+            },
+        )
+
+        with patch("order_processor.api.graph_patch", return_value={}):
+            action_result = api._apply_graph_email_actions(
+                "access-token",
+                "orders@example.com",
+                "graph-message-1",
+                {
+                    "emailMessage": {"id": "email-1", "tenantId": "altitude", "customerId": "customer-1"},
+                    "routingDecision": {
+                        "outcome": "knownCustomerNonOrder",
+                        "matchedSignals": {
+                            "emailActions": {
+                                "subject": {"value": "Cust: 100025 - Question"},
+                                "categories": ["Review"],
+                                "move": {
+                                    "mode": "customerField",
+                                    "enabled": False,
+                                    "customerField": "csrFolder",
+                                    "folderName": "",
+                                },
+                            }
+                        },
+                    },
+                },
+                [],
+            )
+        api._update_email_after_graph_actions(
+            "email-1",
+            {
+                "emailMessage": {"id": "email-1", "tenantId": "altitude", "customerId": "customer-1"},
+                "routingDecision": {"outcome": "knownCustomerNonOrder"},
+            },
+            action_result,
+        )
+
+        exceptions = repo.query_by_tenant("exceptionTasks", "altitude")
+        self.assertEqual(action_result["status"], "partial")
+        self.assertEqual(exceptions[0]["type"], "routing")
+        self.assertEqual(exceptions[0]["context"]["graphEmailActions"]["errors"][0]["customerField"], "csrFolder")
+
     def test_graph_email_actions_move_to_existing_root_csr_folder(self) -> None:
         repo = InMemoryRepository()
         api = OrderProcessorApi(repo)

@@ -680,6 +680,15 @@ th {
   align-items: end;
 }
 
+.exception-actions {
+  display: grid;
+  gap: 10px;
+}
+
+.exception-resolution-form.multi {
+  grid-template-columns: minmax(160px, 1fr) minmax(220px, 1.5fr) auto auto;
+}
+
 .exception-resolution-form.compact {
   display: flex;
 }
@@ -690,6 +699,13 @@ th {
   color: var(--muted);
   font-size: 12px;
   font-weight: 800;
+}
+
+.exception-resolution-form .checkbox-label {
+  display: flex;
+  align-items: center;
+  min-height: 38px;
+  gap: 8px;
 }
 
 .pill {

@@ -222,6 +222,28 @@ function processorProfileOptions(selectedValue = "") {
   ].map((option) => ({ ...option, selected: option.value === selectedValue }));
 }
 
+function csrDirectoryOptions(selectedValue = "") {
+  return [
+    { value: "", label: "Choose CSR" },
+    ...(state.dashboard?.csrDirectory || []).map((csr) => ({
+      value: csr.id || `${csr.name || ""}|${csr.folder || ""}|${csr.email || ""}`,
+      label: csr.label || csr.name || csr.folder || csr.email || "CSR"
+    }))
+  ].map((option) => ({ ...option, selected: option.value === selectedValue }));
+}
+
+function selectedCsr(directoryKey = "") {
+  return (state.dashboard?.csrDirectory || []).find((csr) => (
+    (csr.id || `${csr.name || ""}|${csr.folder || ""}|${csr.email || ""}`) === directoryKey
+  )) || null;
+}
+
+function selectOptions(options) {
+  return options
+    .map((option) => `<option value="${escapeHtml(option.value)}"${option.selected ? " selected" : ""}>${escapeHtml(option.label)}</option>`)
+    .join("");
+}
+
 function beginBusy(label = "Working") {
   state.pendingRequests += 1;
   el("busyText").textContent = label;
@@ -811,8 +833,10 @@ function monitorOrderCell(entry = {}) {
 }
 
 function monitorActionCell(entry = {}) {
-  const moved = entry.movedTo ? `Moved to ${entry.movedTo}` : "";
-  return [entry.actionTaken || "", moved].filter(Boolean).map(escapeHtml).join("<br>");
+  const action = entry.actionTaken || "";
+  const movedText = entry.movedTo ? `Moved to ${entry.movedTo}` : "";
+  const alreadyIncludesMove = action.toLowerCase().includes(movedText.toLowerCase());
+  return [action, alreadyIncludesMove ? "" : movedText].filter(Boolean).map(escapeHtml).join("<br>");
 }
 
 function emptyTableRow(colspan, message) {
@@ -923,21 +947,61 @@ function renderExceptions() {
 }
 
 function exceptionResolutionControls(task) {
-  const id = escapeHtml(task.id || "");
+  const id = escapeHtml(task.exceptionId || task.id || "");
   const type = escapeHtml(task.type || "");
+  const csrOptions = selectOptions(csrDirectoryOptions());
+  const processorOptions = selectOptions(processorProfileOptions());
+  const hasEmail = Boolean(task.emailMessageId);
+  const customerControls = (task.type === "customerIdentification" || task.type === "routing") ? `
+    <form class="exception-resolution-form" data-exception-id="${id}" data-exception-type="${type}" data-resolution-action="customer">
+      <label>Customer code
+        <input name="customerCode" value="${escapeHtml(exceptionCustomerReference(task))}" placeholder="102598" required>
+      </label>
+      <button type="submit">Set Customer</button>
+    </form>
+  ` : "";
+  const csrControls = hasEmail ? `
+    <form class="exception-resolution-form multi" data-exception-id="${id}" data-exception-type="${type}" data-resolution-action="csr">
+      <label>CSR
+        <select name="csrDirectoryKey" required>${csrOptions}</select>
+      </label>
+      <label>Subject
+        <input name="subject" value="${escapeHtml(task.subject || "")}" placeholder="Updated subject">
+      </label>
+      <label class="checkbox-label">
+        <input name="forceMove" type="checkbox" checked>
+        <span>Move email</span>
+      </label>
+      <button type="submit">Apply CSR</button>
+    </form>
+  ` : "";
+  const subjectControls = hasEmail ? `
+    <form class="exception-resolution-form" data-exception-id="${id}" data-exception-type="${type}" data-resolution-action="emailSubject">
+      <label>Subject
+        <input name="subject" value="${escapeHtml(task.subject || "")}" placeholder="Updated subject" required>
+      </label>
+      <button type="submit">Update Subject</button>
+    </form>
+  ` : "";
+  const emailReprocessControls = hasEmail ? `
+    <form class="exception-resolution-form compact" data-exception-id="${id}" data-exception-type="${type}" data-resolution-action="emailReprocess">
+      <button type="submit">Reprocess Email</button>
+    </form>
+  ` : "";
+  const forceOrderControls = hasEmail ? `
+    <form class="exception-resolution-form" data-exception-id="${id}" data-exception-type="${type}" data-resolution-action="forceOrder">
+      <label>Order processor
+        <select name="processorProfileId" required>${processorOptions}</select>
+      </label>
+      <button type="submit">Force Order</button>
+    </form>
+  ` : "";
   if (task.type === "customerIdentification" || task.type === "routing") {
-    return `
-      <form class="exception-resolution-form" data-exception-id="${id}" data-exception-type="${type}">
-        <label>Customer code
-          <input name="customerCode" value="${escapeHtml(exceptionCustomerReference(task))}" placeholder="102598" required>
-        </label>
-        <button type="submit">Resolve</button>
-      </form>
-    `;
+    return `<div class="exception-actions">${customerControls}${csrControls}${subjectControls}${emailReprocessControls}${forceOrderControls}</div>`;
   }
   if (task.type === "itemValidation") {
     return `
-      <form class="exception-resolution-form" data-exception-id="${id}" data-exception-type="${type}">
+      <form class="exception-resolution-form" data-exception-id="${id}" data-exception-type="${type}" data-resolution-action="item">
         <label>ERP item
           <input name="matchedInternalItemNumber" value="${escapeHtml(task.context?.line?.matchedInternalItemNumber || "")}" placeholder="10001" required>
         </label>
@@ -947,19 +1011,21 @@ function exceptionResolutionControls(task) {
   }
   if (task.type === "parserFailure" || task.type === "outputGeneration") {
     return `
-      <form class="exception-resolution-form compact" data-exception-id="${id}" data-exception-type="${type}">
-        <input name="reprocess" type="hidden" value="true">
+      <form class="exception-resolution-form compact" data-exception-id="${id}" data-exception-type="${type}" data-resolution-action="orderReprocess">
         <button type="submit">Reprocess</button>
       </form>
     `;
   }
   return `
-    <form class="exception-resolution-form" data-exception-id="${id}" data-exception-type="${type}">
+    <div class="exception-actions">
+    ${csrControls}${subjectControls}${emailReprocessControls}${forceOrderControls}
+    <form class="exception-resolution-form" data-exception-id="${id}" data-exception-type="${type}" data-resolution-action="notes">
       <label>Notes
         <input name="notes" placeholder="Resolved">
       </label>
       <button type="submit">Resolve</button>
     </form>
+    </div>
   `;
 }
 
@@ -1462,8 +1528,29 @@ async function resolveTask(id, type) {
 async function resolveExceptionForm(form) {
   const id = form.dataset.exceptionId;
   const type = form.dataset.exceptionType;
-  const resolution = { notes: value(form, "notes") || "Resolved from console" };
-  if (type === "itemValidation") {
+  const action = form.dataset.resolutionAction || "";
+  const resolution = {
+    action,
+    notes: value(form, "notes") || "Resolved from console"
+  };
+  if (action === "customer") {
+    resolution.customerCode = value(form, "customerCode");
+  } else if (action === "csr") {
+    const csr = selectedCsr(value(form, "csrDirectoryKey")) || {};
+    resolution.csrName = csr.name || "";
+    resolution.csrFolder = csr.folder || csr.name || "";
+    resolution.csrEmail = csr.email || "";
+    resolution.subject = value(form, "subject");
+    resolution.forceMoveToCsr = checked(form, "forceMove");
+  } else if (action === "emailSubject") {
+    resolution.subject = value(form, "subject");
+  } else if (action === "emailReprocess") {
+    resolution.reprocess = true;
+  } else if (action === "forceOrder") {
+    resolution.processorProfileId = value(form, "processorProfileId");
+  } else if (action === "orderReprocess") {
+    resolution.reprocessOrder = true;
+  } else if (type === "itemValidation" || action === "item") {
     resolution.matchedInternalItemNumber = value(form, "matchedInternalItemNumber");
   } else if (type === "customerIdentification" || type === "routing") {
     resolution.customerCode = value(form, "customerCode");

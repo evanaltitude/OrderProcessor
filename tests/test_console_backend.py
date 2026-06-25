@@ -977,6 +977,128 @@ class ConsoleBackendTests(unittest.TestCase):
         self.assertEqual(result["exceptionTask"]["status"], "open")
         self.assertEqual(result["resolutionResult"]["status"], "notFound")
 
+    def test_csr_exception_resolution_updates_customer_subject_and_moves_email(self) -> None:
+        api, repo, _ = self._api()
+        repo.upsert(
+            "customers",
+            {
+                "tenantId": "altitude",
+                "id": "pilot-customer",
+                "customerCode": "PILOT",
+                "name": "Pilot",
+            },
+        )
+        api.upsert_mailbox({"tenantId": "altitude", "id": "mailbox-1", "mailboxAddress": "orders@example.com"})
+        repo.upsert(
+            "emailMessages",
+            to_dict(
+                EmailMessage(
+                    id="email-1",
+                    tenant_id="altitude",
+                    mailbox="orders@example.com",
+                    mailbox_account_id="mailbox-1",
+                    message_id="message-1",
+                    subject="Original",
+                    sender="buyer@example.com",
+                    received_at=utc_now(),
+                    customer_id="pilot-customer",
+                    source={"graphMessageId": "graph-message-1"},
+                )
+            ),
+        )
+        task = api._create_exception(
+            tenant_id="altitude",
+            task_type="routing",
+            prompt="Missing CSR",
+            email_message_id="email-1",
+            customer_id="pilot-customer",
+        )
+        patch_calls: list[tuple[str, dict[str, object]]] = []
+        post_calls: list[tuple[str, dict[str, object]]] = []
+
+        def graph_post_response(_token: str, url: str, payload: dict[str, object]) -> dict[str, object]:
+            post_calls.append((url, payload))
+            if url.endswith("/mailFolders"):
+                return {"id": "folder-jane"}
+            return {"id": "moved-message-1"}
+
+        with patch.object(
+            api,
+            "_graph_access_token_candidates",
+            return_value=[{"accessToken": "access-token", "authMethod": "test"}],
+        ), patch("order_processor.api.graph_get", return_value={"value": []}), patch(
+            "order_processor.api.graph_patch",
+            side_effect=lambda token, url, payload: patch_calls.append((url, payload)) or {},
+        ), patch("order_processor.api.graph_post", side_effect=graph_post_response):
+            result = api.resolve_exception(
+                task["id"],
+                {
+                    "resolution": {
+                        "action": "csr",
+                        "csrName": "Jane",
+                        "csrFolder": "Jane",
+                        "subject": "Cust: PILOT - Original",
+                        "forceMoveToCsr": True,
+                    }
+                },
+            )
+
+        stored_customer = repo.get("customers", "pilot-customer")
+        stored_email = repo.get("emailMessages", "email-1")
+        self.assertEqual(result["exceptionTask"]["status"], "resolved")
+        self.assertEqual(stored_customer["csrFolder"], "Jane")
+        self.assertEqual(stored_email["subject"], "Cust: PILOT - Original")
+        self.assertEqual(stored_email["source"]["graphMessageId"], "moved-message-1")
+        self.assertEqual(repo.get("tenants", "altitude")["settings"]["csrDirectory"][0]["name"], "Jane")
+        self.assertEqual(patch_calls[0][1], {"subject": "Cust: PILOT - Original"})
+        self.assertTrue(post_calls[-1][0].endswith("/messages/graph-message-1/move"))
+
+    def test_force_order_exception_resolution_creates_order_run_with_selected_processor(self) -> None:
+        api, repo, _ = self._api()
+        api.upsert_processor_profile(
+            {
+                "tenantId": "altitude",
+                "id": "email-body-profile",
+                "name": "Email Body",
+                "processorType": "emailBody",
+            }
+        )
+        repo.upsert(
+            "emailMessages",
+            to_dict(
+                EmailMessage(
+                    id="email-1",
+                    tenant_id="altitude",
+                    mailbox="orders@example.com",
+                    message_id="message-1",
+                    subject="Please process",
+                    sender="buyer@example.com",
+                    received_at=utc_now(),
+                    customer_id="pilot-customer",
+                    body_text="PO: TEST-1\nItem|Qty\n188010145|2\n",
+                    source={"graphMessageId": "graph-message-1"},
+                )
+            ),
+        )
+        task = api._create_exception(
+            tenant_id="altitude",
+            task_type="routing",
+            prompt="Force order",
+            email_message_id="email-1",
+            customer_id="pilot-customer",
+        )
+
+        result = api.resolve_exception(
+            task["id"],
+            {"resolution": {"action": "forceOrder", "processorProfileId": "email-body-profile"}},
+        )
+
+        order_run = result["resolutionResult"]["orderRun"]
+        self.assertEqual(result["exceptionTask"]["status"], "resolved")
+        self.assertEqual(order_run["processorProfileId"], "email-body-profile")
+        self.assertEqual(repo.get("emailMessages", "email-1")["orderRunId"], order_run["id"])
+        self.assertEqual(repo.get("orderRuns", order_run["id"])["processorType"], "emailBody")
+
     def test_console_customer_user_can_resolve_and_reprocess_assigned_customer_only(self) -> None:
         api, repo, _ = self._api()
         api.upsert_console_user({"tenantId": "altitude", "email": "buyer@example.com", "roles": ["customerUser"]})
