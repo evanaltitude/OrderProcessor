@@ -294,20 +294,9 @@ class CosmosRepository:
                 enable_cross_partition_query=True,
             )
         )
-        latest_rows = list(
-            self._container(container).query_items(
-                query=(
-                    f"SELECT TOP 1 VALUE c.{field} FROM c "
-                    f"WHERE c.tenantId = @tenantId AND IS_DEFINED(c.{field}) AND IS_STRING(c.{field}) "
-                    f"ORDER BY c.{field} DESC"
-                ),
-                parameters=parameters,
-                enable_cross_partition_query=True,
-            )
-        )
         return {
             "count": int(count_rows[0] if count_rows else 0),
-            "latest": str(latest_rows[0] if latest_rows else ""),
+            "latest": "",
         }
 
     def query_by_customer(self, container: str, tenant_id: str, customer_id: str) -> list[dict[str, Any]]:
