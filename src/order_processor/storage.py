@@ -286,19 +286,29 @@ class CosmosRepository:
 
     def query_by_tenant_stats(self, container: str, tenant_id: str, date_field: str = "lastImportedAt") -> dict[str, Any]:
         field = date_field if _safe_cosmos_field(date_field) else "lastImportedAt"
-        query = (
-            f"SELECT VALUE {{\"count\": COUNT(1), \"latest\": MAX(c.{field})}} "
-            "FROM c WHERE c.tenantId = @tenantId"
-        )
-        rows = list(
+        parameters = [{"name": "@tenantId", "value": tenant_id}]
+        count_rows = list(
             self._container(container).query_items(
-                query=query,
-                parameters=[{"name": "@tenantId", "value": tenant_id}],
+                query="SELECT VALUE COUNT(1) FROM c WHERE c.tenantId = @tenantId",
+                parameters=parameters,
                 enable_cross_partition_query=True,
             )
         )
-        row = dict(rows[0] or {}) if rows else {}
-        return {"count": int(row.get("count") or 0), "latest": str(row.get("latest") or "")}
+        latest_rows = list(
+            self._container(container).query_items(
+                query=(
+                    f"SELECT TOP 1 VALUE c.{field} FROM c "
+                    f"WHERE c.tenantId = @tenantId AND IS_DEFINED(c.{field}) AND IS_STRING(c.{field}) "
+                    f"ORDER BY c.{field} DESC"
+                ),
+                parameters=parameters,
+                enable_cross_partition_query=True,
+            )
+        )
+        return {
+            "count": int(count_rows[0] if count_rows else 0),
+            "latest": str(latest_rows[0] if latest_rows else ""),
+        }
 
     def query_by_customer(self, container: str, tenant_id: str, customer_id: str) -> list[dict[str, Any]]:
         query = "SELECT * FROM c WHERE c.tenantId = @tenantId AND c.customerId = @customerId"
