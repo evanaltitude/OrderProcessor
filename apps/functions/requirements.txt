@@ -3,6 +3,7 @@ azure-functions-durable
 azure-identity
 azure-cosmos
 azure-storage-blob
+azure-storage-queue
 azure-keyvault-secrets
 azure-monitor-opentelemetry
 azure-ai-documentintelligence

@@ -210,6 +210,40 @@ def _import_blob_service_client() -> Any:
     return BlobServiceClient(account_url.rstrip("/"), credential=DefaultAzureCredential())
 
 
+def _queue_account_url() -> str:
+    account_url = (
+        os.environ.get("AzureWebJobsStorage__queueServiceUri")
+        or os.environ.get("QUEUE_SERVICE_ENDPOINT")
+        or ""
+    ).strip()
+    if account_url:
+        return account_url.rstrip("/")
+    account_name = (
+        os.environ.get("AzureWebJobsStorage__accountName")
+        or os.environ.get("STORAGE_ACCOUNT_NAME")
+        or ""
+    ).strip()
+    if account_name:
+        return f"https://{account_name}.queue.core.windows.net"
+    raise ValueError("AzureWebJobsStorage__queueServiceUri or AzureWebJobsStorage__accountName is required.")
+
+
+def _enqueue_storage_queue_message(queue_name: str, message: str) -> None:
+    from azure.identity import DefaultAzureCredential
+    from azure.storage.queue import QueueClient, TextBase64EncodePolicy
+
+    client = QueueClient(
+        account_url=_queue_account_url(),
+        queue_name=queue_name,
+        credential=DefaultAzureCredential(),
+        message_encode_policy=TextBase64EncodePolicy(),
+        retry_total=1,
+        connection_timeout=2,
+        read_timeout=5,
+    )
+    client.send_message(message, timeout=5)
+
+
 def _store_import_job_payload(import_type: str, payload: dict[str, Any]) -> dict[str, Any]:
     from azure.storage.blob import ContentSettings
 
@@ -348,12 +382,7 @@ if func is not None:
         return _handle(req, lambda: order_api.sync_mailbox_subscriptions(_payload_with_headers(req)))
 
     @app.route(route="graph/notifications", methods=["POST"])
-    @app.queue_output(
-        arg_name="queued",
-        queue_name="%ORDER_PROCESSOR_GRAPH_NOTIFICATION_QUEUE%",
-        connection="AzureWebJobsStorage",
-    )
-    def graph_notifications(req: func.HttpRequest, queued: func.Out[str]) -> func.HttpResponse:
+    def graph_notifications(req: func.HttpRequest) -> func.HttpResponse:
         params = dict(getattr(req, "params", {}) or {})
         validation_token = params.get("validationToken") or params.get("validationtoken")
         if validation_token:
@@ -361,7 +390,9 @@ if func is not None:
 
         payload = _payload_with_headers_and_query(req)
         notifications = payload.get("value", [])
-        queued.set(
+        queue_name = os.environ.get("ORDER_PROCESSOR_GRAPH_NOTIFICATION_QUEUE", "graph-mailbox-notifications")
+        _enqueue_storage_queue_message(
+            queue_name,
             json.dumps(
                 {
                     "source": "microsoftGraphWebhook",
@@ -371,7 +402,7 @@ if func is not None:
                     "queryParams": payload.get("queryParams", {}),
                 },
                 separators=(",", ":"),
-            )
+            ),
         )
         return _response(
             {"accepted": len(notifications) if isinstance(notifications, list) else 0, "queued": True},
