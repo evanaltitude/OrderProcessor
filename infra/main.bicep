@@ -151,6 +151,18 @@ var operationalContainers = [
     ]
   }
   {
+    name: 'aiCostSources'
+    partitionKeyPaths: [
+      '/tenantId'
+    ]
+  }
+  {
+    name: 'aiCostEvents'
+    partitionKeyPaths: [
+      '/tenantId'
+    ]
+  }
+  {
     name: 'routingRules'
     partitionKeyPaths: [
       '/tenantId'

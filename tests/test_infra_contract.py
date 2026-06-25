@@ -43,6 +43,8 @@ class InfraContractTests(unittest.TestCase):
         self.assertIn("keyVaultSecretsOfficerRoleId", bicep)
         self.assertIn("param importJobQueueName string = 'import-jobs'", bicep)
         self.assertIn("ORDER_PROCESSOR_IMPORT_JOB_QUEUE", bicep)
+        self.assertIn("aiCostSources", bicep)
+        self.assertIn("aiCostEvents", bicep)
 
     def test_function_storage_uses_identity_settings(self) -> None:
         bicep = (ROOT / "infra" / "main.bicep").read_text(encoding="utf-8")
@@ -75,6 +77,8 @@ class InfraContractTests(unittest.TestCase):
             "/orders/{orderRunId}/timeline",
             "/customers/identify",
             "/items/validate",
+            "/costs/events",
+            "/costs/summary",
             "/imports/customers",
             "/imports/items",
             "/mailboxes",
@@ -141,6 +145,8 @@ class InfraContractTests(unittest.TestCase):
         self.assertIn("ORDER_PROCESSOR_IMPORT_JOB_QUEUE", local_settings["Values"])
         self.assertIn("imports_customers", package_script)
         self.assertIn("imports_items", package_script)
+        self.assertIn("costs_events", package_script)
+        self.assertIn("costs_summary", package_script)
         self.assertIn("import_jobs_queue", package_script)
         self.assertIn("%ORDER_PROCESSOR_IMPORT_JOB_QUEUE%", package_script)
 

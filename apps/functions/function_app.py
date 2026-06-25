@@ -463,6 +463,14 @@ if func is not None:
     def console_data(req: func.HttpRequest) -> func.HttpResponse:
         return _handle(req, lambda: order_api.console_data(req.route_params["section"], _payload_with_headers(req)))
 
+    @app.route(route="costs/events", methods=["POST"])
+    def costs_events(req: func.HttpRequest) -> func.HttpResponse:
+        return _handle(req, lambda: order_api.record_ai_cost_event(_payload_with_headers(req)))
+
+    @app.route(route="costs/summary", methods=["POST"])
+    def costs_summary(req: func.HttpRequest) -> func.HttpResponse:
+        return _handle(req, lambda: order_api.cost_summary(_payload_with_headers(req)))
+
     @app.route(route="console/artifacts/download", methods=["POST"])
     def console_artifacts_download(req: func.HttpRequest) -> func.HttpResponse:
         return _handle(req, lambda: order_api.console_output_artifact(_payload_with_headers(req)))

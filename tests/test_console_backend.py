@@ -334,6 +334,9 @@ class ConsoleBackendTests(unittest.TestCase):
         )
 
         self.assertEqual(created["tenant"]["tenantId"], "test-distributor")
+        self.assertEqual(created["aiCostSource"]["provider"], "microsoft")
+        self.assertEqual(created["aiCostSource"]["projectTagKey"], "project")
+        self.assertIsNotNone(repo.get("aiCostSources", created["aiCostSource"]["id"]))
         self.assertTrue(mailbox["session"]["authorized"])
         self.assertEqual(mailbox["mailboxAccount"]["tenantId"], "test-distributor")
         self.assertEqual(mailbox["mailboxAccount"]["mailboxAddress"], "orders@example.com")
@@ -343,6 +346,83 @@ class ConsoleBackendTests(unittest.TestCase):
             if user["email"] == "admin@example.com"
         )
         self.assertEqual(cloned_admin["roles"], ["platformAdmin"])
+
+    def test_ai_cost_events_are_grouped_for_console_and_billing_api(self) -> None:
+        api, _, _ = self._api()
+        admin_headers = {"x-ms-client-principal": _easy_auth_header("connect@focuseautomate.com")}
+        api.upsert_tenant_config({"tenantId": "altitude", "name": "Altitude Distribution"})
+        api.record_ai_cost_event(
+            {
+                "tenantId": "altitude",
+                "customerId": "store-100",
+                "provider": "microsoft",
+                "processorType": "customerIdentification",
+                "operationType": "foundryConsensus",
+                "usage": {"inputTokens": 1200, "outputTokens": 90},
+                "costUsd": 0.012345,
+            }
+        )
+        api.record_ai_cost_event(
+            {
+                "tenantId": "altitude",
+                "customerId": "store-100",
+                "provider": "microsoft",
+                "processorType": "pdf",
+                "operationType": "azureDocumentIntelligence",
+                "runCount": 3,
+                "usage": {"documentPages": 9},
+                "costUsd": 1.25,
+            }
+        )
+
+        summary = api.cost_summary({"tenantId": "altitude", "period": "currentMonth"})
+        console = api.console_data("costs", {"tenantId": "altitude", "headers": admin_headers})
+
+        self.assertEqual(summary["totalRunCount"], 4)
+        self.assertEqual(summary["totalCostUsd"], 1.262345)
+        self.assertEqual({row["processorType"] for row in summary["rows"]}, {"customerIdentification", "pdf"})
+        self.assertEqual(console["section"], "costs")
+        self.assertEqual(console["costs"]["totalRunCount"], 4)
+        self.assertEqual(console["costSources"][0]["provider"], "microsoft")
+
+    def test_exception_can_be_disregarded_as_manual_override(self) -> None:
+        api, repo, _ = self._api()
+        repo.upsert(
+            "emailMessages",
+            {
+                "id": "email-1",
+                "tenantId": "altitude",
+                "mailbox": "orders@example.com",
+                "messageId": "graph-1",
+                "sender": "store@example.com",
+                "subject": "Needs review",
+                "receivedAt": "2026-06-24T12:00:00Z",
+                "status": "needsReview",
+            },
+        )
+        task = api._create_exception(
+            tenant_id="altitude",
+            task_type="customerIdentification",
+            prompt="Resolve customer",
+            email_message_id="email-1",
+        )
+
+        result = api.resolve_exception(
+            task["id"],
+            {
+                "tenantId": "altitude",
+                "actor": "admin@example.com",
+                "resolution": {"action": "disregard", "notes": "Handled manually"},
+            },
+        )
+
+        stored_task = repo.get("exceptionTasks", task["id"])
+        stored_email = repo.get("emailMessages", "email-1")
+        self.assertEqual(result["resolutionResult"]["status"], "manualOverride")
+        self.assertTrue(result["resolutionResult"]["manualOverride"])
+        self.assertEqual(stored_task["status"], "resolved")
+        self.assertEqual(stored_email["status"], ProcessingStatus.COMPLETED.value)
+        self.assertEqual(stored_email["source"]["manualOverride"]["notes"], "Handled manually")
 
     def test_console_microsoft_auth_start_requires_configuration(self) -> None:
         api, _, _ = self._api()

@@ -93,6 +93,40 @@ paths:
             application/json:
               schema:
                 type: object
+  /costs/events:
+    post:
+      operationId: costsEvents
+      summary: Record an AI usage and cost ledger event for billing attribution.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiCostEventRequest'
+      responses:
+        '200':
+          description: AI cost event record result.
+          content:
+            application/json:
+              schema:
+                type: object
+  /costs/summary:
+    post:
+      operationId: costsSummary
+      summary: Return AI usage and cost summary rows for a tenant and period.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiCostSummaryRequest'
+      responses:
+        '200':
+          description: AI cost summary result.
+          content:
+            application/json:
+              schema:
+                type: object
   /imports/customers:
     post:
       operationId: importsCustomers
@@ -808,6 +842,79 @@ components:
           description: Optional caller-supplied aliases; normally loaded from Cosmos.
           items:
             type: object
+    AiCostEventRequest:
+      type: object
+      required:
+        - tenantId
+      properties:
+        tenantId:
+          type: string
+        customerId:
+          type: string
+        provider:
+          type: string
+          enum:
+            - microsoft
+            - googleDocumentAi
+        processorType:
+          type: string
+          description: customerIdentification, pdf, order processor type, or webhook processor type.
+        operationType:
+          type: string
+        orderRunId:
+          type: string
+        emailMessageId:
+          type: string
+        correlationId:
+          type: string
+        runCount:
+          type: integer
+          minimum: 1
+        usage:
+          type: object
+          additionalProperties: true
+        costUsd:
+          type: number
+          format: double
+        currency:
+          type: string
+          default: USD
+        estimated:
+          type: boolean
+        metadata:
+          type: object
+          additionalProperties: true
+    AiCostSummaryRequest:
+      type: object
+      required:
+        - tenantId
+      properties:
+        tenantId:
+          type: string
+        period:
+          type: string
+          enum:
+            - currentMonth
+            - last30
+            - lastMonth
+            - custom
+          default: currentMonth
+        startDate:
+          type: string
+          format: date
+        endDate:
+          type: string
+          format: date
+        customerId:
+          type: string
+        customerIds:
+          type: array
+          items:
+            type: string
+        provider:
+          type: string
+        processorType:
+          type: string
     ImportProfile:
       type: object
       properties:

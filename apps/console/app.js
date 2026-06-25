@@ -15,6 +15,7 @@ const state = {
     items: { items: [], page: { total: 0, limit: 100, offset: 0, hasNext: false, hasPrevious: false }, loaded: false }
   },
   outputs: { outputArtifacts: [], page: { total: 0, limit: 100, offset: 0, hasNext: false, hasPrevious: false }, loaded: false },
+  costs: { summary: null, loaded: false },
   listTimers: {}
 };
 
@@ -97,6 +98,12 @@ const DEFAULT_OUTPUT_FIELDS = [
   "matched_internal_item_number",
   "validation_status"
 ];
+const COST_PROCESSOR_LABELS = {
+  customerIdentification: "Customer ID",
+  orderProcessor: "Order processor",
+  pdf: "PDF",
+  powerAutomateWebhook: "Power Automate webhook"
+};
 const OUTPUT_FIELD_LABELS = {
   po_number: "PO",
   order_number: "Order #",
@@ -398,6 +405,31 @@ function escapeHtml(text) {
 function statusPill(status) {
   const tone = status === "completed" || status === "matched" || status === "active" ? "good" : status === "failed" ? "bad" : "warn";
   return `<span class="pill ${tone}">${escapeHtml(status || "")}</span>`;
+}
+
+function formatDateOnly(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value).slice(0, 10);
+  return date.toISOString().slice(0, 10);
+}
+
+function formatInteger(value) {
+  return Number(value || 0).toLocaleString();
+}
+
+function formatMoney(value, currency = "USD") {
+  const number = Number(value || 0);
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency,
+    minimumFractionDigits: number > 0 && number < 0.01 ? 6 : 2,
+    maximumFractionDigits: number > 0 && number < 0.01 ? 6 : 2
+  }).format(number);
+}
+
+function formatCostPeriod(period = {}) {
+  return [formatDateOnly(period.startDate), formatDateOnly(period.endDate)].filter(Boolean).join(" to ");
 }
 
 function parseJsonField(form, name) {
@@ -956,6 +988,14 @@ function exceptionResolutionControls(task) {
   const csrOptions = selectOptions(csrDirectoryOptions());
   const processorOptions = selectOptions(processorProfileOptions());
   const hasEmail = Boolean(task.emailMessageId);
+  const disregardControls = `
+    <form class="exception-resolution-form" data-exception-id="${id}" data-exception-type="${type}" data-resolution-action="disregard">
+      <label>Manual note
+        <input name="notes" placeholder="Handled outside automation">
+      </label>
+      <button class="secondary" type="submit">Disregard</button>
+    </form>
+  `;
   const customerControls = (task.type === "customerIdentification" || task.type === "routing") ? `
     <form class="exception-resolution-form" data-exception-id="${id}" data-exception-type="${type}" data-resolution-action="customer">
       <label>Customer code
@@ -1001,28 +1041,34 @@ function exceptionResolutionControls(task) {
     </form>
   ` : "";
   if (task.type === "customerIdentification" || task.type === "routing") {
-    return `<div class="exception-actions">${customerControls}${csrControls}${subjectControls}${emailReprocessControls}${forceOrderControls}</div>`;
+    return `<div class="exception-actions">${disregardControls}${customerControls}${csrControls}${subjectControls}${emailReprocessControls}${forceOrderControls}</div>`;
   }
   if (task.type === "itemValidation") {
     return `
+      <div class="exception-actions">
+      ${disregardControls}
       <form class="exception-resolution-form" data-exception-id="${id}" data-exception-type="${type}" data-resolution-action="item">
         <label>ERP item
           <input name="matchedInternalItemNumber" value="${escapeHtml(task.context?.line?.matchedInternalItemNumber || "")}" placeholder="10001" required>
         </label>
         <button type="submit">Resolve</button>
       </form>
+      </div>
     `;
   }
   if (task.type === "parserFailure" || task.type === "outputGeneration") {
     return `
+      <div class="exception-actions">
+      ${disregardControls}
       <form class="exception-resolution-form compact" data-exception-id="${id}" data-exception-type="${type}" data-resolution-action="orderReprocess">
         <button type="submit">Reprocess</button>
       </form>
+      </div>
     `;
   }
   return `
     <div class="exception-actions">
-    ${csrControls}${subjectControls}${emailReprocessControls}${forceOrderControls}
+    ${disregardControls}${csrControls}${subjectControls}${emailReprocessControls}${forceOrderControls}
     <form class="exception-resolution-form" data-exception-id="${id}" data-exception-type="${type}" data-resolution-action="notes">
       <label>Notes
         <input name="notes" placeholder="Resolved">
@@ -1311,6 +1357,86 @@ async function loadOutputs(options = {}) {
   renderArtifacts();
 }
 
+function costFilterPayload() {
+  const payload = {
+    period: el("costPeriod")?.value || "currentMonth",
+    processorType: el("costProcessorType")?.value || ""
+  };
+  const start = el("costStartDate")?.value || "";
+  const end = el("costEndDate")?.value || "";
+  if (payload.period === "custom" || start || end) {
+    if (start) payload.startDate = start;
+    if (end) payload.endDate = end;
+  }
+  return compactObject(payload);
+}
+
+async function loadCosts(options = {}) {
+  const result = await loadConsoleData(
+    "costs",
+    costFilterPayload(),
+    { quiet: options.quiet, busyText: "Loading costs" }
+  );
+  state.costs = {
+    summary: result.costs || { rows: [], costSources: [], period: result.period || {} },
+    loaded: true
+  };
+  renderCosts();
+}
+
+function costSourceRow(source = {}) {
+  const tag = [source.projectTagKey, source.projectTagValue].filter(Boolean).join(": ");
+  const resource = source.resourceId || source.resourceGroup || source.subscriptionId || "";
+  return `
+    <tr>
+      <td class="wrap-cell">${escapeHtml(source.tenantId || "")}</td>
+      <td>${escapeHtml(source.provider || "")}</td>
+      <td>${statusPill(source.status || "")}</td>
+      <td class="wrap-cell">${escapeHtml(source.projectName || source.microsoftProjectId || "")}</td>
+      <td class="wrap-cell">${escapeHtml(tag)}</td>
+      <td class="wrap-cell">${escapeHtml(resource)}</td>
+    </tr>
+  `;
+}
+
+function costLedgerRow(row = {}, currency = "USD") {
+  const processor = COST_PROCESSOR_LABELS[row.processorType] || row.processorType || "";
+  return `
+    <tr>
+      <td class="wrap-cell">${escapeHtml(row.customerId || "_tenant")}</td>
+      <td>${escapeHtml(row.provider || "")}</td>
+      <td>${escapeHtml(processor)}</td>
+      <td class="wrap-cell">${escapeHtml(row.operationType || "")}</td>
+      <td>${formatInteger(row.runCount)}</td>
+      <td>${formatInteger(row.inputTokens)}</td>
+      <td>${formatInteger(row.outputTokens)}</td>
+      <td>${formatInteger(row.embeddingTokens)}</td>
+      <td>${formatInteger(row.documentPages)}</td>
+      <td>${escapeHtml(formatMoney(row.costUsd, currency))}${row.estimated ? '<br><span class="muted">estimated</span>' : ""}</td>
+    </tr>
+  `;
+}
+
+function renderCosts() {
+  const summary = state.costs.summary || {};
+  const rows = summary.rows || [];
+  const sources = summary.costSources || [];
+  const currency = summary.currency || "USD";
+  el("costPeriodLine").textContent = formatCostPeriod(summary.period);
+  el("costMetrics").innerHTML = [
+    ["Runs", formatInteger(summary.totalRunCount)],
+    ["Total Cost", formatMoney(summary.totalCostUsd, currency)],
+    ["Customers", formatInteger(new Set(rows.map((row) => row.customerId || "_tenant")).size)],
+    ["Sources", formatInteger(sources.length)]
+  ].map(([label, number]) => `<div class="metric"><span>${label}</span><strong>${escapeHtml(number)}</strong></div>`).join("");
+  el("costSourcesBody").innerHTML = sources.length
+    ? sources.map(costSourceRow).join("")
+    : emptyTableRow(6, "No cost sources configured yet.");
+  el("costRowsBody").innerHTML = rows.length
+    ? rows.map((row) => costLedgerRow(row, currency)).join("")
+    : emptyTableRow(10, "No AI cost rows for this period.");
+}
+
 function listRecords(kind) {
   return state.lists[kind]?.items || [];
 }
@@ -1458,6 +1584,7 @@ function resetSectionData() {
   state.lists.customers = { items: [], page: { total: 0, limit: 100, offset: 0, hasNext: false, hasPrevious: false }, loaded: false };
   state.lists.items = { items: [], page: { total: 0, limit: 100, offset: 0, hasNext: false, hasPrevious: false }, loaded: false };
   state.outputs = { outputArtifacts: [], page: { total: 0, limit: 100, offset: 0, hasNext: false, hasPrevious: false }, loaded: false };
+  state.costs = { summary: null, loaded: false };
 }
 
 async function refresh(options = {}) {
@@ -1483,6 +1610,7 @@ async function refresh(options = {}) {
   renderDistributorSelector();
   renderCustomerPage();
   if (activeConsoleView() === "outputs") await loadOutputs({ quiet: options.quiet });
+  if (activeConsoleView() === "costs") await loadCosts({ quiet: options.quiet });
   if (activeConsoleView() === "customers" && state.customerPage === "customer-list") {
     await loadCustomerDataList("customers", { quiet: options.quiet });
   }
@@ -1873,7 +2001,7 @@ document.addEventListener("click", async (event) => {
     if (target.dataset.view === "customers") {
       state.customerPage = "list";
     }
-    if (["customers", "outputs", "users", "settings"].includes(target.dataset.view)) {
+    if (["customers", "outputs", "costs", "users", "settings"].includes(target.dataset.view)) {
       await refresh();
     }
   }
@@ -1929,6 +2057,7 @@ document.addEventListener("click", async (event) => {
   }
   if (target.id === "authorizeMicrosoftButton") await authorizeMicrosoft();
   if (target.id === "testMailboxButton") await testMailbox();
+  if (target.id === "refreshCostsButton") await loadCosts();
   if (target.id === "clearRoutingFormButton") clearRoutingForm();
   if (target.dataset.action === "edit-routing-rule") loadRoutingRule(target.dataset.rule);
   if (target.dataset.action === "edit-processor-profile") loadProcessorProfile(target.dataset.profile);
@@ -1973,6 +2102,17 @@ el("routingForm").elements.outcome.addEventListener("change", syncRoutingDefault
   "itemListFilterValue"
 ].forEach((id) => {
   el(id).addEventListener(id.endsWith("Field") ? "change" : "input", () => scheduleCustomerDataListLoad("items"));
+});
+[
+  "costPeriod",
+  "costStartDate",
+  "costEndDate",
+  "costProcessorType"
+].forEach((id) => {
+  el(id).addEventListener("change", () => {
+    if (activeConsoleView() !== "costs") return;
+    loadCosts({ quiet: true }).catch((error) => showDetails(payloadForError(error)));
+  });
 });
 wireForms();
 window.addEventListener("unhandledrejection", (event) => {

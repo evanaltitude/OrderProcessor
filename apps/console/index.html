@@ -34,6 +34,7 @@
         <button class="tab" data-view="exceptions" type="button">Exceptions</button>
         <button class="tab" data-view="customers" type="button">Customers</button>
         <button class="tab" data-view="outputs" type="button">Outputs</button>
+        <button class="tab" data-view="costs" type="button">Costs</button>
         <button class="tab" data-view="users" type="button">Users</button>
         <button class="tab" data-view="settings" type="button">Settings</button>
       </nav>
@@ -719,6 +720,88 @@
             <h2 id="outputs-title">Output Artifacts</h2>
           </div>
           <div id="artifactList" class="artifact-grid"></div>
+        </section>
+      </section>
+
+      <section id="costs" class="view" aria-labelledby="costs-title">
+        <section class="band">
+          <div class="section-title">
+            <div>
+              <h2 id="costs-title">AI Costs</h2>
+              <p id="costPeriodLine"></p>
+            </div>
+            <button id="refreshCostsButton" type="button">Refresh Costs</button>
+          </div>
+          <div class="list-controls cost-controls">
+            <label>Period
+              <select id="costPeriod">
+                <option value="currentMonth">Current month</option>
+                <option value="last30">Last 30 days</option>
+                <option value="lastMonth">Last month</option>
+                <option value="custom">Custom</option>
+              </select>
+            </label>
+            <label>Start
+              <input id="costStartDate" type="date">
+            </label>
+            <label>End
+              <input id="costEndDate" type="date">
+            </label>
+            <label>Processor
+              <select id="costProcessorType">
+                <option value="">All processors</option>
+                <option value="customerIdentification">Customer ID</option>
+                <option value="orderProcessor">Order processor</option>
+                <option value="pdf">PDF</option>
+                <option value="powerAutomateWebhook">Power Automate webhook</option>
+              </select>
+            </label>
+          </div>
+          <div class="metrics cost-metrics" id="costMetrics"></div>
+        </section>
+        <section class="band">
+          <div class="section-title">
+            <h2>Cost Sources</h2>
+          </div>
+          <div class="table-wrap">
+            <table class="wide-table">
+              <thead>
+                <tr>
+                  <th>Customer</th>
+                  <th>Provider</th>
+                  <th>Status</th>
+                  <th>Project</th>
+                  <th>Tag</th>
+                  <th>Resource</th>
+                </tr>
+              </thead>
+              <tbody id="costSourcesBody"></tbody>
+            </table>
+          </div>
+        </section>
+        <section class="band">
+          <div class="section-title">
+            <h2>AI Cost Ledger</h2>
+          </div>
+          <div class="table-wrap">
+            <table class="wide-table">
+              <thead>
+                <tr>
+                  <th>Customer</th>
+                  <th>Provider</th>
+                  <th>Processor</th>
+                  <th>Operation</th>
+                  <th>Runs</th>
+                  <th>Input</th>
+                  <th>Output</th>
+                  <th>Embeddings</th>
+                  <th>Pages</th>
+                  <th>Cost</th>
+                </tr>
+              </thead>
+              <tbody id="costRowsBody"></tbody>
+            </table>
+          </div>
         </section>
       </section>
 

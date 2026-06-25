@@ -57,6 +57,8 @@ $routes = @(
     @{ Name = "console_session"; EntryPoint = "console_session"; Route = "console/session" },
     @{ Name = "console_dashboard"; EntryPoint = "console_dashboard"; Route = "console/dashboard" },
     @{ Name = "console_data"; EntryPoint = "console_data"; Route = "console/data/{section}" },
+    @{ Name = "costs_events"; EntryPoint = "costs_events"; Route = "costs/events" },
+    @{ Name = "costs_summary"; EntryPoint = "costs_summary"; Route = "costs/summary" },
     @{ Name = "console_artifacts_download"; EntryPoint = "console_artifacts_download"; Route = "console/artifacts/download" },
     @{ Name = "console_routing_rules_upsert"; EntryPoint = "console_routing_rules_upsert"; Route = "console/routing-rules" },
     @{ Name = "console_customers_upsert"; EntryPoint = "console_customers_upsert"; Route = "console/customers" },

@@ -114,6 +114,10 @@ BOOTSTRAP_CONSOLE_ADMIN_EMAIL = "connect@focuseautomate.com"
 SYSTEM_TENANT_ID = "__system__"
 PROCESSING_CATEGORY = "Processing"
 WEBHOOK_PROCESSOR_TYPES = {"webhook", "customwebhook", "powerautomatewebhook", "powerautomate"}
+MICROSOFT_AI_COST_PROVIDER = "microsoft"
+GOOGLE_DOCUMENT_AI_COST_PROVIDER = "googleDocumentAi"
+DEFAULT_COST_CURRENCY = "USD"
+AI_COST_PROJECT_TAG_KEY = "project"
 CONSOLE_CUSTOMER_FIELDS = [
     "id",
     "tenantId",
@@ -272,6 +276,92 @@ def _as_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _as_int(value: Any, default: int = 0) -> int:
+    if value is None or value == "":
+        return default
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _round_money(value: Any) -> float:
+    amount = _as_float(value)
+    return round(float(amount or 0.0), 6)
+
+
+def _month_start(value: datetime | None = None) -> datetime:
+    current = value or datetime.now(UTC)
+    return datetime(current.year, current.month, 1, tzinfo=UTC)
+
+
+def _parse_date(value: Any, default: datetime) -> datetime:
+    if not value:
+        return default
+    text = str(value).strip()
+    try:
+        if len(text) == 10 and text[4] == "-" and text[7] == "-":
+            parsed = datetime.fromisoformat(f"{text}T00:00:00+00:00")
+        else:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return default
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _period_from_payload(payload: dict[str, Any]) -> dict[str, str]:
+    now = datetime.now(UTC)
+    period = str(_pick(payload, "period", default="currentMonth") or "currentMonth").strip().lower()
+    if period in {"last30", "last30days", "rolling30"}:
+        default_start = now - timedelta(days=30)
+    elif period in {"lastmonth", "previousmonth"}:
+        this_month = _month_start(now)
+        previous_month_end = this_month - timedelta(days=1)
+        default_start = _month_start(previous_month_end)
+        now = this_month
+    else:
+        default_start = _month_start(now)
+
+    start = _parse_date(_pick(payload, "startDate", "start", "from", default=None), default_start)
+    end = _parse_date(_pick(payload, "endDate", "end", "to", default=None), now)
+    if end < start:
+        start, end = end, start
+    return {
+        "startDate": start.isoformat(),
+        "endDate": end.isoformat(),
+        "label": period or "custom",
+    }
+
+
+def _in_period(value: Any, period: dict[str, str]) -> bool:
+    timestamp = _parse_date(value, datetime.min.replace(tzinfo=UTC))
+    start = _parse_date(period["startDate"], datetime.min.replace(tzinfo=UTC))
+    end = _parse_date(period["endDate"], datetime.max.replace(tzinfo=UTC))
+    return start <= timestamp <= end
+
+
+def _cost_project_tag_value(tenant_id: str) -> str:
+    normalized = re.sub(r"[^a-z0-9-]+", "-", str(tenant_id or "customer").lower()).strip("-")
+    return normalized[:64] or "customer"
+
+
+def _processor_cost_type(value: Any) -> str:
+    normalized = re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+    aliases = {
+        "customerid": "customerIdentification",
+        "customeridentification": "customerIdentification",
+        "foundrycustomerconsensus": "customerIdentification",
+        "foundrycustomerdecider": "customerIdentification",
+        "documentintelligence": "pdf",
+        "azuredocumentintelligence": "pdf",
+        "googledocumentai": "pdf",
+        "powerautomatewebhook": "powerAutomateWebhook",
+    }
+    return aliases.get(normalized, str(value or "unknown").strip() or "unknown")
 
 
 def _normalize_regex_pattern(value: Any) -> str:
@@ -2941,6 +3031,7 @@ class OrderProcessorApi:
         processor_profile = self._resolve_processor_profile(order, payload)
         if self._is_webhook_processor(processor_profile, payload):
             order_doc = self._process_webhook_order(order, payload, processor_profile, observability)
+            self._record_order_processor_cost_event(order_doc, payload, processor_profile, observability)
             webhook_handoff = dict(_pick(_as_dict(_pick(order_doc, "sourceMetadata", "source_metadata", default={})), "webhookProcessor", default={}) or {})
             return {
                 "orderRun": order_doc,
@@ -3033,6 +3124,7 @@ class OrderProcessorApi:
             customer_id=order.customer_id,
             order_run_id=order.id,
         )
+        self._record_order_processor_cost_event(order_doc, payload, processor_profile, observability)
         return {"orderRun": _api_value(order), "unresolvedLineCount": len(unresolved), "observability": observability}
 
     def identify_customer(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -3072,6 +3164,7 @@ class OrderProcessorApi:
             ai_identifier=self.customer_ai_identifier,
             confidence_threshold=confidence_threshold,
         )
+        self._record_customer_identification_cost_event(email, result, payload, observability)
 
         if result.status == MatchStatus.MATCHED and result.customer_id:
             self._apply_customer_identification(email, result)
@@ -3689,6 +3782,382 @@ class OrderProcessorApi:
         self.repository.upsert("tenants", tenant)
         return directory
 
+    def _ensure_ai_cost_source_for_tenant(self, tenant: dict[str, Any]) -> dict[str, Any]:
+        tenant_id = str(_pick(tenant, "tenantId", "tenant_id", "id", default="default") or "default")
+        source_id = stable_id(tenant_id, MICROSOFT_AI_COST_PROVIDER, "ai-cost-source")
+        existing = self.repository.get("aiCostSources", source_id) or {}
+        settings = dict(_pick(tenant, "settings", default={}) or {})
+        configured = dict(_pick(settings, "aiCostSource", "ai_cost_source", default={}) or {})
+        project_tag_value = str(
+            _pick(configured, "projectTagValue", "project_tag_value", default="")
+            or _cost_project_tag_value(tenant_id)
+        )
+        project_name = str(
+            _pick(configured, "projectName", "project_name", default="")
+            or f"fa-{project_tag_value}-ai-costs"
+        )
+        microsoft_project_id = str(
+            _pick(
+                configured,
+                "microsoftProjectId",
+                "microsoft_project_id",
+                "foundryProjectId",
+                "foundry_project_id",
+                default=_pick(existing, "microsoftProjectId", "foundryProjectId", default=""),
+            )
+            or ""
+        )
+        resource_id = str(
+            _pick(
+                configured,
+                "resourceId",
+                "resource_id",
+                default=_pick(existing, "resourceId", default=os.environ.get("AZURE_AI_FOUNDRY_RESOURCE_ID", "")),
+            )
+            or ""
+        )
+        source = {
+            **existing,
+            "id": source_id,
+            "tenantId": tenant_id,
+            "provider": MICROSOFT_AI_COST_PROVIDER,
+            "displayName": f"{_pick(tenant, 'name', default=tenant_id)} Microsoft AI costs",
+            "projectName": project_name,
+            "projectTagKey": str(_pick(configured, "projectTagKey", "project_tag_key", default=AI_COST_PROJECT_TAG_KEY)),
+            "projectTagValue": project_tag_value,
+            "microsoftProjectId": microsoft_project_id,
+            "resourceId": resource_id,
+            "resourceGroup": str(
+                _pick(configured, "resourceGroup", "resource_group", default=os.environ.get("AZURE_RESOURCE_GROUP", ""))
+                or ""
+            ),
+            "subscriptionId": str(
+                _pick(configured, "subscriptionId", "subscription_id", default=os.environ.get("AZURE_SUBSCRIPTION_ID", ""))
+                or ""
+            ),
+            "status": "configured" if microsoft_project_id or resource_id else "pendingMicrosoftProject",
+            "costProvider": "azureCostManagement",
+            "updatedAt": utc_now(),
+            "createdAt": _pick(existing, "createdAt", "created_at", default=utc_now()),
+        }
+        source["notes"] = (
+            "Microsoft Foundry costs are attributed with the project tag. "
+            "The app cost ledger records per-run usage immediately; Azure Cost Management remains the reconciliation source."
+        )
+        stored = self.repository.upsert("aiCostSources", source)
+        settings["aiCostSource"] = {
+            "provider": MICROSOFT_AI_COST_PROVIDER,
+            "sourceId": source_id,
+            "projectName": project_name,
+            "projectTagKey": source["projectTagKey"],
+            "projectTagValue": project_tag_value,
+            "status": source["status"],
+        }
+        tenant["settings"] = settings
+        tenant["updatedAt"] = utc_now()
+        self.repository.upsert("tenants", tenant)
+        return stored
+
+    def record_ai_cost_event(self, payload: dict[str, Any]) -> dict[str, Any]:
+        event = self._ai_cost_event_from_payload(payload)
+        stored = self.repository.upsert("aiCostEvents", event)
+        self._audit(
+            event["tenantId"],
+            "aiCost.recorded",
+            str(_pick(event, "correlationId", default=event["id"])),
+            event["id"],
+            {
+                "provider": event["provider"],
+                "processorType": event["processorType"],
+                "operationType": event["operationType"],
+                "customerId": event.get("customerId", ""),
+                "costUsd": event["costUsd"],
+            },
+            customer_id=event.get("customerId") or None,
+            order_run_id=event.get("orderRunId") or None,
+            email_message_id=event.get("emailMessageId") or None,
+            actor=str(_pick(payload, "actor", default="system")),
+        )
+        return {"aiCostEvent": stored}
+
+    def _ai_cost_event_from_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        tenant_id = str(_pick(payload, "tenantId", "tenant_id", default="default") or "default")
+        event_time = str(_pick(payload, "eventTime", "event_time", "createdAt", "created_at", default=utc_now()))
+        usage = dict(_pick(payload, "usage", "aiUsage", "ai_usage", default={}) or {})
+        cost = dict(_pick(payload, "cost", "costDetails", "cost_details", default={}) or {})
+        provider = str(_pick(payload, "provider", "serviceProvider", "service_provider", default=MICROSOFT_AI_COST_PROVIDER) or MICROSOFT_AI_COST_PROVIDER)
+        processor_type = _processor_cost_type(
+            _pick(payload, "processorType", "processor_type", "orderProcessorType", "order_processor_type", default="unknown")
+        )
+        operation_type = str(_pick(payload, "operationType", "operation_type", "operation", default=processor_type) or processor_type)
+        input_tokens = _as_int(_pick(usage, "inputTokens", "promptTokens", "prompt_tokens", "input_tokens", default=0))
+        output_tokens = _as_int(_pick(usage, "outputTokens", "completionTokens", "completion_tokens", "output_tokens", default=0))
+        embedding_tokens = _as_int(_pick(usage, "embeddingTokens", "embedding_tokens", default=0))
+        document_pages = _as_int(_pick(usage, "documentPages", "document_pages", "pages", default=0))
+        run_count = max(1, _as_int(_pick(payload, "runCount", "run_count", default=1), 1))
+        explicit_cost = _pick(payload, "costUsd", "cost_usd", default=_pick(cost, "usd", "costUsd", "cost_usd", default=None))
+        cost_usd = _round_money(explicit_cost)
+        event_id = str(
+            _pick(payload, "id", "eventId", "event_id", default="")
+            or stable_id(
+                tenant_id,
+                provider,
+                processor_type,
+                operation_type,
+                _pick(payload, "orderRunId", "order_run_id", default=""),
+                _pick(payload, "emailMessageId", "email_message_id", default=""),
+                event_time,
+            )
+        )
+        return {
+            "id": event_id,
+            "tenantId": tenant_id,
+            "customerId": str(_pick(payload, "customerId", "customer_id", default="") or ""),
+            "provider": provider,
+            "processorType": processor_type,
+            "operationType": operation_type,
+            "orderProcessorType": _processor_cost_type(_pick(payload, "orderProcessorType", "order_processor_type", default=processor_type)),
+            "modelDeployment": str(_pick(payload, "modelDeployment", "model_deployment", "deployment", default="") or ""),
+            "modelName": str(_pick(payload, "modelName", "model_name", "model", default="") or ""),
+            "meterName": str(_pick(payload, "meterName", "meter_name", default="") or ""),
+            "orderRunId": str(_pick(payload, "orderRunId", "order_run_id", default="") or ""),
+            "emailMessageId": str(_pick(payload, "emailMessageId", "email_message_id", default="") or ""),
+            "correlationId": str(_pick(payload, "correlationId", "correlation_id", default=event_id) or event_id),
+            "runCount": run_count,
+            "inputTokens": input_tokens,
+            "outputTokens": output_tokens,
+            "embeddingTokens": embedding_tokens,
+            "documentPages": document_pages,
+            "costUsd": cost_usd,
+            "currency": str(_pick(payload, "currency", default=DEFAULT_COST_CURRENCY) or DEFAULT_COST_CURRENCY),
+            "estimated": bool(_pick(payload, "estimated", default=explicit_cost is None)),
+            "source": str(_pick(payload, "source", default="appCostLedger") or "appCostLedger"),
+            "metadata": dict(_pick(payload, "metadata", default={}) or {}),
+            "createdAt": event_time,
+            "updatedAt": utc_now(),
+        }
+
+    @staticmethod
+    def _ai_cost_input(payload: dict[str, Any]) -> dict[str, Any]:
+        explicit = _as_dict(_pick(payload, "aiCost", "ai_cost", default={}))
+        source_metadata = _as_dict(_pick(payload, "sourceMetadata", "source_metadata", default={}))
+        source_cost = _as_dict(_pick(source_metadata, "aiCost", "ai_cost", default={}))
+        usage = (
+            _as_dict(_pick(payload, "usage", "aiUsage", "ai_usage", default={}))
+            or _as_dict(_pick(explicit, "usage", "aiUsage", "ai_usage", default={}))
+            or _as_dict(_pick(source_cost, "usage", "aiUsage", "ai_usage", default={}))
+        )
+        cost = (
+            _as_dict(_pick(payload, "cost", "costDetails", "cost_details", default={}))
+            or _as_dict(_pick(explicit, "cost", "costDetails", "cost_details", default={}))
+            or _as_dict(_pick(source_cost, "cost", "costDetails", "cost_details", default={}))
+        )
+        cost_usd = _pick(
+            payload,
+            "costUsd",
+            "cost_usd",
+            default=_pick(explicit, "costUsd", "cost_usd", default=_pick(source_cost, "costUsd", "cost_usd", default=None)),
+        )
+        provider = str(
+            _pick(payload, "provider", default=_pick(explicit, "provider", default=_pick(source_cost, "provider", default="")))
+            or ""
+        )
+        return {"explicit": explicit, "sourceCost": source_cost, "usage": usage, "cost": cost, "costUsd": cost_usd, "provider": provider}
+
+    @staticmethod
+    def _has_ai_cost_signal(cost_input: dict[str, Any]) -> bool:
+        return bool(
+            cost_input.get("explicit")
+            or cost_input.get("sourceCost")
+            or cost_input.get("usage")
+            or cost_input.get("cost")
+            or cost_input.get("costUsd") is not None
+        )
+
+    def _record_customer_identification_cost_event(
+        self,
+        email: EmailMessage,
+        result: CustomerIdentificationResult,
+        payload: dict[str, Any],
+        observability: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        cost_input = self._ai_cost_input(payload)
+        match_method = str(result.match_method or "")
+        ai_method = any(marker in match_method.lower() for marker in ("ai", "foundry", "openai", "llm", "model"))
+        if not self._has_ai_cost_signal(cost_input) and not ai_method:
+            return None
+        event_payload = {
+            **cost_input["explicit"],
+            "tenantId": email.tenant_id,
+            "customerId": result.customer_id or "",
+            "provider": cost_input["provider"] or MICROSOFT_AI_COST_PROVIDER,
+            "processorType": "customerIdentification",
+            "operationType": match_method or "customerIdentification",
+            "emailMessageId": email.id,
+            "correlationId": observability["correlationId"],
+            "usage": cost_input["usage"],
+            "cost": cost_input["cost"],
+            "costUsd": cost_input["costUsd"],
+            "metadata": {
+                **_as_dict(_pick(cost_input["explicit"], "metadata", default={})),
+                "matchStatus": str(result.status),
+                "matchMethod": match_method,
+                "confidence": result.confidence,
+            },
+            "source": "customerIdentification",
+        }
+        return self._record_ai_cost_event_safely(event_payload)
+
+    def _record_order_processor_cost_event(
+        self,
+        order_doc: dict[str, Any],
+        payload: dict[str, Any],
+        processor_profile: ProcessorProfile | None,
+        observability: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        cost_input = self._ai_cost_input(payload)
+        source_metadata = _as_dict(_pick(order_doc, "sourceMetadata", "source_metadata", default={}))
+        profile_processor_type = processor_profile.processor_type if processor_profile is not None else "orderProcessor"
+        processor_type = _processor_cost_type(
+            _pick(order_doc, "processorType", "processor_type", default=profile_processor_type)
+        )
+        document_result = _pick(
+            payload,
+            "documentIntelligenceResult",
+            "document_intelligence_result",
+            "azureDocumentIntelligenceResult",
+            "azure_document_intelligence_result",
+            default=None,
+        )
+        document_model_id = str(_pick(source_metadata, "documentIntelligenceModelId", default="") or "")
+        is_document_ai = processor_type == "pdf" and (document_result is not None or document_model_id)
+        if not self._has_ai_cost_signal(cost_input) and not is_document_ai:
+            return None
+        provider = cost_input["provider"] or MICROSOFT_AI_COST_PROVIDER
+        operation_type = str(
+            _pick(cost_input["explicit"], "operationType", "operation_type", default="")
+            or ("azureDocumentIntelligence" if is_document_ai else "orderProcessor")
+        )
+        usage = dict(cost_input["usage"])
+        if is_document_ai and not _pick(usage, "documentPages", "document_pages", "pages", default=None):
+            usage["documentPages"] = _pick(payload, "documentPages", "document_pages", "pageCount", "page_count", default=0)
+        event_payload = {
+            **cost_input["explicit"],
+            "tenantId": str(_pick(order_doc, "tenantId", "tenant_id", default="default") or "default"),
+            "customerId": str(_document_customer_id(order_doc) or ""),
+            "provider": provider,
+            "processorType": processor_type,
+            "operationType": operation_type,
+            "orderProcessorType": processor_type,
+            "modelDeployment": str(_pick(cost_input["explicit"], "modelDeployment", "model_deployment", default=document_model_id) or ""),
+            "orderRunId": str(_pick(order_doc, "id", default="") or ""),
+            "emailMessageId": str(_pick(order_doc, "emailMessageId", "email_message_id", default="") or ""),
+            "correlationId": observability["correlationId"],
+            "usage": usage,
+            "cost": cost_input["cost"],
+            "costUsd": cost_input["costUsd"],
+            "metadata": {
+                **_as_dict(_pick(cost_input["explicit"], "metadata", default={})),
+                "orderStatus": _document_status(order_doc),
+                "processorProfileId": str(_pick(order_doc, "processorProfileId", "processor_profile_id", default="") or ""),
+            },
+            "source": "orderProcessor",
+        }
+        return self._record_ai_cost_event_safely(event_payload)
+
+    def _record_ai_cost_event_safely(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        try:
+            return self.record_ai_cost_event(payload)["aiCostEvent"]
+        except Exception as exc:  # pragma: no cover - defensive telemetry path.
+            tenant_id = str(_pick(payload, "tenantId", "tenant_id", default="default") or "default")
+            correlation_id = str(_pick(payload, "correlationId", "correlation_id", default=stable_id(tenant_id, "aiCostRecordFailed")))
+            self._audit(
+                tenant_id,
+                "aiCost.recordFailed",
+                correlation_id,
+                str(_pick(payload, "orderRunId", "emailMessageId", default=correlation_id) or correlation_id),
+                {
+                    "error": str(exc),
+                    "processorType": _pick(payload, "processorType", "processor_type", default=""),
+                    "operationType": _pick(payload, "operationType", "operation_type", default=""),
+                },
+                customer_id=str(_pick(payload, "customerId", "customer_id", default="") or "") or None,
+                order_run_id=str(_pick(payload, "orderRunId", "order_run_id", default="") or "") or None,
+                email_message_id=str(_pick(payload, "emailMessageId", "email_message_id", default="") or "") or None,
+            )
+            return None
+
+    def cost_summary(self, payload: dict[str, Any]) -> dict[str, Any]:
+        tenant_id = str(_pick(payload, "tenantId", "tenant_id", default="default") or "default")
+        period = _period_from_payload(payload)
+        provider_filter = str(_pick(payload, "provider", "serviceProvider", "service_provider", default="") or "").strip()
+        customer_filter = str(_pick(payload, "customerId", "customer_id", default="") or "").strip()
+        customer_ids_filter = {
+            str(value)
+            for value in _as_list(_pick(payload, "customerIds", "customer_ids", default=[]))
+            if str(value).strip()
+        }
+        processor_filter = str(_pick(payload, "processorType", "processor_type", default="") or "").strip()
+        events = [
+            event
+            for event in self.repository.query_by_tenant("aiCostEvents", tenant_id)
+            if _in_period(_pick(event, "createdAt", "created_at", default=""), period)
+            and (not provider_filter or str(_pick(event, "provider", default="")) == provider_filter)
+            and (not customer_filter or str(_pick(event, "customerId", "customer_id", default="")) == customer_filter)
+            and (not customer_ids_filter or str(_pick(event, "customerId", "customer_id", default="")) in customer_ids_filter)
+            and (not processor_filter or str(_pick(event, "processorType", "processor_type", default="")) == processor_filter)
+        ]
+        rows = self._ai_cost_summary_rows(events)
+        sources = self.repository.query_by_tenant("aiCostSources", tenant_id)
+        return {
+            "tenantId": tenant_id,
+            "period": period,
+            "currency": DEFAULT_COST_CURRENCY,
+            "totalRunCount": sum(int(_pick(row, "runCount", default=0) or 0) for row in rows),
+            "totalCostUsd": _round_money(sum(float(_pick(row, "costUsd", default=0) or 0) for row in rows)),
+            "rows": rows,
+            "costSources": sources,
+            "providerNotes": {
+                MICROSOFT_AI_COST_PROVIDER: "Microsoft Foundry/Azure OpenAI costs reconcile through Azure Cost Management using the project tag.",
+                GOOGLE_DOCUMENT_AI_COST_PROVIDER: "Google Document AI PDF processor costs are tracked separately when that provider integration is configured.",
+            },
+        }
+
+    @staticmethod
+    def _ai_cost_summary_rows(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        grouped: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+        for event in events:
+            key = (
+                str(_pick(event, "customerId", "customer_id", default="") or ""),
+                str(_pick(event, "provider", default="") or ""),
+                str(_pick(event, "processorType", "processor_type", default="unknown") or "unknown"),
+                str(_pick(event, "operationType", "operation_type", default="") or ""),
+            )
+            row = grouped.setdefault(
+                key,
+                {
+                    "customerId": key[0],
+                    "provider": key[1],
+                    "processorType": key[2],
+                    "operationType": key[3],
+                    "runCount": 0,
+                    "inputTokens": 0,
+                    "outputTokens": 0,
+                    "embeddingTokens": 0,
+                    "documentPages": 0,
+                    "costUsd": 0.0,
+                    "estimated": False,
+                },
+            )
+            row["runCount"] += max(1, int(_pick(event, "runCount", "run_count", default=1) or 1))
+            row["inputTokens"] += int(_pick(event, "inputTokens", "input_tokens", default=0) or 0)
+            row["outputTokens"] += int(_pick(event, "outputTokens", "output_tokens", default=0) or 0)
+            row["embeddingTokens"] += int(_pick(event, "embeddingTokens", "embedding_tokens", default=0) or 0)
+            row["documentPages"] += int(_pick(event, "documentPages", "document_pages", default=0) or 0)
+            row["costUsd"] = _round_money(float(row["costUsd"]) + float(_pick(event, "costUsd", "cost_usd", default=0) or 0))
+            row["estimated"] = bool(row["estimated"] or _pick(event, "estimated", default=False))
+        return sorted(grouped.values(), key=lambda item: (str(item["customerId"]), str(item["processorType"]), str(item["operationType"])))
+
     def _csr_directory_for_console(self, tenant_id: str, tenant: dict[str, Any]) -> list[dict[str, Any]]:
         settings = dict(_pick(tenant, "settings", default={}) or {})
         configured = [item for item in _as_list(settings.get("csrDirectory")) if isinstance(item, dict)]
@@ -4249,6 +4718,7 @@ class OrderProcessorApi:
         order_id = str(_pick(task, "orderRunId", "order_run_id", default=base.get("orderRunId", "")) or "")
         customer_id = str(_document_customer_id(task) or base.get("customerId", "") or "")
         actions: list[dict[str, Any]] = []
+        actions.append({"key": "disregard", "label": "Disregard / manual handling", "requires": ["notes"]})
         if task_type in {"customerIdentification", "routing"}:
             actions.append({"key": "customer", "label": "Set customer code", "requires": ["customerCode"]})
         if email_id:
@@ -4795,6 +5265,20 @@ class OrderProcessorApi:
                     session,
                     include_global=True,
                 ),
+            }
+
+        if section_key in {"costs", "billing"}:
+            cost_payload = dict(payload)
+            if isinstance(customer_filter, set):
+                cost_payload["customerIds"] = sorted(customer_filter)
+            summary = self.cost_summary(cost_payload)
+            return {
+                "session": session,
+                "section": "costs",
+                "costs": summary,
+                "costSources": summary["costSources"],
+                "period": summary["period"],
+                "rows": summary["rows"],
             }
 
         return {"session": session, "error": "unknownSection", "message": f"Unknown console data section {section}."}
@@ -5413,9 +5897,16 @@ class OrderProcessorApi:
             created_at=_pick(existing, "createdAt", "created_at", default=utc_now()),
         )
         stored = self.repository.upsert("tenants", to_dict(tenant))
+        ai_cost_source = self._ensure_ai_cost_source_for_tenant(stored)
         self._clear_console_cache(tenant_id)
-        self._audit(tenant_id, "tenantConfig.upserted", stored["id"], stored["id"], {"name": stored["name"]})
-        return {"tenant": stored}
+        self._audit(
+            tenant_id,
+            "tenantConfig.upserted",
+            stored["id"],
+            stored["id"],
+            {"name": stored["name"], "aiCostSourceId": ai_cost_source["id"]},
+        )
+        return {"tenant": self.repository.get("tenants", tenant_id) or stored, "aiCostSource": ai_cost_source}
 
     def upsert_customer_config(self, payload: dict[str, Any]) -> dict[str, Any]:
         tenant_id = _pick(payload, "tenantId", "tenant_id", default="default")
@@ -5729,7 +6220,8 @@ class OrderProcessorApi:
             return {"error": "notFound", "message": f"Exception task {exception_id} was not found."}
 
         observability = correlation_context(payload, exception_id)
-        resolution = _pick(payload, "resolution", default=payload)
+        resolution = dict(_pick(payload, "resolution", default=payload) or {})
+        resolution.setdefault("actor", self._actor_from_payload(payload))
         resolution_result = self._apply_exception_resolution(existing, resolution)
         resolution_status = str(_pick(resolution_result, "status", default="resolved") or "resolved")
         existing["status"] = (
@@ -5771,6 +6263,8 @@ class OrderProcessorApi:
         resolution: dict[str, Any],
     ) -> dict[str, Any]:
         action = str(_pick(resolution, "action", "resolutionAction", "resolution_action", default="") or "").strip()
+        if action in {"disregard", "clear", "manualOverride", "manualHandled", "manualHandling"}:
+            return self._apply_disregard_resolution(task, resolution)
         if action in {"csr", "setCsr", "moveToCsr"}:
             return self._apply_csr_resolution(task, resolution)
         if action in {"emailSubject", "updateSubject"}:
@@ -5799,6 +6293,54 @@ class OrderProcessorApi:
                     return {"reprocess": self.reprocess_order(order_run_id, {"source": "exceptionResolution"})}
             return {"status": "triaged"}
         return {"status": "recorded"}
+
+    def _apply_disregard_resolution(self, task: dict[str, Any], resolution: dict[str, Any]) -> dict[str, Any]:
+        now = utc_now()
+        actor = str(_pick(resolution, "actor", "resolvedBy", "resolved_by", default="") or "console")
+        notes = str(_pick(resolution, "notes", "reason", default="Manual override; email will be handled outside automation.") or "")
+        result: dict[str, Any] = {
+            "status": "manualOverride",
+            "manualOverride": True,
+            "notes": notes,
+            "completedAt": now,
+        }
+        email_message_id = str(_pick(task, "emailMessageId", "email_message_id", default="") or "")
+        if email_message_id:
+            email = self.repository.get("emailMessages", email_message_id)
+            if email:
+                source = dict(_pick(email, "source", default={}) or {})
+                source["manualOverride"] = {
+                    "reason": "exceptionDisregarded",
+                    "notes": notes,
+                    "actor": actor,
+                    "at": now,
+                }
+                email["source"] = source
+                email["status"] = ProcessingStatus.COMPLETED.value
+                email["updatedAt"] = now
+                email_doc = self.repository.upsert("emailMessages", email)
+                result["emailMessageId"] = email_message_id
+                self._upsert_monitor_record_for_email(email_doc)
+
+        order_run_id = str(_pick(task, "orderRunId", "order_run_id", default="") or "")
+        if order_run_id:
+            order = self.repository.get("orderRuns", order_run_id)
+            if order:
+                metadata = dict(_pick(order, "sourceMetadata", "source_metadata", default={}) or {})
+                metadata["manualOverride"] = {
+                    "reason": "exceptionDisregarded",
+                    "notes": notes,
+                    "actor": actor,
+                    "at": now,
+                }
+                order["sourceMetadata"] = metadata
+                order["status"] = ProcessingStatus.COMPLETED.value
+                order["processingCompletedAt"] = now
+                order["updatedAt"] = now
+                order_doc = self.repository.upsert("orderRuns", order)
+                result["orderRunId"] = order_run_id
+                self._upsert_monitor_record_for_order(order_doc)
+        return result
 
     def _customer_for_exception(self, task: dict[str, Any], resolution: dict[str, Any]) -> dict[str, Any] | None:
         customer_id = str(
@@ -6938,6 +7480,14 @@ def console_dashboard(payload: dict[str, Any]) -> dict[str, Any]:
 
 def console_data(section: str, payload: dict[str, Any]) -> dict[str, Any]:
     return default_api.console_data(section, payload)
+
+
+def record_ai_cost_event(payload: dict[str, Any]) -> dict[str, Any]:
+    return default_api.record_ai_cost_event(payload)
+
+
+def cost_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    return default_api.cost_summary(payload)
 
 
 def order_observability_timeline(order_run_id: str, payload: dict[str, Any]) -> dict[str, Any]:

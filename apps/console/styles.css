@@ -351,6 +351,14 @@ p {
   margin-bottom: 14px;
 }
 
+.list-controls.cost-controls {
+  grid-template-columns: repeat(4, minmax(150px, 1fr));
+}
+
+.cost-metrics {
+  margin-bottom: 0;
+}
+
 .pager {
   display: flex;
   justify-content: flex-end;
@@ -853,9 +861,11 @@ pre {
   .split,
   .routing-path-panel,
   .list-controls,
+  .list-controls.cost-controls,
   .form-grid.two,
   .form-grid.three,
   .exception-resolution-form,
+  .exception-resolution-form.multi,
   .checkbox-grid {
     display: grid;
     grid-template-columns: 1fr;

@@ -42,6 +42,18 @@ CONTAINER_DEFINITIONS: tuple[ContainerDefinition, ...] = (
         "Active Azure OpenAI vector store references built from imported customer lists.",
     ),
     ContainerDefinition(
+        "aiCostSources",
+        ("/tenantId",),
+        "AiCostSource",
+        "Microsoft Foundry cost attribution metadata for distributor customer AI usage.",
+    ),
+    ContainerDefinition(
+        "aiCostEvents",
+        ("/tenantId",),
+        "AiCostEvent",
+        "Per-run AI usage and cost ledger rows for billing and reconciliation.",
+    ),
+    ContainerDefinition(
         "customerAliases",
         ("/tenantId", "/customerId"),
         "CustomerAlias",
