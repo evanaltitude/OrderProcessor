@@ -11,7 +11,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from order_processor.api import OrderProcessorApi
-from order_processor.microsoft_graph import InMemorySecretStore, sign_state
+from order_processor.microsoft_graph import InMemorySecretStore, MicrosoftGraphError, sign_state
 from order_processor.models import EmailMessage, MatchStatus, OrderLine, OrderRun, ProcessingStatus, to_dict, utc_now
 from order_processor.output_generation import InMemoryOutputArtifactStore
 from order_processor.storage import InMemoryRepository
@@ -227,6 +227,56 @@ class ConsoleBackendTests(unittest.TestCase):
         self.assertEqual(len(monitor["webstoreOrders"]), 1)
         self.assertEqual(monitor["webstoreOrders"][0]["movedTo"], "Jane")
         self.assertEqual(monitor["webstoreOrders"][0]["emailUrl"], "https://outlook.office.com/mail/id/1")
+
+    def test_console_can_clear_stuck_active_processing_email(self) -> None:
+        api, repo, _ = self._api()
+        headers = {"x-ms-client-principal": _easy_auth_header("connect@focuseautomate.com")}
+        api.upsert_customer_config(
+            {
+                "tenantId": "altitude",
+                "id": "pilot-customer",
+                "customerCode": "PILOT",
+                "name": "Pilot",
+                "csrFolder": "Jane",
+            }
+        )
+        active_email = repo.upsert(
+            "emailMessages",
+            {
+                "id": "email-active",
+                "tenantId": "altitude",
+                "mailbox": "orders@example.com",
+                "messageId": "message-active",
+                "sender": "store@example.com",
+                "subject": "Cust: PILOT - Question",
+                "receivedAt": "2026-06-24T12:00:00Z",
+                "updatedAt": "2026-06-24T12:10:00Z",
+                "status": "routed",
+                "customerId": "pilot-customer",
+                "routing": {"outcome": "knownCustomerNonOrder", "matchedSignals": {"triagePhase": "nonOrder"}},
+                "source": {"processing": {"pathway": "nonOrder", "stage": "routed"}},
+            },
+        )
+        api._upsert_monitor_record_for_email(active_email)
+
+        result = api.console_clear_active_processing_run(
+            "email-active",
+            {"tenantId": "altitude", "headers": headers, "notes": "Handled manually by CSR."},
+        )
+
+        stored_email = repo.get("emailMessages", "email-active")
+        monitor_record = repo.get("monitorRecords", "email-active")
+        dashboard = api.console_dashboard({"tenantId": "altitude", "headers": headers, "view": "monitor"})
+
+        self.assertEqual(result["status"], "cleared")
+        self.assertEqual(stored_email["status"], ProcessingStatus.COMPLETED.value)
+        self.assertEqual(stored_email["source"]["manualOverride"]["reason"], "activeRunManualClear")
+        self.assertEqual(stored_email["source"]["manualOverride"]["notes"], "Handled manually by CSR.")
+        self.assertEqual(stored_email["source"]["manualOverride"]["actor"], "connect@focuseautomate.com")
+        self.assertEqual(monitor_record["section"], "nonOrderEmails")
+        self.assertIn("manually cleared from active processing", monitor_record["actionTaken"])
+        self.assertEqual(dashboard["monitor"]["active"], [])
+        self.assertEqual(dashboard["monitor"]["nonOrderEmails"][0]["emailMessageId"], "email-active")
 
     def test_console_dashboard_lists_distributor_customers_and_read_only_import_lists(self) -> None:
         api, repo, _ = self._api()
@@ -654,6 +704,82 @@ class ConsoleBackendTests(unittest.TestCase):
         self.assertEqual(len(orders), 1)
         self.assertEqual(orders[0]["customerId"], "frontier-102598")
         self.assertEqual(orders[0]["sourceFileName"], "order.csv")
+
+    def test_mailbox_poll_reconciles_stale_active_email_no_longer_in_inbox(self) -> None:
+        api, repo, _ = self._api()
+        mailbox = api.upsert_mailbox(
+            {
+                "tenantId": "altitude",
+                "mailboxAddress": "orders@example.com",
+                "connectionId": "m365-orders",
+            }
+        )["mailboxAccount"]
+        repo.upsert(
+            "microsoftAuthConnections",
+            {
+                "id": "m365-orders",
+                "tenantId": "altitude",
+                "customerId": "_global",
+                "provider": "microsoft365",
+                "displayName": "Orders",
+                "status": "active",
+                "keyVaultSecretNames": {"refreshToken": "refresh-secret"},
+                "metadata": {},
+            },
+        )
+        api.secret_store.set_secret("refresh-secret", "refresh-token")
+        api.upsert_customer_config(
+            {
+                "tenantId": "altitude",
+                "id": "frontier-102598",
+                "customerCode": "102598",
+                "name": "Frontier",
+            }
+        )
+        repo.upsert(
+            "emailMessages",
+            {
+                "id": "email-stale",
+                "tenantId": "altitude",
+                "mailbox": "orders@example.com",
+                "mailboxAccountId": mailbox["id"],
+                "messageId": "message-stale",
+                "sender": "store@example.com",
+                "subject": "Cust: 102598 Rte: 100 - Question",
+                "receivedAt": "2026-06-24T12:00:00Z",
+                "updatedAt": "2026-06-24T12:10:00Z",
+                "status": "routed",
+                "customerId": "frontier-102598",
+                "routing": {"outcome": "knownCustomerNonOrder", "matchedSignals": {"triagePhase": "nonOrder"}},
+                "source": {
+                    "graphMessageId": "missing-graph-id",
+                    "processing": {"pathway": "nonOrder", "stage": "routed"},
+                },
+            },
+        )
+
+        def graph_response(_token: str, url: str) -> dict[str, object]:
+            if "/mailFolders/inbox/messages/missing-graph-id" in url:
+                raise MicrosoftGraphError("message not found in inbox", status_code=404)
+            if "/mailFolders/inbox/messages?" in url:
+                return {"value": []}
+            return {}
+
+        with patch.dict(os.environ, {"ORDER_PROCESSOR_MICROSOFT_AUTH_CLIENT_SECRET": "client-secret"}, clear=False), patch(
+            "order_processor.api.refresh_access_token",
+            return_value={"access_token": "access-token", "refresh_token": "next-refresh-token"},
+        ), patch("order_processor.api.graph_get", side_effect=graph_response):
+            result = api.poll_mailboxes({"tenantId": "altitude", "limit": 5, "activeReconcileMinAgeMinutes": 1})
+
+        stored_email = repo.get("emailMessages", "email-stale")
+        monitor_record = repo.get("monitorRecords", "email-stale")
+
+        self.assertEqual(result["mailboxPoll"]["reconciledCount"], 1)
+        self.assertEqual(stored_email["status"], ProcessingStatus.COMPLETED.value)
+        self.assertEqual(stored_email["source"]["manualOverride"]["reason"], "activeRunGraphMessageMissing")
+        self.assertIn("no longer present in inbox", stored_email["source"]["manualOverride"]["actionTaken"])
+        self.assertEqual(monitor_record["section"], "nonOrderEmails")
+        self.assertIn("no longer present in inbox", monitor_record["actionTaken"])
 
     def test_graph_webhook_subscription_processes_message_notification(self) -> None:
         api, repo, _ = self._api()

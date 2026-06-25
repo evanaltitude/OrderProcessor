@@ -510,6 +510,25 @@ paths:
             application/json:
               schema:
                 type: object
+  /console/monitor/active/{id}/clear:
+    post:
+      operationId: consoleMonitorActiveClear
+      summary: Console-authorized route for clearing a stuck active email or order row.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Active processing clear result.
+          content:
+            application/json:
+              schema:
+                type: object
   /console/orders/{orderRunId}/reprocess:
     post:
       operationId: consoleOrdersReprocess

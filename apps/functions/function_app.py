@@ -530,6 +530,13 @@ if func is not None:
     def console_exceptions_resolve(req: func.HttpRequest) -> func.HttpResponse:
         return _handle(req, lambda: order_api.console_resolve_exception(req.route_params["id"], _payload_with_headers(req)))
 
+    @app.route(route="console/monitor/active/{id}/clear", methods=["POST"])
+    def console_monitor_active_clear(req: func.HttpRequest) -> func.HttpResponse:
+        return _handle(
+            req,
+            lambda: order_api.console_clear_active_processing_run(req.route_params["id"], _payload_with_headers(req)),
+        )
+
     @app.route(route="console/orders/{orderRunId}/reprocess", methods=["POST"])
     def console_orders_reprocess(req: func.HttpRequest) -> func.HttpResponse:
         return _handle(

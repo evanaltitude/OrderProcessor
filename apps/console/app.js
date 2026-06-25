@@ -875,6 +875,20 @@ function monitorActionCell(entry = {}) {
   return [action, alreadyIncludesMove ? "" : movedText].filter(Boolean).map(escapeHtml).join("<br>");
 }
 
+function activeRunId(entry = {}) {
+  return entry.emailMessageId || entry.orderRunId || entry.id || "";
+}
+
+function activeRunControls(entry = {}) {
+  const id = activeRunId(entry);
+  if (!id) return "";
+  return `
+    <div class="row-actions">
+      <button class="secondary" data-action="clear-active-run" data-run="${escapeHtml(id)}" type="button">Clear</button>
+    </div>
+  `;
+}
+
 function emptyTableRow(colspan, message) {
   return `<tr><td colspan="${colspan}" class="muted">${escapeHtml(message)}</td></tr>`;
 }
@@ -892,6 +906,7 @@ function activeMonitorRow(entry = {}) {
       <td class="wrap-cell">${escapeHtml(entry.csr || entry.csrEmail || "")}</td>
       <td class="wrap-cell">${monitorActionCell(entry)}</td>
       <td>${monitorEmailLink(entry)}</td>
+      <td>${activeRunControls(entry)}</td>
     </tr>
   `;
 }
@@ -977,7 +992,7 @@ function renderRows() {
   const nonOrderEmails = monitor.nonOrderEmails || [];
   el("activeRunsBody").innerHTML = active.length
     ? active.map(activeMonitorRow).join("")
-    : emptyTableRow(10, "No active email processing.");
+    : emptyTableRow(11, "No active email processing.");
   el("processedOrdersBody").innerHTML = processedOrders.length
     ? processedOrders.map(processedOrderRow).join("")
     : emptyTableRow(9, "No processed orders yet.");
@@ -2154,6 +2169,16 @@ document.addEventListener("click", async (event) => {
   if (target.dataset.action === "resolve") await resolveTask(target.dataset.id, target.dataset.type);
   if (target.dataset.action === "reprocess") {
     showDetails(await post(`/console/orders/${target.dataset.run}/reprocess`, { source: "console" }));
+    await refresh();
+  }
+  if (target.dataset.action === "clear-active-run") {
+    const runId = target.dataset.run || "";
+    if (!runId) return;
+    const confirmed = window.confirm("Clear this active email and mark it manually handled?");
+    if (!confirmed) return;
+    showDetails(await post(`/console/monitor/active/${encodeURIComponent(runId)}/clear`, {
+      notes: "Manually cleared from active processing in the console."
+    }));
     await refresh();
   }
   if (target.dataset.action === "timeline") {

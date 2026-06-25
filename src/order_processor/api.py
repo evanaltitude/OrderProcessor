@@ -118,6 +118,7 @@ MICROSOFT_AI_COST_PROVIDER = "microsoft"
 GOOGLE_DOCUMENT_AI_COST_PROVIDER = "googleDocumentAi"
 DEFAULT_COST_CURRENCY = "USD"
 AI_COST_PROJECT_TAG_KEY = "project"
+ACTIVE_RECONCILE_DEFAULT_MINUTES = 15
 CONSOLE_CUSTOMER_FIELDS = [
     "id",
     "tenantId",
@@ -1158,7 +1159,7 @@ class OrderProcessorApi:
         else:
             mailboxes = self.repository.list("mailboxAccounts")
 
-        results = [self._poll_mailbox(mailbox, limit=limit) for mailbox in mailboxes]
+        results = [self._poll_mailbox(mailbox, limit=limit, payload=payload) for mailbox in mailboxes]
         return {
             "mailboxPoll": {
                 "tenantId": tenant_id or "*",
@@ -1166,6 +1167,7 @@ class OrderProcessorApi:
                 "processedCount": sum(int(result.get("processedCount", 0)) for result in results),
                 "ingestedCount": sum(int(result.get("ingestedCount", 0)) for result in results),
                 "skippedCount": sum(int(result.get("skippedCount", 0)) for result in results),
+                "reconciledCount": sum(int(result.get("reconciledCount", 0)) for result in results),
                 "failedCount": sum(1 for result in results if result.get("status") == "failed"),
                 "checkedAt": utc_now(),
             },
@@ -1584,7 +1586,8 @@ class OrderProcessorApi:
             "graphMessageId": message_id,
         }
 
-    def _poll_mailbox(self, mailbox: dict[str, Any], *, limit: int) -> dict[str, Any]:
+    def _poll_mailbox(self, mailbox: dict[str, Any], *, limit: int, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        payload = payload or {}
         mailbox_id = str(_pick(mailbox, "id", default=""))
         tenant_id = str(_pick(mailbox, "tenantId", "tenant_id", default=""))
         mailbox_address = str(_pick(mailbox, "mailboxAddress", "mailbox_address", default="")).strip().lower()
@@ -1596,6 +1599,7 @@ class OrderProcessorApi:
             "processedCount": 0,
             "ingestedCount": 0,
             "skippedCount": 0,
+            "reconciledCount": 0,
             "errors": [],
         }
         if not _mailbox_enabled(mailbox):
@@ -1640,6 +1644,14 @@ class OrderProcessorApi:
                     result["skippedCount"] += 1
                 if poll_item.get("error"):
                     result["errors"].append(poll_item)
+            reconciliation = self._reconcile_active_mailbox_emails(
+                mailbox,
+                access_token=access_token,
+                mailbox_address=mailbox_address,
+                payload={**payload, "source": "mailboxPoll"},
+            )
+            result["reconciliation"] = reconciliation
+            result["reconciledCount"] = int(reconciliation.get("clearedCount", 0) or 0)
         except Exception as exc:
             result["status"] = "failed"
             result["reason"] = str(exc)
@@ -1652,6 +1664,7 @@ class OrderProcessorApi:
             "ingestedCount": result["ingestedCount"],
             "processedCount": result["processedCount"],
             "skippedCount": result["skippedCount"],
+            "reconciledCount": result["reconciledCount"],
             "reason": result.get("reason", ""),
         }
         mailbox.update(
@@ -1675,10 +1688,222 @@ class OrderProcessorApi:
                 "ingestedCount": result["ingestedCount"],
                 "processedCount": result["processedCount"],
                 "skippedCount": result["skippedCount"],
+                "reconciledCount": result["reconciledCount"],
                 "reason": result.get("reason", ""),
             },
         )
         return result
+
+    @staticmethod
+    def _active_processing_statuses() -> set[str]:
+        return {
+            ProcessingStatus.RECEIVED.value,
+            ProcessingStatus.ROUTED.value,
+            ProcessingStatus.PROCESSING.value,
+        }
+
+    @staticmethod
+    def _active_reconcile_min_age(payload: dict[str, Any]) -> timedelta:
+        minutes = int(
+            _pick(
+                payload,
+                "activeReconcileMinAgeMinutes",
+                "active_reconcile_min_age_minutes",
+                default=os.environ.get("ORDER_PROCESSOR_ACTIVE_RECONCILE_MINUTES", str(ACTIVE_RECONCILE_DEFAULT_MINUTES)),
+            )
+            or ACTIVE_RECONCILE_DEFAULT_MINUTES
+        )
+        return timedelta(minutes=max(1, minutes))
+
+    def _active_email_reconcile_candidates(
+        self,
+        tenant_id: str,
+        mailbox: dict[str, Any],
+        *,
+        min_age: timedelta,
+    ) -> list[dict[str, Any]]:
+        mailbox_id = str(_pick(mailbox, "id", default="") or "")
+        mailbox_address = _normalized_email(str(_pick(mailbox, "mailboxAddress", "mailbox_address", default="") or ""))
+        cutoff = datetime.now(UTC) - min_age
+        candidates: list[dict[str, Any]] = []
+        for email in self.repository.query_by_tenant("emailMessages", tenant_id):
+            if _document_status(email) not in self._active_processing_statuses():
+                continue
+            email_mailbox_id = str(_pick(email, "mailboxAccountId", "mailbox_account_id", default="") or "")
+            email_mailbox_address = _normalized_email(str(_pick(email, "mailbox", default="") or ""))
+            if mailbox_id and email_mailbox_id and email_mailbox_id != mailbox_id:
+                continue
+            if mailbox_address and not email_mailbox_id and email_mailbox_address and email_mailbox_address != mailbox_address:
+                continue
+            if self._open_exception_for_monitor(tenant_id, str(_pick(email, "id", default="")), str(_pick(email, "orderRunId", "order_run_id", default="") or "")):
+                continue
+            timestamp = _parse_datetime(
+                str(_pick(email, "updatedAt", "updated_at", "createdAt", "created_at", "receivedAt", "received_at", default="") or "")
+            )
+            if timestamp and timestamp > cutoff:
+                continue
+            if not self._graph_message_id_for_email(email):
+                continue
+            candidates.append(email)
+        return candidates
+
+    def _reconcile_active_mailbox_emails(
+        self,
+        mailbox: dict[str, Any],
+        *,
+        access_token: str,
+        mailbox_address: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not _bool_flag(
+            _pick(payload, "reconcileActiveEmails", "reconcile_active_emails", default=os.environ.get("ORDER_PROCESSOR_RECONCILE_ACTIVE_EMAILS", "true")),
+            default=True,
+        ):
+            return {"status": "disabled", "checkedCount": 0, "clearedCount": 0, "errors": []}
+
+        tenant_id = str(_pick(mailbox, "tenantId", "tenant_id", default="") or "")
+        if not tenant_id or not access_token or not mailbox_address:
+            return {"status": "skipped", "reason": "missing tenant, access token, or mailbox address", "checkedCount": 0, "clearedCount": 0, "errors": []}
+
+        min_age = self._active_reconcile_min_age(payload)
+        candidates = self._active_email_reconcile_candidates(tenant_id, mailbox, min_age=min_age)
+        result: dict[str, Any] = {
+            "status": "checked",
+            "checkedCount": len(candidates),
+            "presentCount": 0,
+            "clearedCount": 0,
+            "skippedCount": 0,
+            "errors": [],
+            "minAgeMinutes": int(min_age.total_seconds() // 60),
+        }
+        for email in candidates:
+            email_id = str(_pick(email, "id", default="") or "")
+            graph_message_id = self._graph_message_id_for_email(email)
+            try:
+                self._graph_inbox_message_by_id(access_token, mailbox_address, graph_message_id)
+                result["presentCount"] += 1
+            except MicrosoftGraphError as exc:
+                if exc.status_code not in {404, 410}:
+                    result["errors"].append(
+                        {
+                            "emailMessageId": email_id,
+                            "graphMessageId": graph_message_id,
+                            "statusCode": exc.status_code,
+                            "reason": str(exc),
+                            "details": exc.details,
+                        }
+                    )
+                    continue
+                clear_result = self.clear_active_processing_run(
+                    email_id,
+                    {
+                        **payload,
+                        "tenantId": tenant_id,
+                        "notes": "Mailbox reconciliation did not find the message in Inbox by its Microsoft Graph id; assuming it was moved or handled outside automation.",
+                        "clearReason": "activeRunGraphMessageMissing",
+                        "actionTaken": "no longer present in inbox; manually cleared",
+                    },
+                )
+                if clear_result.get("error"):
+                    result["errors"].append({"emailMessageId": email_id, **clear_result})
+                else:
+                    result["clearedCount"] += 1
+        if result["errors"]:
+            result["status"] = "partial" if result["clearedCount"] else "failed"
+        return result
+
+    def clear_active_processing_run(self, run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        run_id = str(run_id or "").strip()
+        if not run_id:
+            return {"error": "idRequired", "message": "Active processing row id is required."}
+
+        email = self.repository.get("emailMessages", run_id)
+        order = None
+        if email:
+            order_id = str(_pick(email, "orderRunId", "order_run_id", default="") or "")
+            order = self.repository.get("orderRuns", order_id) if order_id else None
+        else:
+            order = self.repository.get("orderRuns", run_id)
+            email_id = str(_pick(order or {}, "emailMessageId", "email_message_id", default="") or "")
+            email = self.repository.get("emailMessages", email_id) if email_id else None
+        if not email and not order:
+            return {"error": "notFound", "message": f"Active processing row {run_id} was not found."}
+
+        now = utc_now()
+        tenant_id = str(_pick(email or order or {}, "tenantId", "tenant_id", default=_pick(payload, "tenantId", "tenant_id", default="default")) or "default")
+        actor = self._actor_from_payload(payload)
+        reason = str(_pick(payload, "clearReason", "reason", default="activeRunManualClear") or "activeRunManualClear")
+        notes = str(_pick(payload, "notes", default="Manually cleared from active processing; email will be handled outside automation.") or "")
+        action_taken = str(_pick(payload, "actionTaken", "action_taken", default="manually cleared from active processing") or "")
+        manual_override = {
+            "reason": reason,
+            "actionTaken": action_taken,
+            "notes": notes,
+            "actor": actor,
+            "at": now,
+        }
+
+        email_doc = None
+        if email:
+            source = dict(_pick(email, "source", default={}) or {})
+            source["manualOverride"] = manual_override
+            processing = dict(source.get("processing") or {})
+            processing.update(
+                {
+                    "stage": "manualCleared",
+                    "status": ProcessingStatus.COMPLETED.value,
+                    "updatedAt": now,
+                }
+            )
+            source["processing"] = processing
+            email["source"] = source
+            email["status"] = ProcessingStatus.COMPLETED.value
+            email["updatedAt"] = now
+            email_doc = self.repository.upsert("emailMessages", email)
+
+        order_doc = None
+        if order:
+            metadata = dict(_pick(order, "sourceMetadata", "source_metadata", default={}) or {})
+            metadata["manualOverride"] = manual_override
+            order["sourceMetadata"] = metadata
+            if _document_status(order) in self._active_processing_statuses():
+                order["status"] = ProcessingStatus.COMPLETED.value
+                order["processingCompletedAt"] = now
+            order["updatedAt"] = now
+            order_doc = self.repository.upsert("orderRuns", order)
+
+        monitor_record = None
+        if email_doc:
+            monitor_record = self._upsert_monitor_record_for_email(email_doc, order=order_doc)
+        elif order_doc:
+            monitor_record = self._upsert_monitor_record_for_order(order_doc)
+
+        self._clear_console_cache(tenant_id)
+        self._audit(
+            tenant_id,
+            "email.activeProcessingCleared",
+            str(_pick(email_doc or order_doc or {}, "correlationId", "correlation_id", default=run_id)),
+            run_id,
+            {
+                "emailMessageId": str(_pick(email_doc or {}, "id", default="") or ""),
+                "orderRunId": str(_pick(order_doc or {}, "id", default="") or ""),
+                "reason": reason,
+                "notes": notes,
+                "actionTaken": action_taken,
+                "source": str(_pick(payload, "source", default="console") or "console"),
+            },
+            customer_id=_document_customer_id(email_doc or order_doc or {}),
+            order_run_id=str(_pick(order_doc or {}, "id", default="") or "") or None,
+            email_message_id=str(_pick(email_doc or {}, "id", default="") or "") or None,
+            actor=actor,
+        )
+        return {
+            "status": "cleared",
+            "emailMessage": email_doc,
+            "orderRun": order_doc,
+            "monitorRecord": monitor_record,
+            "manualOverride": manual_override,
+        }
 
     def _graph_access_token_candidates(self, mailbox: dict[str, Any], *, auth_mode: str) -> list[dict[str, str]]:
         normalized_mode = (auth_mode or "auto").lower()
@@ -1742,6 +1967,13 @@ class OrderProcessorApi:
         encoded_message = parse.quote(graph_message_id, safe="")
         query = parse.urlencode({"$select": self._graph_message_select_fields()}, safe=",")
         url = f"https://graph.microsoft.com/v1.0/users/{encoded_mailbox}/messages/{encoded_message}?{query}"
+        return graph_get(access_token, url)
+
+    def _graph_inbox_message_by_id(self, access_token: str, mailbox_address: str, graph_message_id: str) -> dict[str, Any]:
+        encoded_mailbox = parse.quote(mailbox_address, safe="")
+        encoded_message = parse.quote(graph_message_id, safe="")
+        query = parse.urlencode({"$select": self._graph_message_select_fields()}, safe=",")
+        url = f"https://graph.microsoft.com/v1.0/users/{encoded_mailbox}/mailFolders/inbox/messages/{encoded_message}?{query}"
         return graph_get(access_token, url)
 
     @staticmethod
@@ -5721,6 +5953,32 @@ class OrderProcessorApi:
         result["session"] = session
         return result
 
+    def console_clear_active_processing_run(self, run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        session = self.console_session(payload)
+        if not session.get("authorized"):
+            return {"session": session}
+        if "resolveExceptions" not in set(_as_list(session.get("permissions", []))):
+            return {"session": session, "error": "forbidden", "message": "User cannot clear active processing rows."}
+
+        email = self.repository.get("emailMessages", run_id)
+        order = None
+        if email:
+            order_id = str(_pick(email, "orderRunId", "order_run_id", default="") or "")
+            order = self.repository.get("orderRuns", order_id) if order_id else None
+        else:
+            order = self.repository.get("orderRuns", run_id)
+            email_id = str(_pick(order or {}, "emailMessageId", "email_message_id", default="") or "")
+            email = self.repository.get("emailMessages", email_id) if email_id else None
+        if not email and not order:
+            return {"session": session, "error": "notFound", "message": f"Active processing row {run_id} was not found."}
+        customer_id = _document_customer_id(email or {}) or _document_customer_id(order or {})
+        if not self._session_can_access_customer(session, customer_id):
+            return {"session": session, "error": "forbidden", "message": "Active processing row is outside this user's assignments."}
+
+        result = self.clear_active_processing_run(run_id, {**payload, "source": "console"})
+        result["session"] = session
+        return result
+
     def console_reprocess_order(self, order_run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         session = self.console_session(payload)
         if not session.get("authorized"):
@@ -7638,6 +7896,10 @@ def console_assign_customer_user(customer_id: str, payload: dict[str, Any]) -> d
 
 def console_resolve_exception(exception_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     return default_api.console_resolve_exception(exception_id, payload)
+
+
+def console_clear_active_processing_run(run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return default_api.console_clear_active_processing_run(run_id, payload)
 
 
 def console_reprocess_order(order_run_id: str, payload: dict[str, Any]) -> dict[str, Any]:

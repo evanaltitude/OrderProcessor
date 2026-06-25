@@ -100,6 +100,7 @@ class InfraContractTests(unittest.TestCase):
             "/console/users",
             "/console/customers/{customerId}/users",
             "/console/exceptions/{id}/resolve",
+            "/console/monitor/active/{id}/clear",
             "/console/orders/{orderRunId}/reprocess",
             "/console/orders/{orderRunId}/timeline",
             "/customers/{customerId}/users",
