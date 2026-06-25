@@ -688,13 +688,56 @@ th {
   align-items: end;
 }
 
+.exception-overview {
+  max-width: 100%;
+}
+
+.exception-overview .monitor-table {
+  min-width: 980px;
+}
+
 .exception-actions {
   display: grid;
+  gap: 12px;
+}
+
+.exception-action-zone {
+  display: grid;
   gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.exception-action-zone.terminal {
+  background: #ffffff;
+}
+
+.exception-action-zone h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.2;
+}
+
+.exception-preprocess-grid,
+.exception-terminal-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(260px, 1fr));
+  gap: 10px;
+}
+
+.exception-terminal-grid {
+  grid-template-columns: minmax(180px, 0.75fr) minmax(260px, 1fr) minmax(320px, 1.4fr) minmax(260px, 1fr);
 }
 
 .exception-resolution-form.multi {
   grid-template-columns: minmax(160px, 1fr) minmax(220px, 1.5fr) auto auto;
+}
+
+.exception-resolution-form.move-form {
+  grid-template-columns: minmax(150px, 1fr) minmax(160px, 1fr) auto;
 }
 
 .exception-resolution-form.compact {
@@ -866,6 +909,9 @@ pre {
   .form-grid.three,
   .exception-resolution-form,
   .exception-resolution-form.multi,
+  .exception-resolution-form.move-form,
+  .exception-preprocess-grid,
+  .exception-terminal-grid,
   .checkbox-grid {
     display: grid;
     grid-template-columns: 1fr;

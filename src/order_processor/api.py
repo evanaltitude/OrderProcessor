@@ -2142,6 +2142,7 @@ class OrderProcessorApi:
         email: dict[str, Any],
         *,
         subject: str = "",
+        categories: list[Any] | None = None,
         move_folder: str = "",
     ) -> dict[str, Any]:
         tenant_id = str(_pick(email, "tenantId", "tenant_id", default=""))
@@ -2177,10 +2178,18 @@ class OrderProcessorApi:
             candidate_result = {**result, "authMethod": candidate["authMethod"], "applied": [], "errors": []}
             current_message_url = message_url
             try:
+                patch_payload: dict[str, Any] = {}
                 if subject:
-                    graph_patch(candidate["accessToken"], current_message_url, {"subject": subject})
-                    candidate_result["patched"] = {"subject": subject}
-                    candidate_result["applied"].append({"action": "patch", "fields": ["subject"]})
+                    patch_payload["subject"] = subject
+                if categories is not None:
+                    patch_payload["categories"] = self._merged_graph_categories(
+                        _as_list(_pick(email, "categories", default=[])),
+                        categories,
+                    )
+                if patch_payload:
+                    graph_patch(candidate["accessToken"], current_message_url, patch_payload)
+                    candidate_result["patched"] = patch_payload
+                    candidate_result["applied"].append({"action": "patch", "fields": sorted(patch_payload)})
                 if move_folder:
                     destination_id = self._graph_mail_folder_id(
                         candidate["accessToken"],
@@ -2259,6 +2268,8 @@ class OrderProcessorApi:
             source["graphMessageId"] = graph_message_id
         if subject and result["status"] in {"applied", "partial"}:
             email["subject"] = subject
+        if categories is not None and result["status"] in {"applied", "partial"}:
+            email["categories"] = [str(value) for value in _as_list(_pick(result, "patched", default={}).get("categories")) if str(value).strip()]
         email["source"] = source
         email["updatedAt"] = utc_now()
         stored = self.repository.upsert("emailMessages", email)
@@ -4718,24 +4729,27 @@ class OrderProcessorApi:
         order_id = str(_pick(task, "orderRunId", "order_run_id", default=base.get("orderRunId", "")) or "")
         customer_id = str(_document_customer_id(task) or base.get("customerId", "") or "")
         actions: list[dict[str, Any]] = []
-        actions.append({"key": "disregard", "label": "Disregard / manual handling", "requires": ["notes"]})
-        if task_type in {"customerIdentification", "routing"}:
-            actions.append({"key": "customer", "label": "Set customer code", "requires": ["customerCode"]})
+        actions.append({"key": "disregard", "label": "Disregard / manual handling", "requires": ["notes"], "completesException": True})
+        if task_type in {"customerIdentification", "routing"} or email_id or order_id:
+            actions.append({"key": "customer", "label": "Set customer code", "requires": ["customerCode"], "keepsExceptionOpen": True})
         if email_id:
             if customer_id:
                 actions.append(
                     {
                         "key": "csr",
-                        "label": "Set CSR / move email",
+                        "label": "Assign CSR",
                         "requires": ["csr"],
+                        "keepsExceptionOpen": True,
                         "customerHasCsr": bool(
                             _pick(customer or {}, "csrName", "csr_name", "csrFolder", "csr_folder", default="")
                         ),
                     }
                 )
-            actions.append({"key": "emailSubject", "label": "Update email subject", "requires": ["subject"]})
-            actions.append({"key": "emailReprocess", "label": "Reprocess email from start", "requires": []})
-            actions.append({"key": "forceOrder", "label": "Force to order processor", "requires": ["processorProfileId"]})
+            actions.append({"key": "emailSubject", "label": "Update email subject", "requires": ["subject"], "keepsExceptionOpen": True})
+            actions.append({"key": "manualCategory", "label": "Apply category", "requires": ["category"], "keepsExceptionOpen": True})
+            actions.append({"key": "emailReprocess", "label": "Reprocess email from start", "requires": [], "reactivatesEmail": True})
+            actions.append({"key": "forceOrder", "label": "Force to order processor", "requires": ["processorProfileId"], "reactivatesEmail": True})
+            actions.append({"key": "moveEmail", "label": "Move email and complete", "requires": ["folder"], "completesException": True})
         if task_type == "itemValidation":
             actions.append({"key": "item", "label": "Set ERP item", "requires": ["matchedInternalItemNumber"]})
         if task_type in {"parserFailure", "outputGeneration"} and order_id:
@@ -4786,6 +4800,17 @@ class OrderProcessorApi:
         graph_actions: dict[str, Any],
     ) -> str:
         parts: list[str] = []
+        source = _as_dict(_pick(email, "source", default={}))
+        manual_override = _as_dict(_pick(source, "manualOverride", "manual_override", default={}))
+        if manual_override:
+            action_taken = str(_pick(manual_override, "actionTaken", "action_taken", default="") or "").strip()
+            reason = str(_pick(manual_override, "reason", default="") or "").strip()
+            if action_taken:
+                parts.append(action_taken)
+            elif reason == "exceptionDisregarded":
+                parts.append("manual override")
+            elif reason == "exceptionManualMove":
+                parts.append("manual move")
         if order:
             status = _document_status(order)
             parts.append(f"Order {status}" if status else "Order created")
@@ -6225,7 +6250,7 @@ class OrderProcessorApi:
         resolution_result = self._apply_exception_resolution(existing, resolution)
         resolution_status = str(_pick(resolution_result, "status", default="resolved") or "resolved")
         existing["status"] = (
-            ExceptionStatus.OPEN.value if resolution_status in {"notFound", "invalid", "failed"} else ExceptionStatus.RESOLVED.value
+            ExceptionStatus.OPEN.value if resolution_status in {"notFound", "invalid", "failed", "updated"} else ExceptionStatus.RESOLVED.value
         )
         existing["resolution"] = resolution
         existing["resolvedBy"] = self._actor_from_payload(payload)
@@ -6233,7 +6258,13 @@ class OrderProcessorApi:
             existing["resolved_at"] = utc_now()
         stored = self.repository.upsert("exceptionTasks", existing)
         self._upsert_monitor_record_for_exception(stored)
-        event_type = "exception.resolved" if existing["status"] == ExceptionStatus.RESOLVED.value else "exception.resolutionFailed"
+        event_type = (
+            "exception.resolved"
+            if existing["status"] == ExceptionStatus.RESOLVED.value
+            else "exception.updated"
+            if resolution_status == "updated"
+            else "exception.resolutionFailed"
+        )
         self._audit(
             _pick(existing, "tenantId", "tenant_id", default="default"),
             event_type,
@@ -6269,6 +6300,10 @@ class OrderProcessorApi:
             return self._apply_csr_resolution(task, resolution)
         if action in {"emailSubject", "updateSubject"}:
             return self._apply_email_subject_resolution(task, resolution)
+        if action in {"manualCategory", "category", "addCategory", "applyCategory"}:
+            return self._apply_manual_category_resolution(task, resolution)
+        if action in {"moveEmail", "manualMove", "move"}:
+            return self._apply_manual_move_resolution(task, resolution)
         if action in {"emailReprocess", "reprocessEmail"}:
             return self._apply_email_reprocess_resolution(task, resolution)
         if action in {"forceOrder", "forceOrderProcessor"}:
@@ -6389,26 +6424,11 @@ class OrderProcessorApi:
 
         email = self._email_for_exception(task, resolution)
         graph_result = None
-        subject = str(_pick(resolution, "subject", "updatedSubject", "updated_subject", default="") or "").strip()
-        force_move = bool(_pick(resolution, "forceMove", "forceMoveToCsr", "move", default=False))
         if email is not None:
             email["customerId"] = str(_pick(stored_customer, "id", default=""))
             email["updatedAt"] = utc_now()
             stored_email = self.repository.upsert("emailMessages", email)
             self._upsert_monitor_record_for_email(stored_email)
-            if subject or force_move:
-                graph_result = self._manual_graph_email_action(
-                    stored_email,
-                    subject=subject,
-                    move_folder=str(_pick(stored_customer, "csrFolder", "csr_folder", default="")) if force_move else "",
-                )
-                if str(_pick(graph_result, "status", default="")) in {"failed", "partial"}:
-                    return {
-                        "status": "failed",
-                        "customer": stored_customer,
-                        "csrDirectory": csr_directory,
-                        "graphEmailAction": graph_result,
-                    }
 
         order_run_id = str(_pick(task, "orderRunId", "order_run_id", default="") or "")
         order = self.repository.get("orderRuns", order_run_id) if order_run_id else None
@@ -6418,7 +6438,7 @@ class OrderProcessorApi:
             self._upsert_monitor_record_for_order(self.repository.upsert("orderRuns", order))
 
         return {
-            "status": "resolved",
+            "status": "updated",
             "customer": stored_customer,
             "csrDirectory": csr_directory,
             "graphEmailAction": graph_result,
@@ -6434,7 +6454,73 @@ class OrderProcessorApi:
         graph_result = self._manual_graph_email_action(email, subject=subject)
         if str(_pick(graph_result, "status", default="")) in {"failed", "partial"}:
             return {"status": "failed", "graphEmailAction": graph_result}
-        return {"status": "resolved", "graphEmailAction": graph_result}
+        return {"status": "updated", "graphEmailAction": graph_result}
+
+    def _apply_manual_category_resolution(self, task: dict[str, Any], resolution: dict[str, Any]) -> dict[str, Any]:
+        category = str(_pick(resolution, "category", "categoryName", "category_name", default="") or "").strip()
+        if not category:
+            return {"status": "invalid", "message": "Choose a category to apply."}
+        email = self._email_for_exception(task, resolution)
+        if email is None:
+            return {"status": "notFound", "message": "No email is attached to this exception."}
+        graph_result = self._manual_graph_email_action(email, categories=[category])
+        if str(_pick(graph_result, "status", default="")) in {"failed", "partial"}:
+            return {"status": "failed", "graphEmailAction": graph_result}
+        return {"status": "updated", "category": category, "graphEmailAction": graph_result}
+
+    def _apply_manual_move_resolution(self, task: dict[str, Any], resolution: dict[str, Any]) -> dict[str, Any]:
+        folder = str(_pick(resolution, "folder", "folderName", "folder_name", "moveFolder", "move_folder", default="") or "").strip()
+        if not folder:
+            return {"status": "invalid", "message": "Choose a destination folder."}
+        email = self._email_for_exception(task, resolution)
+        if email is None:
+            return {"status": "notFound", "message": "No email is attached to this exception."}
+        graph_result = self._manual_graph_email_action(email, move_folder=folder)
+        if str(_pick(graph_result, "status", default="")) in {"failed", "partial"}:
+            return {"status": "failed", "graphEmailAction": graph_result}
+        now = utc_now()
+        actor = str(_pick(resolution, "actor", "resolvedBy", "resolved_by", default="") or "console")
+        notes = str(_pick(resolution, "notes", "reason", default=f"Moved to {folder} from exception queue.") or "")
+        email = self.repository.get("emailMessages", str(_pick(email, "id", default=""))) or email
+        source = dict(_pick(email, "source", default={}) or {})
+        source["manualOverride"] = {
+            "reason": "exceptionManualMove",
+            "actionTaken": f"manual move to {folder}",
+            "notes": notes,
+            "actor": actor,
+            "at": now,
+        }
+        email["source"] = source
+        email["status"] = ProcessingStatus.COMPLETED.value
+        email["updatedAt"] = now
+        email_doc = self.repository.upsert("emailMessages", email)
+        self._upsert_monitor_record_for_email(email_doc)
+
+        order_run_id = str(_pick(task, "orderRunId", "order_run_id", default=_pick(email, "orderRunId", "order_run_id", default="")) or "")
+        if order_run_id:
+            order = self.repository.get("orderRuns", order_run_id)
+            if order:
+                metadata = dict(_pick(order, "sourceMetadata", "source_metadata", default={}) or {})
+                metadata["manualOverride"] = {
+                    "reason": "exceptionManualMove",
+                    "actionTaken": f"manual move to {folder}",
+                    "notes": notes,
+                    "actor": actor,
+                    "at": now,
+                }
+                order["sourceMetadata"] = metadata
+                order["status"] = ProcessingStatus.COMPLETED.value
+                order["processingCompletedAt"] = now
+                order["updatedAt"] = now
+                self._upsert_monitor_record_for_order(self.repository.upsert("orderRuns", order))
+        return {
+            "status": "manualMoved",
+            "folder": folder,
+            "notes": notes,
+            "emailMessageId": str(_pick(email, "id", default="")),
+            "orderRunId": order_run_id,
+            "graphEmailAction": graph_result,
+        }
 
     def _apply_email_reprocess_resolution(self, task: dict[str, Any], resolution: dict[str, Any]) -> dict[str, Any]:
         email = self._email_for_exception(task, resolution)
@@ -6627,7 +6713,7 @@ class OrderProcessorApi:
         if not customer_id:
             return {"status": "recorded", "message": "No customer id supplied."}
 
-        updated: dict[str, Any] = {"customerId": customer_id}
+        updated: dict[str, Any] = {"status": "updated", "customerId": customer_id}
         if customer_code:
             updated["customerCode"] = customer_code
         order_run_id = _pick(task, "orderRunId", "order_run_id", default=None) or _pick(
