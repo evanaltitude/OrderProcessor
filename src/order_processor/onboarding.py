@@ -9,7 +9,20 @@ from typing import Any
 from .pilot_shadow import run_pilot_shadow_case
 
 
-SUPPORTED_PROCESSOR_TYPES = {"csv", "xlsx", "xls", "xlt", "legacyworkbook", "pdf", "emailbody", "customeroverride"}
+SUPPORTED_PROCESSOR_TYPES = {
+    "csv",
+    "xlsx",
+    "xls",
+    "xlt",
+    "legacyworkbook",
+    "pdf",
+    "emailbody",
+    "customeroverride",
+    "webhook",
+    "customwebhook",
+    "powerautomatewebhook",
+    "powerautomate",
+}
 SUPPORTED_OUTPUT_TYPES = {"csv", "linecsv", "xlsx", "linexlsx", "text", "txt", "api", "apipayload", "json", "universalorderjson", "multi"}
 MAIL_PERMISSIONS = {"mail.read", "mail.readwrite"}
 

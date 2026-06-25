@@ -407,10 +407,17 @@
                       <option value="pdf">PDF</option>
                       <option value="emailBody">Email body</option>
                       <option value="customerOverride">Customer override</option>
+                      <option value="powerAutomateWebhook">Power Automate webhook</option>
                     </select>
                   </label>
                   <label>Default output
                     <select name="outputProfileId"></select>
+                  </label>
+                  <label>Webhook URL
+                    <input name="webhookUrl" placeholder="https://prod-00.logic.azure.com/...">
+                  </label>
+                  <label>Webhook timeout seconds
+                    <input name="webhookTimeoutSeconds" inputmode="numeric" placeholder="30">
                   </label>
                   <label>Delimiter
                     <select name="delimiter">

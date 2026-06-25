@@ -647,6 +647,8 @@ function clearProcessorProfileForm() {
   form.reset();
   setValue(form, "processorType", "csv");
   setValue(form, "delimiter", "");
+  setValue(form, "webhookUrl", "");
+  setValue(form, "webhookTimeoutSeconds", "");
   setChecked(form, "hasHeader", true);
   fillSelect(form.elements.outputProfileId, outputProfileOptions(), "");
 }
@@ -661,6 +663,8 @@ function loadProcessorProfile(profileId) {
   setValue(form, "name", profile.name || "");
   setValue(form, "processorType", profile.processorType || "csv");
   fillSelect(form.elements.outputProfileId, outputProfileOptions(), profile.outputProfileId || "");
+  setValue(form, "webhookUrl", settings.webhookUrl || "");
+  setValue(form, "webhookTimeoutSeconds", settings.timeoutSeconds || "");
   setValue(form, "delimiter", settings.delimiter || "");
   setValue(form, "headerlessColumns", listText(settings.headerlessColumns || settings.columns || []));
   setValue(form, "itemNumberField", fieldMap.provided_item_number || "");
@@ -1735,7 +1739,9 @@ function wireForms() {
       fieldMap,
       linePattern: value(form, "linePattern"),
       baseProcessorType: value(form, "baseProcessorType"),
-      documentIntelligenceModelId: value(form, "documentIntelligenceModelId")
+      documentIntelligenceModelId: value(form, "documentIntelligenceModelId"),
+      webhookUrl: value(form, "webhookUrl"),
+      timeoutSeconds: value(form, "webhookTimeoutSeconds")
     });
     const result = await post("/console/processor-profiles", {
       id: value(form, "id"),

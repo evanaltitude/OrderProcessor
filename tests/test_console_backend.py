@@ -1099,6 +1099,121 @@ class ConsoleBackendTests(unittest.TestCase):
         self.assertEqual(repo.get("emailMessages", "email-1")["orderRunId"], order_run["id"])
         self.assertEqual(repo.get("orderRuns", order_run["id"])["processorType"], "emailBody")
 
+    def test_power_automate_webhook_processor_posts_graph_email_context(self) -> None:
+        api, repo, _ = self._api()
+        repo.upsert(
+            "customers",
+            {
+                "tenantId": "altitude",
+                "id": "pilot-customer",
+                "customerCode": "PILOT",
+                "name": "Pilot Customer",
+                "routeNumber": "500",
+                "csrFolder": "Jane",
+            },
+        )
+        api.upsert_processor_profile(
+            {
+                "tenantId": "altitude",
+                "id": "webhook-profile",
+                "name": "Custom PA Flow",
+                "processorType": "powerAutomateWebhook",
+                "settings": {"webhookUrl": "https://example.test/flow", "timeoutSeconds": 10},
+            }
+        )
+        repo.upsert(
+            "emailMessages",
+            to_dict(
+                EmailMessage(
+                    id="email-1",
+                    tenant_id="altitude",
+                    mailbox="orders@example.com",
+                    mailbox_account_id="mailbox-1",
+                    message_id="<internet-message-id>",
+                    subject="Custom order",
+                    sender="buyer@example.com",
+                    received_at="2026-06-25T14:00:00Z",
+                    customer_id="pilot-customer",
+                    source={
+                        "graphMessageId": "graph-message-1",
+                        "webLink": "https://outlook.office.com/mail/id/graph-message-1",
+                        "toRecipients": ["orders@example.com"],
+                    },
+                    routing={"outcome": "knownOrder"},
+                )
+            ),
+        )
+        captured: dict[str, object] = {}
+
+        class FakeResponse:
+            status = 202
+            headers = {"Content-Type": "application/json"}
+
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def read(self, _limit: int = -1) -> bytes:
+                return b'{"accepted":true}'
+
+        def fake_urlopen(request: object, timeout: int = 0) -> FakeResponse:
+            captured["url"] = request.full_url
+            captured["body"] = json.loads(request.data.decode("utf-8"))
+            captured["timeout"] = timeout
+            return FakeResponse()
+
+        with patch("order_processor.api.urlrequest.urlopen", side_effect=fake_urlopen):
+            result = api.process_order(
+                "order-run-1",
+                {
+                    "tenantId": "altitude",
+                    "emailMessageId": "email-1",
+                    "customerId": "pilot-customer",
+                    "processorProfileId": "webhook-profile",
+                },
+            )
+
+        body = captured["body"]
+        order_run = result["orderRun"]
+        self.assertEqual(captured["url"], "https://example.test/flow")
+        self.assertEqual(captured["timeout"], 10)
+        self.assertEqual(body["graphMessageId"], "graph-message-1")
+        self.assertEqual(body["internetMessageId"], "<internet-message-id>")
+        self.assertEqual(body["customerCode"], "PILOT")
+        self.assertEqual(body["csrFolder"], "Jane")
+        self.assertEqual(order_run["status"], "completed")
+        self.assertEqual(order_run["processorType"], "powerAutomateWebhook")
+        self.assertEqual(order_run["sourceMetadata"]["webhookProcessor"]["statusCode"], 202)
+
+    def test_power_automate_webhook_failure_creates_exception(self) -> None:
+        api, repo, _ = self._api()
+        api.upsert_processor_profile(
+            {
+                "tenantId": "altitude",
+                "id": "webhook-profile",
+                "name": "Custom PA Flow",
+                "processorType": "powerAutomateWebhook",
+                "settings": {"webhookUrl": "https://example.test/flow"},
+            }
+        )
+
+        with patch("order_processor.api.urlrequest.urlopen", side_effect=OSError("connection failed")):
+            result = api.process_order(
+                "order-run-1",
+                {
+                    "tenantId": "altitude",
+                    "emailMessageId": "email-1",
+                    "processorProfileId": "webhook-profile",
+                },
+            )
+
+        exceptions = repo.query_by_tenant("exceptionTasks", "altitude")
+        self.assertEqual(result["orderRun"]["status"], "failed")
+        self.assertEqual(exceptions[0]["type"], "webhookProcessor")
+        self.assertEqual(exceptions[0]["context"]["handoff"]["status"], "failed")
+
     def test_console_customer_user_can_resolve_and_reprocess_assigned_customer_only(self) -> None:
         api, repo, _ = self._api()
         api.upsert_console_user({"tenantId": "altitude", "email": "buyer@example.com", "roles": ["customerUser"]})

@@ -7,7 +7,7 @@ import os
 import re
 import time
 from typing import Any
-from urllib import parse
+from urllib import error as urlerror, parse, request as urlrequest
 
 from .customer_identification import (
     DEFAULT_CUSTOMER_CONFIDENCE_THRESHOLD,
@@ -113,6 +113,7 @@ from .storage import InMemoryRepository, repository_from_environment
 BOOTSTRAP_CONSOLE_ADMIN_EMAIL = "connect@focuseautomate.com"
 SYSTEM_TENANT_ID = "__system__"
 PROCESSING_CATEGORY = "Processing"
+WEBHOOK_PROCESSOR_TYPES = {"webhook", "customwebhook", "powerautomatewebhook", "powerautomate"}
 CONSOLE_CUSTOMER_FIELDS = [
     "id",
     "tenantId",
@@ -2493,7 +2494,10 @@ class OrderProcessorApi:
         profile_id = str(_pick(order_run, "processorProfileId", "processor_profile_id", default=""))
         profile = self.repository.get("processorProfiles", profile_id) if profile_id else None
         processor_type = str(_pick(profile or {}, "processorType", "processor_type", default="")).lower()
-        return bool(body_text.strip() and processor_type in {"emailbody", "customeroverride"})
+        normalized = re.sub(r"[^a-z0-9]", "", processor_type)
+        return normalized in WEBHOOK_PROCESSOR_TYPES or bool(
+            body_text.strip() and normalized in {"emailbody", "customeroverride"}
+        )
 
     @staticmethod
     def _set_email_processing_state(
@@ -2674,6 +2678,227 @@ class OrderProcessorApi:
             deduped.append(profile)
         return deduped
 
+    @staticmethod
+    def _normalized_processor_type(value: Any) -> str:
+        return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+
+    def _is_webhook_processor(self, processor_profile: ProcessorProfile | None, payload: dict[str, Any]) -> bool:
+        processor_type = (
+            _pick(payload, "processorType", "processor_type", default=None)
+            or (processor_profile.processor_type if processor_profile else "")
+        )
+        settings = dict((processor_profile.settings if processor_profile else {}) or {})
+        settings.update(dict(_pick(payload, "settings", default={}) or {}))
+        return (
+            self._normalized_processor_type(processor_type) in WEBHOOK_PROCESSOR_TYPES
+            or bool(_pick(payload, "webhookUrl", "webhook_url", default=""))
+            or bool(_pick(settings, "webhookUrl", "webhook_url", default=""))
+        )
+
+    def _process_webhook_order(
+        self,
+        order: OrderRun,
+        payload: dict[str, Any],
+        processor_profile: ProcessorProfile | None,
+        observability: dict[str, Any],
+    ) -> dict[str, Any]:
+        settings = dict((processor_profile.settings if processor_profile else {}) or {})
+        settings.update(dict(_pick(payload, "settings", default={}) or {}))
+        webhook_url = str(
+            _pick(payload, "webhookUrl", "webhook_url", default="")
+            or _pick(settings, "webhookUrl", "webhook_url", "url", "endpoint", default="")
+            or ""
+        ).strip()
+        try:
+            timeout_seconds = int(_pick(settings, "timeoutSeconds", "timeout_seconds", default=30) or 30)
+        except (TypeError, ValueError):
+            timeout_seconds = 30
+        timeout_seconds = max(5, min(timeout_seconds, 120))
+
+        order.processor_profile_id = (
+            _pick(payload, "processorProfileId", "processor_profile_id", default=order.processor_profile_id)
+            or (processor_profile.id if processor_profile else None)
+        )
+        order.processor_type = "powerAutomateWebhook"
+        order.processor_version = "phase9-webhook-v1"
+        order.source_type = "powerAutomateWebhook"
+        order.source_metadata.update(dict(_pick(payload, "sourceMetadata", "source_metadata", default={}) or {}))
+        order.source_metadata["webhookProcessor"] = {
+            "url": webhook_url,
+            "processorProfileId": order.processor_profile_id,
+            "processorProfileName": processor_profile.name if processor_profile else "",
+            "requestedAt": utc_now(),
+        }
+
+        if not webhook_url:
+            order.status = ProcessingStatus.FAILED
+            order.errors.append({"code": "webhookUrlRequired", "message": "Webhook processor URL is required."})
+            order.processing_completed_at = utc_now()
+            order.updated_at = utc_now()
+            order_doc = self.repository.upsert("orderRuns", to_dict(order))
+            self._upsert_monitor_record_for_order(order_doc)
+            self._create_exception(
+                tenant_id=order.tenant_id,
+                task_type="webhookProcessor",
+                prompt="Configure the custom webhook processor URL.",
+                order_run_id=order.id,
+                email_message_id=order.email_message_id,
+                customer_id=order.customer_id,
+                correlation_id=order.correlation_id,
+                context={"processorProfileId": order.processor_profile_id, "observability": observability},
+                dedupe_key="webhookUrlRequired",
+            )
+            return order_doc
+
+        webhook_body = self._webhook_order_payload(order, payload, processor_profile, webhook_url, observability)
+        request_body = json.dumps(webhook_body, separators=(",", ":")).encode("utf-8")
+        started = utc_now()
+        try:
+            request = urlrequest.Request(
+                webhook_url,
+                data=request_body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urlrequest.urlopen(request, timeout=timeout_seconds) as response:
+                response_body = response.read(65536)
+                status_code = int(getattr(response, "status", 200) or 200)
+                content_type = str(response.headers.get("Content-Type", ""))
+        except urlerror.HTTPError as exc:
+            response_body = exc.read(65536)
+            status_code = int(exc.code or 500)
+            content_type = str(exc.headers.get("Content-Type", ""))
+            error_message = str(exc)
+        except (urlerror.URLError, TimeoutError, OSError) as exc:
+            response_body = b""
+            status_code = 0
+            content_type = ""
+            error_message = str(exc)
+        else:
+            error_message = ""
+
+        response_payload = self._webhook_response_payload(response_body, content_type)
+        succeeded = 200 <= status_code < 300
+        handoff = {
+            "url": webhook_url,
+            "status": "accepted" if succeeded else "failed",
+            "statusCode": status_code,
+            "requestedAt": started,
+            "completedAt": utc_now(),
+            "request": {
+                "orderRunId": order.id,
+                "emailMessageId": order.email_message_id,
+                "graphMessageId": webhook_body.get("graphMessageId", ""),
+                "mailbox": webhook_body.get("mailbox", ""),
+            },
+            "response": response_payload,
+        }
+        if error_message:
+            handoff["error"] = error_message
+        order.source_metadata["webhookProcessor"] = {
+            **dict(order.source_metadata.get("webhookProcessor") or {}),
+            **handoff,
+        }
+        order.status = ProcessingStatus.COMPLETED if succeeded else ProcessingStatus.FAILED
+        if not succeeded:
+            order.errors.append(
+                {
+                    "code": "webhookProcessorFailed",
+                    "message": error_message or f"Webhook processor returned HTTP {status_code}.",
+                    "statusCode": status_code,
+                }
+            )
+        order.processing_completed_at = utc_now()
+        order.updated_at = utc_now()
+        order_doc = self.repository.upsert("orderRuns", to_dict(order))
+        self._upsert_monitor_record_for_order(order_doc)
+        self._audit(
+            order.tenant_id,
+            "order.webhookProcessor.accepted" if succeeded else "order.webhookProcessor.failed",
+            observability["correlationId"],
+            order.id,
+            {"handoff": handoff, "observability": observability},
+            customer_id=order.customer_id,
+            order_run_id=order.id,
+            email_message_id=order.email_message_id,
+        )
+        if not succeeded:
+            self._create_exception(
+                tenant_id=order.tenant_id,
+                task_type="webhookProcessor",
+                prompt="Review custom webhook processor failure.",
+                order_run_id=order.id,
+                email_message_id=order.email_message_id,
+                customer_id=order.customer_id,
+                correlation_id=order.correlation_id,
+                context={"handoff": handoff, "observability": observability},
+                dedupe_key="webhookProcessorFailed",
+            )
+        return order_doc
+
+    def _webhook_order_payload(
+        self,
+        order: OrderRun,
+        payload: dict[str, Any],
+        processor_profile: ProcessorProfile | None,
+        webhook_url: str,
+        observability: dict[str, Any],
+    ) -> dict[str, Any]:
+        email = self.repository.get("emailMessages", order.email_message_id) if order.email_message_id else None
+        customer = self.repository.get("customers", order.customer_id or "") if order.customer_id else None
+        source = dict(_pick(email or {}, "source", default={}) or {})
+        routing = dict(_pick(email or {}, "routing", default={}) or {})
+        return {
+            "tenantId": order.tenant_id,
+            "orderRunId": order.id,
+            "emailMessageId": order.email_message_id,
+            "processorProfileId": processor_profile.id if processor_profile else order.processor_profile_id,
+            "processorProfileName": processor_profile.name if processor_profile else "",
+            "webhookUrl": webhook_url,
+            "correlationId": observability["correlationId"],
+            "mailboxAccountId": _pick(email or {}, "mailboxAccountId", "mailbox_account_id", default=_pick(payload, "mailboxAccountId", "mailbox_account_id", default="")),
+            "mailbox": _pick(email or {}, "mailbox", default=_pick(payload, "mailbox", default="")),
+            "graphMessageId": _pick(source, "graphMessageId", "graph_message_id", default=_pick(payload, "graphMessageId", "graph_message_id", default="")),
+            "internetMessageId": _pick(email or {}, "messageId", "message_id", default=_pick(payload, "messageId", "message_id", default="")),
+            "sender": _pick(email or {}, "sender", default=_pick(payload, "sender", default="")),
+            "recipient": "; ".join(str(item) for item in _as_list(_pick(source, "toRecipients", "to_recipients", default=[])) if str(item).strip()),
+            "subject": _pick(email or {}, "subject", default=_pick(payload, "subject", default="")),
+            "receivedAt": _pick(email or {}, "receivedAt", "received_at", default=_pick(payload, "receivedAt", "received_at", default="")),
+            "emailUrl": _pick(source, "webLink", "web_link", default=""),
+            "customerId": order.customer_id or "",
+            "customerCode": _pick(customer or {}, "customerCode", "customer_code", default=""),
+            "customerName": _pick(customer or {}, "name", default=""),
+            "routeNumber": _pick(customer or {}, "routeNumber", "route_number", default=""),
+            "csrName": _pick(customer or {}, "csrName", "csr_name", default=""),
+            "csrFolder": _pick(customer or {}, "csrFolder", "csr_folder", default=""),
+            "csrEmail": _pick(customer or {}, "csrEmail", "csr_email", default=""),
+            "routing": routing,
+            "attachments": [
+                {
+                    "name": _pick(attachment, "name", default=""),
+                    "contentType": _pick(attachment, "contentType", "content_type", default=""),
+                    "size": _pick(attachment, "size", default=0),
+                }
+                for attachment in _as_list(_pick(email or {}, "attachments", default=_pick(payload, "attachments", default=[])))
+                if isinstance(attachment, dict)
+            ],
+            "audit": {
+                "createdAt": utc_now(),
+                "source": "orderProcessorWebhook",
+                "processorVersion": "phase9-webhook-v1",
+            },
+        }
+
+    @staticmethod
+    def _webhook_response_payload(response_body: bytes, content_type: str) -> dict[str, Any]:
+        text = response_body.decode("utf-8", errors="replace") if response_body else ""
+        if "json" in content_type.lower() and text:
+            try:
+                return {"contentType": content_type, "json": json.loads(text)}
+            except json.JSONDecodeError:
+                pass
+        return {"contentType": content_type, "text": text[:4000]}
+
     def process_order(self, order_run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         existing = self.repository.get("orderRuns", order_run_id)
         if existing:
@@ -2714,6 +2939,16 @@ class OrderProcessorApi:
             order_run_id=order.id,
         )
         processor_profile = self._resolve_processor_profile(order, payload)
+        if self._is_webhook_processor(processor_profile, payload):
+            order_doc = self._process_webhook_order(order, payload, processor_profile, observability)
+            webhook_handoff = dict(_pick(_as_dict(_pick(order_doc, "sourceMetadata", "source_metadata", default={})), "webhookProcessor", default={}) or {})
+            return {
+                "orderRun": order_doc,
+                "unresolvedLineCount": 0,
+                "webhookHandoff": webhook_handoff,
+                "observability": observability,
+            }
+
         order = process_order_payload(order, payload, processor_profile)
 
         items = [_item_from_doc(doc) for doc in self.repository.query_by_customer("items", order.tenant_id, GLOBAL_CUSTOMER_ID)]
