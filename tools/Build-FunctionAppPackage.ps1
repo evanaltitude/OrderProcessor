@@ -73,6 +73,7 @@ $routes = @(
     @{ Name = "console_users_upsert"; EntryPoint = "console_users_upsert"; Route = "console/users" },
     @{ Name = "console_customer_users_assign"; EntryPoint = "console_customer_users_assign"; Route = "console/customers/{customerId}/users" },
     @{ Name = "console_exceptions_resolve"; EntryPoint = "console_exceptions_resolve"; Route = "console/exceptions/{id}/resolve" },
+    @{ Name = "console_monitor_active_clear"; EntryPoint = "console_monitor_active_clear"; Route = "console/monitor/active/{id}/clear" },
     @{ Name = "console_orders_reprocess"; EntryPoint = "console_orders_reprocess"; Route = "console/orders/{orderRunId}/reprocess" },
     @{ Name = "console_orders_timeline"; EntryPoint = "console_orders_timeline"; Route = "console/orders/{orderRunId}/timeline" },
     @{ Name = "customer_users_assign"; EntryPoint = "customer_users_assign"; Route = "customers/{customerId}/users" },

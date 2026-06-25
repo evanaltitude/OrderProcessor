@@ -45,6 +45,9 @@ class InfraContractTests(unittest.TestCase):
         self.assertIn("ORDER_PROCESSOR_IMPORT_JOB_QUEUE", bicep)
         self.assertIn("aiCostSources", bicep)
         self.assertIn("aiCostEvents", bicep)
+        build_script = (ROOT / "tools" / "Build-FunctionAppPackage.ps1").read_text(encoding="utf-8")
+        self.assertIn("console_monitor_active_clear", build_script)
+        self.assertIn("console/monitor/active/{id}/clear", build_script)
 
     def test_function_storage_uses_identity_settings(self) -> None:
         bicep = (ROOT / "infra" / "main.bicep").read_text(encoding="utf-8")
