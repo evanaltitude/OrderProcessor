@@ -10,6 +10,7 @@ node_modules/
 npm-debug.log*
 
 # Local settings and secrets
+.vscode/
 .env
 .env.*
 local.settings.json
