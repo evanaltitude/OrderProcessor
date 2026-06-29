@@ -74,6 +74,41 @@
         </section>
         <section class="band">
           <div class="section-title">
+            <h2>Processed Email Filters</h2>
+          </div>
+          <form id="monitorFilterForm" class="processed-filter-form">
+            <label>From
+              <input name="from" placeholder="sender or domain">
+            </label>
+            <label>To
+              <input name="to" placeholder="recipient or mailbox">
+            </label>
+            <label>Keywords
+              <input name="keyword" placeholder="subject, customer, action">
+            </label>
+            <label>Subject
+              <input name="subject" placeholder="subject contains">
+            </label>
+            <label>Customer
+              <input name="customer" placeholder="code or name">
+            </label>
+            <label>CSR
+              <input name="csr" placeholder="name or email">
+            </label>
+            <label>Date from
+              <input name="dateFrom" type="date">
+            </label>
+            <label>Date to
+              <input name="dateTo" type="date">
+            </label>
+            <div class="filter-actions">
+              <button type="submit">Apply</button>
+              <button id="clearMonitorFiltersButton" class="secondary" type="button">Today</button>
+            </div>
+          </form>
+        </section>
+        <section class="band">
+          <div class="section-title">
             <h2>Processed Orders</h2>
           </div>
           <div class="table-wrap">
@@ -94,6 +129,7 @@
               <tbody id="processedOrdersBody"></tbody>
             </table>
           </div>
+          <div id="processedOrdersPager" class="section-pager"></div>
         </section>
         <section class="band">
           <div class="section-title">
@@ -117,6 +153,7 @@
               <tbody id="webstoreOrdersBody"></tbody>
             </table>
           </div>
+          <div id="webstoreOrdersPager" class="section-pager"></div>
         </section>
         <section class="band">
           <div class="section-title">
@@ -140,6 +177,7 @@
               <tbody id="nonOrderEmailsBody"></tbody>
             </table>
           </div>
+          <div id="nonOrderEmailsPager" class="section-pager"></div>
         </section>
       </section>
 

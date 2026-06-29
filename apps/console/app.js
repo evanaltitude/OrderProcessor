@@ -4,6 +4,27 @@ const apiBase = params.get("apiBase")
   || document.querySelector('meta[name="order-api-base"]')?.content
   || "/api";
 const initialTenantId = params.get("tenantId") || "default";
+const MONITOR_PROCESSED_PAGE_SIZE = 20;
+
+function localDateInputValue(date = new Date()) {
+  const offsetMs = date.getTimezoneOffset() * 60000;
+  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 10);
+}
+
+function defaultMonitorFilters() {
+  const today = localDateInputValue();
+  return {
+    from: "",
+    to: "",
+    keyword: "",
+    subject: "",
+    customer: "",
+    csr: "",
+    dateFrom: today,
+    dateTo: today
+  };
+}
+
 const state = {
   tenantId: initialTenantId,
   dashboard: null,
@@ -16,6 +37,8 @@ const state = {
   },
   outputs: { outputArtifacts: [], page: { total: 0, limit: 100, offset: 0, hasNext: false, hasPrevious: false }, loaded: false },
   costs: { summary: null, loaded: false },
+  monitorFilters: defaultMonitorFilters(),
+  monitorPages: { processedOrders: 0, webstoreOrders: 0, nonOrderEmails: 0 },
   listTimers: {}
 };
 
@@ -943,6 +966,126 @@ function completedEmailRow(entry = {}) {
   `;
 }
 
+function monitorEntryDate(entry = {}) {
+  const value = entry.receivedAt || entry.updatedAt || entry.createdAt || "";
+  const parsed = Date.parse(value);
+  if (Number.isNaN(parsed)) return "";
+  return localDateInputValue(new Date(parsed));
+}
+
+function monitorEntryTimestamp(entry = {}) {
+  const parsed = Date.parse(entry.receivedAt || entry.updatedAt || entry.createdAt || "");
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function includesText(value, expected) {
+  const needle = String(expected || "").trim().toLowerCase();
+  if (!needle) return true;
+  return String(value || "").toLowerCase().includes(needle);
+}
+
+function monitorEntrySearchText(entry = {}) {
+  return [
+    entry.sender,
+    entry.recipient,
+    entry.subject,
+    entry.customerCode,
+    entry.customerName,
+    entry.customerId,
+    entry.csr,
+    entry.csrEmail,
+    entry.categorizedAs,
+    entry.actionTaken,
+    entry.movedTo,
+    entry.poNumber,
+    entry.orderNumber,
+    entry.orderRunId,
+    entry.status,
+    entry.pathway
+  ].filter(Boolean).join(" ");
+}
+
+function processedMonitorMatches(entry = {}) {
+  const filters = state.monitorFilters || defaultMonitorFilters();
+  const entryDate = monitorEntryDate(entry);
+  if (filters.dateFrom && (!entryDate || entryDate < filters.dateFrom)) return false;
+  if (filters.dateTo && (!entryDate || entryDate > filters.dateTo)) return false;
+  if (!includesText(entry.sender, filters.from)) return false;
+  if (!includesText([entry.recipient, entry.mailbox].filter(Boolean).join(" "), filters.to)) return false;
+  if (!includesText(entry.subject, filters.subject)) return false;
+  if (!includesText(monitorCustomer(entry), filters.customer)) return false;
+  if (!includesText([entry.csr, entry.csrEmail].filter(Boolean).join(" "), filters.csr)) return false;
+  if (!includesText(monitorEntrySearchText(entry), filters.keyword)) return false;
+  return true;
+}
+
+function filteredProcessedMonitorEntries(entries = []) {
+  return entries
+    .filter(processedMonitorMatches)
+    .sort((left, right) => monitorEntryTimestamp(right) - monitorEntryTimestamp(left));
+}
+
+function resetMonitorPages() {
+  state.monitorPages = { processedOrders: 0, webstoreOrders: 0, nonOrderEmails: 0 };
+}
+
+function syncMonitorFilterForm() {
+  const form = el("monitorFilterForm");
+  if (!form) return;
+  const filters = state.monitorFilters || defaultMonitorFilters();
+  Object.entries(filters).forEach(([name, nextValue]) => {
+    if (form.elements[name]) form.elements[name].value = nextValue || "";
+  });
+}
+
+function applyMonitorFiltersFromForm(form) {
+  state.monitorFilters = {
+    from: value(form, "from"),
+    to: value(form, "to"),
+    keyword: value(form, "keyword"),
+    subject: value(form, "subject"),
+    customer: value(form, "customer"),
+    csr: value(form, "csr"),
+    dateFrom: value(form, "dateFrom"),
+    dateTo: value(form, "dateTo")
+  };
+  resetMonitorPages();
+  renderRows();
+}
+
+function resetMonitorFiltersToToday() {
+  state.monitorFilters = defaultMonitorFilters();
+  resetMonitorPages();
+  syncMonitorFilterForm();
+  renderRows();
+}
+
+function pagerHtml(section, total, page, pageCount) {
+  if (!total) return '<span class="muted">0 matching messages</span>';
+  const start = page * MONITOR_PROCESSED_PAGE_SIZE + 1;
+  const end = Math.min(total, start + MONITOR_PROCESSED_PAGE_SIZE - 1);
+  return `
+    <span>${start}-${end} of ${total}</span>
+    <button class="secondary" data-action="monitor-page" data-section="${escapeHtml(section)}" data-page="${page - 1}" type="button" ${page <= 0 ? "disabled" : ""}>Previous</button>
+    <span>Page ${page + 1} of ${pageCount}</span>
+    <button class="secondary" data-action="monitor-page" data-section="${escapeHtml(section)}" data-page="${page + 1}" type="button" ${page >= pageCount - 1 ? "disabled" : ""}>Next</button>
+  `;
+}
+
+function renderProcessedMonitorSection(section, entries, rowRenderer, emptyMessage) {
+  const filtered = filteredProcessedMonitorEntries(entries);
+  const pageCount = Math.max(1, Math.ceil(filtered.length / MONITOR_PROCESSED_PAGE_SIZE));
+  const requestedPage = Number(state.monitorPages?.[section] || 0);
+  const page = Math.max(0, Math.min(requestedPage, pageCount - 1));
+  state.monitorPages[section] = page;
+  const start = page * MONITOR_PROCESSED_PAGE_SIZE;
+  const pageEntries = filtered.slice(start, start + MONITOR_PROCESSED_PAGE_SIZE);
+  el(`${section}Body`).innerHTML = pageEntries.length
+    ? pageEntries.map(rowRenderer).join("")
+    : emptyTableRow(9, emptyMessage);
+  el(`${section}Pager`).innerHTML = pagerHtml(section, filtered.length, page, pageCount);
+}
+
 function exceptionOrderCell(entry = {}) {
   const orderLabel = entry.poNumber || entry.orderNumber || entry.orderRunId || "";
   return orderLabel ? escapeHtml(orderLabel) : "";
@@ -950,35 +1093,17 @@ function exceptionOrderCell(entry = {}) {
 
 function exceptionOverviewTable(task = {}) {
   return `
-    <div class="table-wrap exception-overview">
-      <table class="monitor-table">
-        <thead>
-          <tr>
-            <th>Received</th>
-            <th>Status</th>
-            <th>Sender</th>
-            <th>Subject</th>
-            <th>Customer</th>
-            <th>CSR</th>
-            <th>Order</th>
-            <th>Action</th>
-            <th>Email</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>${escapeHtml(task.receivedAt || task.updatedAt || "")}</td>
-            <td>${statusPill(task.status)}</td>
-            <td class="wrap-cell">${escapeHtml(task.sender || "")}</td>
-            <td class="wrap-cell">${escapeHtml(task.subject || "")}</td>
-            <td class="wrap-cell">${escapeHtml(monitorCustomer(task))}</td>
-            <td class="wrap-cell">${escapeHtml(task.csr || task.csrEmail || "")}</td>
-            <td class="wrap-cell">${exceptionOrderCell(task)}</td>
-            <td class="wrap-cell">${monitorActionCell(task)}</td>
-            <td>${monitorEmailLink(task)}</td>
-          </tr>
-        </tbody>
-      </table>
+    <div class="exception-overview">
+      <dl class="exception-overview-grid">
+        <div><dt>Received</dt><dd>${escapeHtml(task.receivedAt || task.updatedAt || "")}</dd></div>
+        <div><dt>Sender</dt><dd>${escapeHtml(task.sender || "")}</dd></div>
+        <div><dt>Subject</dt><dd>${escapeHtml(task.subject || "")}</dd></div>
+        <div><dt>Customer</dt><dd>${escapeHtml(monitorCustomer(task) || "Unassigned")}</dd></div>
+        <div><dt>CSR</dt><dd>${escapeHtml(task.csr || task.csrEmail || "")}</dd></div>
+        <div><dt>Order</dt><dd>${exceptionOrderCell(task)}</dd></div>
+        <div><dt>Action</dt><dd>${monitorActionCell(task)}</dd></div>
+        <div><dt>Email</dt><dd>${monitorEmailLink(task)}</dd></div>
+      </dl>
     </div>
   `;
 }
@@ -990,30 +1115,30 @@ function renderRows() {
   const processedOrders = monitor.processedOrders || [];
   const webstoreOrders = monitor.webstoreOrders || [];
   const nonOrderEmails = monitor.nonOrderEmails || [];
+  syncMonitorFilterForm();
   el("activeRunsBody").innerHTML = active.length
     ? active.map(activeMonitorRow).join("")
     : emptyTableRow(11, "No active email processing.");
-  el("processedOrdersBody").innerHTML = processedOrders.length
-    ? processedOrders.map(processedOrderRow).join("")
-    : emptyTableRow(9, "No processed orders yet.");
-  el("webstoreOrdersBody").innerHTML = webstoreOrders.length
-    ? webstoreOrders.map(completedEmailRow).join("")
-    : emptyTableRow(9, "No webstore order emails completed yet.");
-  el("nonOrderEmailsBody").innerHTML = nonOrderEmails.length
-    ? nonOrderEmails.map(completedEmailRow).join("")
-    : emptyTableRow(9, "No non-order emails completed yet.");
+  renderProcessedMonitorSection("processedOrders", processedOrders, processedOrderRow, "No processed orders match the filters.");
+  renderProcessedMonitorSection("webstoreOrders", webstoreOrders, completedEmailRow, "No webstore order emails match the filters.");
+  renderProcessedMonitorSection("nonOrderEmails", nonOrderEmails, completedEmailRow, "No non-order emails match the filters.");
 }
 
 function exceptionCard(task) {
+  const identifier = task.orderRunId ? `Run ${task.orderRunId}` : `Email ${task.emailMessageId || ""}`;
   return `
-    <article class="task">
-      <header>
-        <strong>${escapeHtml(task.type)}</strong>
-        ${statusPill(task.status)}
+    <article class="task exception-card">
+      <header class="exception-card-header">
+        <div>
+          <strong>${escapeHtml(task.type || "Exception")}</strong>
+          <p>${escapeHtml(task.exception || task.prompt || task.id)}</p>
+        </div>
+        <div class="exception-card-status">
+          ${statusPill(task.status)}
+          <span class="pill">${escapeHtml(identifier)}</span>
+        </div>
       </header>
-      <div>${escapeHtml(task.exception || task.prompt || task.id)}</div>
       ${exceptionOverviewTable(task)}
-      <div class="pill">${escapeHtml(task.orderRunId ? `Run ${task.orderRunId}` : `Email ${task.emailMessageId || ""}`)}</div>
       ${exceptionResolutionControls(task)}
     </article>
   `;
@@ -1685,15 +1810,18 @@ function resetSectionData() {
   state.lists.items = { items: [], page: { total: 0, limit: 100, offset: 0, hasNext: false, hasPrevious: false }, loaded: false };
   state.outputs = { outputArtifacts: [], page: { total: 0, limit: 100, offset: 0, hasNext: false, hasPrevious: false }, loaded: false };
   state.costs = { summary: null, loaded: false };
+  resetMonitorPages();
 }
 
 async function refresh(options = {}) {
   if (options.quiet && state.pendingRequests > 0) return;
   const dashboardView = options.full ? "full" : activeConsoleView() === "monitor" ? "monitor" : "config";
   const selectedBeforeRefresh = state.selectedDistributorId;
+  const dashboardPayload = { view: dashboardView };
+  if (dashboardView === "monitor") dashboardPayload.limit = 500;
   state.dashboard = await post(
     "/console/dashboard",
-    { view: dashboardView },
+    dashboardPayload,
     { quiet: options.quiet, busyText: dashboardView === "monitor" ? "Refreshing monitor" : "Working" }
   );
   const distributors = state.dashboard?.distributorCustomers || [];
@@ -2181,6 +2309,12 @@ document.addEventListener("click", async (event) => {
     }));
     await refresh();
   }
+  if (target.dataset.action === "monitor-page") {
+    const section = target.dataset.section || "";
+    if (!Object.prototype.hasOwnProperty.call(state.monitorPages, section)) return;
+    state.monitorPages[section] = Number(target.dataset.page || 0);
+    renderRows();
+  }
   if (target.dataset.action === "timeline") {
     showDetails(await post(`/console/orders/${target.dataset.run}/timeline`, { source: "console" }));
   }
@@ -2198,6 +2332,25 @@ document.addEventListener("click", async (event) => {
 el("refreshButton").addEventListener("click", refresh);
 el("distributorSelector").addEventListener("change", async (event) => {
   await switchDistributor(event.target.value);
+});
+el("monitorFilterForm").addEventListener("submit", (event) => {
+  event.preventDefault();
+  applyMonitorFiltersFromForm(event.currentTarget);
+});
+el("clearMonitorFiltersButton").addEventListener("click", resetMonitorFiltersToToday);
+[
+  "from",
+  "to",
+  "keyword",
+  "subject",
+  "customer",
+  "csr",
+  "dateFrom",
+  "dateTo"
+].forEach((name) => {
+  el("monitorFilterForm").elements[name].addEventListener("input", (event) => {
+    applyMonitorFiltersFromForm(event.currentTarget.form);
+  });
 });
 el("routingForm").elements.routingPath.addEventListener("change", applyRoutingPathDefaults);
 el("routingForm").elements.phase.addEventListener("change", syncRoutingDefaultsForPhase);

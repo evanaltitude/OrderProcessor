@@ -355,6 +355,26 @@ p {
   grid-template-columns: repeat(4, minmax(150px, 1fr));
 }
 
+.processed-filter-form {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(150px, 1fr)) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.processed-filter-form label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.filter-actions {
+  display: flex;
+  gap: 8px;
+}
+
 .cost-metrics {
   margin-bottom: 0;
 }
@@ -364,6 +384,27 @@ p {
   justify-content: flex-end;
   gap: 8px;
   margin: -4px 0 14px;
+}
+
+.section-pager {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  padding-top: 10px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.section-pager:empty {
+  display: none;
+}
+
+.section-pager button {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 12px;
 }
 
 .list-controls label {
@@ -665,6 +706,39 @@ th {
   box-shadow: 0 1px 2px rgba(37, 41, 47, 0.04);
 }
 
+.exception-card {
+  gap: 12px;
+  padding: 12px;
+  border-left: 4px solid var(--brand-cyan);
+}
+
+.exception-card + .exception-card {
+  margin-top: 2px;
+}
+
+.exception-card-header {
+  align-items: flex-start;
+}
+
+.exception-card-header strong {
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.exception-card-header p {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.exception-card-status {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
 .task header,
 .artifact header {
   display: flex;
@@ -690,21 +764,48 @@ th {
 
 .exception-overview {
   max-width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f7f9fc;
 }
 
-.exception-overview .monitor-table {
-  min-width: 980px;
+.exception-overview-grid {
+  display: grid;
+  grid-template-columns: 1.05fr 1.1fr minmax(220px, 2fr) 1.2fr 1fr 0.9fr 1.2fr 0.55fr;
+  gap: 10px 12px;
+  margin: 0;
+}
+
+.exception-overview-grid div {
+  min-width: 0;
+}
+
+.exception-overview-grid dt {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.exception-overview-grid dd {
+  margin: 3px 0 0;
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .exception-actions {
   display: grid;
-  gap: 12px;
+  gap: 10px;
 }
 
 .exception-action-zone {
   display: grid;
   gap: 10px;
-  padding: 12px;
+  padding: 10px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel-soft);
@@ -717,7 +818,7 @@ th {
 .exception-action-zone h3 {
   margin: 0;
   color: var(--ink);
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1.2;
 }
 
@@ -725,7 +826,7 @@ th {
 .exception-terminal-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(260px, 1fr));
-  gap: 10px;
+  gap: 8px;
 }
 
 .exception-terminal-grid {
@@ -905,11 +1006,13 @@ pre {
   .routing-path-panel,
   .list-controls,
   .list-controls.cost-controls,
+  .processed-filter-form,
   .form-grid.two,
   .form-grid.three,
   .exception-resolution-form,
   .exception-resolution-form.multi,
   .exception-resolution-form.move-form,
+  .exception-overview-grid,
   .exception-preprocess-grid,
   .exception-terminal-grid,
   .checkbox-grid {
@@ -937,6 +1040,12 @@ pre {
 
   .header-actions select {
     min-width: 0;
+  }
+
+  .filter-actions,
+  .section-pager,
+  .exception-card-status {
+    justify-content: flex-start;
   }
 
   .shell {
