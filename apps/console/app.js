@@ -1823,6 +1823,17 @@ async function refresh(options = {}) {
     { quiet: options.quiet, busyText: dashboardView === "monitor" ? "Refreshing monitor" : "Working" }
   );
   const distributors = state.dashboard?.distributorCustomers || [];
+  if (
+    distributors.length
+    && !distributors.some((distributor) => distributor.tenantId === state.tenantId)
+    && state.tenantId === "default"
+  ) {
+    state.tenantId = distributors[0].tenantId;
+    state.selectedDistributorId = state.tenantId;
+    resetSectionData();
+    await refresh(options);
+    return;
+  }
   state.selectedDistributorId = distributors.some((distributor) => distributor.tenantId === selectedBeforeRefresh)
     ? selectedBeforeRefresh
     : state.dashboard?.tenant?.tenantId || state.tenantId;
