@@ -23,6 +23,7 @@ class ConsoleFrontendTests(unittest.TestCase):
         self.assertTrue((CONSOLE / "assets" / "brand" / "focus-automate-main-logo.svg").exists())
         self.assertTrue((CONSOLE / "assets" / "brand" / "focus-automate-inverted-logo.svg").exists())
         self.assertIn("/console/dashboard", app)
+        self.assertIn('params.get("tenantId") || "test-customer"', app)
         self.assertIn("/console/mailboxes", app)
         self.assertIn("/console/microsoft-auth/start", app)
         self.assertIn("/test-connection", app)

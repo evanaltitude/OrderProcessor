@@ -3,7 +3,7 @@ const apiBase = params.get("apiBase")
   || window.localStorage.getItem("orderProcessorApiBase")
   || document.querySelector('meta[name="order-api-base"]')?.content
   || "/api";
-const initialTenantId = params.get("tenantId") || "default";
+const initialTenantId = params.get("tenantId") || "test-customer";
 const MONITOR_PROCESSED_PAGE_SIZE = 20;
 
 function localDateInputValue(date = new Date()) {
