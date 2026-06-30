@@ -146,31 +146,25 @@ const CUSTOMER_LIST_BASE_COLUMNS = [
   { key: "name", label: "Name" },
   { key: "storeNumber", label: "Store" },
   { key: "routeNumber", label: "Route" },
+  { key: "customFields.internalRouteCode", label: "Internal Route" },
+  { key: "csrName", label: "CSR" },
   { key: "csrEmail", label: "CSR Email" },
-  { key: "csrFolder", label: "CSR Folder" },
+  { key: "csrFolder", label: "Move Folder" },
+  { key: "customerEmail", label: "Email" },
+  { key: "phone", label: "Phone" },
+  { key: "website", label: "Website" },
   { key: "address1", label: "Address" },
   { key: "city", label: "City" },
   { key: "state", label: "State" },
   { key: "postalCode", label: "Zip" },
-  { key: "phone", label: "Phone" },
-  { key: "website", label: "Website" },
-  { key: "customerEmail", label: "Customer Email" },
-  { key: "lastImportedAt", label: "Last Update" },
-  { key: "sourceName", label: "Source" },
-  { key: "id", label: "Record ID" }
+  { key: "lastImportedAt", label: "Last Update" }
 ];
 const ITEM_LIST_BASE_COLUMNS = [
-  { key: "customerId", label: "Customer" },
   { key: "internalItemNumber", label: "Item" },
   { key: "description", label: "Description" },
   { key: "upc", label: "UPC" },
   { key: "alternateIds", label: "Alternate IDs" },
-  { key: "customerItemNumbers", label: "Customer Item Numbers" },
-  { key: "altPartsCombined", label: "Alt Parts Combined" },
-  { key: "aliases", label: "Aliases" },
-  { key: "lastImportedAt", label: "Last Update" },
-  { key: "sourceName", label: "Source" },
-  { key: "id", label: "Record ID" }
+  { key: "lastImportedAt", label: "Last Update" }
 ];
 
 function slugifyId(text) {
@@ -1682,13 +1676,17 @@ function rawColumnKeys(records) {
   return [...keys].sort((left, right) => left.localeCompare(right));
 }
 
-function listColumns(kind, records) {
-  const base = listBaseColumns(kind);
-  const existing = new Set(base.map((column) => column.key.toLowerCase()));
-  const raw = rawColumnKeys(records)
-    .filter((key) => !existing.has(key.toLowerCase()))
-    .map((key) => ({ key: `raw:${key}`, label: key }));
-  return [...base, ...raw];
+function listColumns(kind, records = []) {
+  void records;
+  return listBaseColumns(kind);
+}
+
+function recordValue(record, key) {
+  if (!key.includes(".")) return record[key];
+  return key.split(".").reduce((value, part) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+    return value[part];
+  }, record);
 }
 
 function listCellValue(record, column, kind) {
@@ -1696,7 +1694,7 @@ function listCellValue(record, column, kind) {
     return flattenCellValue(rawSourceRow(record)[column.key.slice(4)]);
   }
   if (kind === "items" && column.key === "alternateIds") return itemAlternateIds(record);
-  return flattenCellValue(record[column.key]);
+  return flattenCellValue(recordValue(record, column.key));
 }
 
 function updateFilterFieldOptions(select, columns) {

@@ -14,7 +14,7 @@ from order_processor.api import OrderProcessorApi
 from order_processor.microsoft_graph import InMemorySecretStore, MicrosoftGraphError, sign_state
 from order_processor.models import EmailMessage, MatchStatus, OrderLine, OrderRun, ProcessingStatus, to_dict, utc_now
 from order_processor.output_generation import InMemoryOutputArtifactStore
-from order_processor.storage import InMemoryRepository
+from order_processor.storage import CosmosRepository, InMemoryRepository
 
 
 def _easy_auth_header(email: str, oid: str = "oid-1") -> str:
@@ -319,6 +319,23 @@ class ConsoleBackendTests(unittest.TestCase):
             dashboard["importTargets"]["itemList"]["minimumBody"]["rows"][0]["alt_parts_combined"][0]["alt_part"],
             "031865BRN4R",
         )
+
+    def test_cosmos_tenant_stats_include_latest_import_timestamp(self) -> None:
+        class FakeContainer:
+            def query_items(self, query: str, parameters: list[dict], enable_cross_partition_query: bool) -> list:
+                if "COUNT(1)" in query:
+                    return [2]
+                if "MAX(c.lastImportedAt)" in query:
+                    return ["2026-06-20T10:00:00Z"]
+                return []
+
+        repo = CosmosRepository.__new__(CosmosRepository)
+        repo._container = lambda _: FakeContainer()  # type: ignore[method-assign]
+
+        stats = CosmosRepository.query_by_tenant_stats(repo, "customers", "altitude")
+
+        self.assertEqual(stats["count"], 2)
+        self.assertEqual(stats["latest"], "2026-06-20T10:00:00Z")
 
     def test_console_dashboard_omits_customer_and_item_embeddings(self) -> None:
         api, repo, _ = self._api()

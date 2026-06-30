@@ -23,6 +23,11 @@ def _safe_cosmos_field(value: Any) -> bool:
     return bool(field) and field.replace("_", "").isalnum()
 
 
+def _safe_cosmos_path(value: Any) -> bool:
+    parts = str(value or "").strip().split(".")
+    return bool(parts) and all(_safe_cosmos_field(part) for part in parts)
+
+
 class InMemoryRepository:
     """Tiny repository used by local tests and the function facade scaffold."""
 
@@ -285,7 +290,7 @@ class CosmosRepository:
         return {"items": items, "total": int(counts[0] if counts else 0), "limit": safe_limit, "offset": safe_offset}
 
     def query_by_tenant_stats(self, container: str, tenant_id: str, date_field: str = "lastImportedAt") -> dict[str, Any]:
-        field = date_field if _safe_cosmos_field(date_field) else "lastImportedAt"
+        field = date_field if _safe_cosmos_path(date_field) else "lastImportedAt"
         parameters = [{"name": "@tenantId", "value": tenant_id}]
         count_rows = list(
             self._container(container).query_items(
@@ -294,9 +299,39 @@ class CosmosRepository:
                 enable_cross_partition_query=True,
             )
         )
+
+        def max_date(path: str) -> str:
+            if not _safe_cosmos_path(path):
+                return ""
+            rows = list(
+                self._container(container).query_items(
+                    query=(
+                        f"SELECT VALUE MAX(c.{path}) FROM c "
+                        f"WHERE c.tenantId = @tenantId "
+                        f"AND IS_DEFINED(c.{path}) "
+                        f"AND NOT IS_NULL(c.{path}) "
+                        f"AND c.{path} != ''"
+                    ),
+                    parameters=parameters,
+                    enable_cross_partition_query=True,
+                )
+            )
+            return str(rows[0] or "") if rows else ""
+
+        latest = ""
+        for paths in (
+            [field],
+            ["rawSource.importedAt", "sourceMetadata.importedAt"],
+            ["updatedAt"],
+        ):
+            values = [value for value in (max_date(path) for path in paths) if value]
+            if values:
+                latest = sorted(values)[-1]
+                break
+
         return {
             "count": int(count_rows[0] if count_rows else 0),
-            "latest": "",
+            "latest": latest,
         }
 
     def query_by_customer(self, container: str, tenant_id: str, customer_id: str) -> list[dict[str, Any]]:
