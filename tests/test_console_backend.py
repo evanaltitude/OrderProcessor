@@ -1239,6 +1239,116 @@ class ConsoleBackendTests(unittest.TestCase):
         self.assertEqual(item_resolution["resolutionResult"]["matchedInternalItemNumber"], "10001")
         self.assertEqual(parser_resolution["resolutionResult"]["reprocess"]["orderRun"]["status"], "received")
 
+    def test_parser_failure_reprocess_refetches_graph_attachment_content(self) -> None:
+        api, repo, _ = self._api()
+        mailbox = api.upsert_mailbox(
+            {
+                "tenantId": "altitude",
+                "mailboxAddress": "orders@example.com",
+                "connectionId": "m365-orders",
+            }
+        )["mailboxAccount"]
+        mailbox["settings"] = {"graphSubscription": {"authMethod": "delegated"}}
+        repo.upsert("mailboxAccounts", mailbox)
+        repo.upsert(
+            "microsoftAuthConnections",
+            {
+                "id": "m365-orders",
+                "tenantId": "altitude",
+                "customerId": "_global",
+                "provider": "microsoft365",
+                "status": "active",
+                "keyVaultSecretNames": {"refreshToken": "refresh-secret"},
+            },
+        )
+        api.secret_store.set_secret("refresh-secret", "refresh-token")
+        api.upsert_processor_profile(
+            {
+                "tenantId": "altitude",
+                "customerId": "_global",
+                "id": "csv-default",
+                "name": "CSV",
+                "processorType": "csv",
+            }
+        )
+        api.upsert_routing_rule(
+            {
+                "tenantId": "altitude",
+                "customerId": "_global",
+                "name": "CSV attachment orders",
+                "phase": "orderCandidate",
+                "outcome": "knownOrder",
+                "mailboxAccountIds": [mailbox["id"]],
+                "subjectRegex": ["PO"],
+                "attachmentExtensions": ["csv"],
+                "requiredAttachment": True,
+                "processorProfileId": "csv-default",
+            }
+        )
+        ingest = api.ingest_email(
+            {
+                "tenantId": "altitude",
+                "id": "email-graph-replay",
+                "mailboxAccountId": mailbox["id"],
+                "mailbox": "orders@example.com",
+                "messageId": "<message-graph-replay@example.com>",
+                "subject": "PO 1001",
+                "sender": "buyer@example.com",
+                "bodyText": "Order attached.",
+                "attachments": [
+                    {
+                        "name": "order.csv",
+                        "contentType": "text/csv",
+                        "size": 48,
+                        "sourceUrl": "https://graph.microsoft.com/v1.0/users/orders@example.com/messages/graph-message-1/attachments",
+                    }
+                ],
+                "source": {
+                    "provider": "microsoftGraph",
+                    "graphMessageId": "graph-message-1",
+                    "mailboxAccountId": mailbox["id"],
+                },
+            }
+        )
+        order_run_id = ingest["orderRun"]["id"]
+        task = api._create_exception(
+            tenant_id="altitude",
+            task_type="parserFailure",
+            prompt="Parser failed",
+            order_run_id=order_run_id,
+        )
+        csv_body = base64.b64encode(b"item_number,quantity,description\nSKU-1,2,Test Item\n").decode("ascii")
+
+        def graph_get_response(_token: str, url: str) -> dict[str, object]:
+            if url.endswith("/attachments"):
+                return {
+                    "value": [
+                        {
+                            "id": "attachment-1",
+                            "name": "order.csv",
+                            "contentType": "text/csv",
+                            "size": 48,
+                            "isInline": False,
+                            "contentBytes": csv_body,
+                        }
+                    ]
+                }
+            return {}
+
+        with patch.dict(os.environ, {"ORDER_PROCESSOR_MICROSOFT_AUTH_CLIENT_SECRET": "client-secret"}, clear=False), patch(
+            "order_processor.api.refresh_access_token",
+            return_value={"access_token": "access-token", "refresh_token": "next-refresh-token"},
+        ), patch("order_processor.api.graph_get", side_effect=graph_get_response):
+            result = api.resolve_exception(task["id"], {"resolution": {"reprocess": True}})
+
+        order = repo.get("orderRuns", order_run_id)
+        self.assertEqual(result["exceptionTask"]["status"], "resolved")
+        self.assertEqual(result["resolutionResult"]["status"], "reprocessed")
+        self.assertEqual(result["resolutionResult"]["graphReprocessSource"]["status"], "ready")
+        self.assertEqual(order["sourceFileName"], "order.csv")
+        self.assertEqual(order["lines"][0]["providedItemNumber"], "SKU-1")
+        self.assertEqual(order["lines"][0]["quantity"], 2.0)
+
     def test_customer_exception_bad_customer_code_stays_open(self) -> None:
         api, _, _ = self._api()
         task = api._create_exception(

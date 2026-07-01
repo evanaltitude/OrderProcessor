@@ -2536,6 +2536,14 @@ class OrderProcessorApi:
             or _pick(resolution, "emailMessageId", "email_message_id", default="")
             or ""
         )
+        if not email_message_id:
+            order_run_id = str(
+                _pick(task, "orderRunId", "order_run_id", default="")
+                or _pick(resolution, "orderRunId", "order_run_id", default="")
+                or ""
+            )
+            order = self.repository.get("orderRuns", order_run_id) if order_run_id else None
+            email_message_id = str(_pick(order or {}, "emailMessageId", "email_message_id", default="") or "")
         return self.repository.get("emailMessages", email_message_id) if email_message_id else None
 
     def _mailbox_for_email_document(self, email: dict[str, Any]) -> dict[str, Any] | None:
@@ -3284,6 +3292,73 @@ class OrderProcessorApi:
                 "contentType": str(item.get("contentType", "")),
             }
         return attachments, source_payload
+
+    def _graph_reprocess_source_for_email(self, email: dict[str, Any]) -> dict[str, Any]:
+        graph_message_id = self._graph_message_id_for_email(email)
+        mailbox = self._mailbox_for_email_document(email)
+        mailbox_address = str(
+            _pick(mailbox or {}, "mailboxAddress", "mailbox_address", default=_pick(email, "mailbox", default="")) or ""
+        ).strip()
+        result: dict[str, Any] = {
+            "status": "skipped",
+            "reason": "missing Microsoft Graph mailbox or message context",
+            "attachments": list(_as_list(_pick(email, "attachments", default=[]))),
+            "sourcePayload": {},
+        }
+        if not graph_message_id or not mailbox or not mailbox_address:
+            return result
+
+        auth_mode = str(
+            _pick(
+                dict(_pick(mailbox, "settings", default={}) or {}).get("graphSubscription", {}) or {},
+                "authMethod",
+                default=os.environ.get("ORDER_PROCESSOR_GRAPH_SUBSCRIPTION_AUTH_MODE", "auto"),
+            )
+            or "auto"
+        ).lower()
+        try:
+            candidates = self._graph_access_token_candidates(mailbox, auth_mode=auth_mode)
+        except MicrosoftGraphError as exc:
+            return {
+                **result,
+                "status": "failed",
+                "reason": str(exc),
+                "statusCode": exc.status_code,
+                "details": exc.details,
+            }
+        if not candidates:
+            return {**result, "status": "failed", "reason": "No Microsoft Graph access token is available."}
+
+        last_error: MicrosoftGraphError | None = None
+        for candidate in candidates:
+            try:
+                attachments, source_payload = self._graph_message_attachments(
+                    candidate["accessToken"],
+                    mailbox_address,
+                    graph_message_id,
+                    True,
+                )
+                return {
+                    "status": "ready" if source_payload else "noSourceContent",
+                    "authMethod": candidate["authMethod"],
+                    "mailboxAddress": mailbox_address,
+                    "graphMessageId": graph_message_id,
+                    "attachments": attachments or result["attachments"],
+                    "sourcePayload": source_payload,
+                }
+            except MicrosoftGraphError as exc:
+                last_error = exc
+                if exc.status_code not in {401, 403}:
+                    break
+        if last_error:
+            return {
+                **result,
+                "status": "failed",
+                "reason": str(last_error),
+                "statusCode": last_error.status_code,
+                "details": last_error.details,
+            }
+        return result
 
     def _should_process_polled_order(
         self,
@@ -7763,6 +7838,9 @@ class OrderProcessorApi:
             return self._apply_item_resolution(task, resolution)
         if task_type in {"parserFailure", "outputGeneration"}:
             if bool(_pick(resolution, "reprocess", "reprocessOrder", "rerun", default=False)):
+                email = self._email_for_exception(task, resolution)
+                if email is not None and self._graph_message_id_for_email(email):
+                    return self._apply_email_reprocess_resolution(task, resolution)
                 order_run_id = _pick(task, "orderRunId", "order_run_id", default=None)
                 if order_run_id:
                     return {"reprocess": self.reprocess_order(order_run_id, {"source": "exceptionResolution"})}
@@ -7984,26 +8062,48 @@ class OrderProcessorApi:
         ingest_result = self.ingest_email(ingest_payload)
         email_message = _as_dict(_pick(ingest_result, "emailMessage", "email_message", default={}))
         order_run = _as_dict(_pick(ingest_result, "orderRun", "order_run", default={}))
+        graph_reprocess_source = self._graph_reprocess_source_for_email(email)
         processed = None
         if order_run:
+            processor_profile_id = _pick(order_run, "processorProfileId", "processor_profile_id", default=None)
+            processor_profile = self.repository.get("processorProfiles", str(processor_profile_id)) if processor_profile_id else None
+            processor_type = re.sub(
+                r"[^a-z0-9]",
+                "",
+                str(_pick(processor_profile or {}, "processorType", "processor_type", default="")).lower(),
+            )
+            source_payload = dict(_pick(graph_reprocess_source, "sourcePayload", "source_payload", default={}) or {})
+            if processor_type in {"pdf", "googledocumentai", "googledocumentaipdf"} and not source_payload:
+                return {
+                    "status": "failed",
+                    "message": "Could not refetch PDF attachment content for reprocessing.",
+                    "graphReprocessSource": graph_reprocess_source,
+                    "ingestResult": ingest_result,
+                }
             processed = self.process_order(
                 str(_pick(order_run, "id", default="")),
                 {
                     "tenantId": _pick(email_message, "tenantId", "tenant_id", default=_pick(email, "tenantId", "tenant_id", default="default")),
                     "emailMessageId": _pick(email_message, "id", default=_pick(email, "id", default="")),
                     "customerId": _pick(order_run, "customerId", "customer_id", default=_document_customer_id(email_message)),
-                    "processorProfileId": _pick(order_run, "processorProfileId", "processor_profile_id", default=None),
+                    "processorProfileId": processor_profile_id,
                     "mailbox": _pick(email_message, "mailbox", default=_pick(email, "mailbox", default="")),
                     "sender": _pick(email_message, "sender", default=_pick(email, "sender", default="")),
                     "subject": _pick(email_message, "subject", default=_pick(email, "subject", default="")),
                     "receivedAt": _pick(email_message, "receivedAt", "received_at", default=_pick(email, "receivedAt", "received_at", default=utc_now())),
                     "bodyText": _pick(email, "bodyText", "body_text", default=""),
                     "bodyHtml": _pick(email, "bodyHtml", "body_html", default=""),
-                    "attachments": list(_as_list(_pick(email, "attachments", default=[]))),
+                    "attachments": list(_as_list(_pick(graph_reprocess_source, "attachments", default=_pick(email, "attachments", default=[])))),
                     "sourceMetadata": {
                         "provider": "exceptionResolution",
                         "emailMessageId": _pick(email, "id", default=""),
+                        "graphReprocessSource": {
+                            key: value
+                            for key, value in graph_reprocess_source.items()
+                            if key not in {"attachments", "sourcePayload"}
+                        },
                     },
+                    **source_payload,
                 },
             )
         graph_result = None
@@ -8037,6 +8137,11 @@ class OrderProcessorApi:
             "status": "reprocessed",
             "ingestResult": ingest_result,
             "processResult": processed,
+            "graphReprocessSource": {
+                key: value
+                for key, value in graph_reprocess_source.items()
+                if key not in {"attachments", "sourcePayload"}
+            },
             "graphEmailAction": graph_result,
         }
 
@@ -8098,6 +8203,20 @@ class OrderProcessorApi:
         email["updatedAt"] = utc_now()
         email_doc = self.repository.upsert("emailMessages", email)
         self._upsert_monitor_record_for_email(email_doc, order=order_doc)
+        graph_reprocess_source = self._graph_reprocess_source_for_email(email)
+        source_payload = dict(_pick(graph_reprocess_source, "sourcePayload", "source_payload", default={}) or {})
+        processor_type = re.sub(
+            r"[^a-z0-9]",
+            "",
+            str(_pick(processor_profile, "processorType", "processor_type", default="")).lower(),
+        )
+        if processor_type in {"pdf", "googledocumentai", "googledocumentaipdf"} and not source_payload:
+            return {
+                "status": "failed",
+                "message": "Could not refetch PDF attachment content for force-order processing.",
+                "orderRun": self.repository.get("orderRuns", order_run_id),
+                "graphReprocessSource": graph_reprocess_source,
+            }
         processed = self.process_order(
             order_run_id,
             {
@@ -8111,12 +8230,18 @@ class OrderProcessorApi:
                 "receivedAt": _pick(email, "receivedAt", "received_at", default=utc_now()),
                 "bodyText": _pick(email, "bodyText", "body_text", default=""),
                 "bodyHtml": _pick(email, "bodyHtml", "body_html", default=""),
-                "attachments": list(_as_list(_pick(email, "attachments", default=[]))),
+                "attachments": list(_as_list(_pick(graph_reprocess_source, "attachments", default=_pick(email, "attachments", default=[])))),
                 "sourceMetadata": {
                     "provider": "exceptionResolution",
                     "manualOverride": True,
                     "emailMessageId": _pick(email, "id", default=""),
+                    "graphReprocessSource": {
+                        key: value
+                        for key, value in graph_reprocess_source.items()
+                        if key not in {"attachments", "sourcePayload"}
+                    },
                 },
+                **source_payload,
             },
         )
         return {"status": "forcedOrder", "orderRun": self.repository.get("orderRuns", order_run_id), "processResult": processed}
