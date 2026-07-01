@@ -1733,6 +1733,46 @@ class ConsoleBackendTests(unittest.TestCase):
         self.assertEqual(resolved["exceptionTask"]["status"], "resolved")
         self.assertEqual(reprocess["orderRun"]["status"], "received")
 
+    def test_console_prepare_async_exception_resolution_authorizes_without_resolving(self) -> None:
+        api, repo, _ = self._api()
+        headers = {"x-ms-client-principal": _easy_auth_header("connect@focuseautomate.com")}
+        repo.upsert(
+            "emailMessages",
+            to_dict(
+                EmailMessage(
+                    id="email-async-1",
+                    tenant_id="altitude",
+                    message_id="graph-message-1",
+                    mailbox="orders@example.com",
+                    sender="buyer@example.com",
+                    subject="PO 123",
+                    received_at=utc_now(),
+                )
+            ),
+        )
+        task = api._create_exception(
+            tenant_id="altitude",
+            task_type="parserFailure",
+            prompt="Review parser failure.",
+            email_message_id="email-async-1",
+        )
+
+        prepared = api.console_prepare_async_exception_resolution(
+            task["id"],
+            {
+                "tenantId": "altitude",
+                "headers": headers,
+                "resolution": {"action": "emailReprocess"},
+            },
+        )
+
+        self.assertTrue(prepared["queued"])
+        self.assertEqual(repo.get("exceptionTasks", task["id"])["status"], "open")
+        self.assertEqual(
+            repo.query_by_tenant("auditEvents", "altitude")[-1]["eventType"],
+            "exception.resolutionQueued",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

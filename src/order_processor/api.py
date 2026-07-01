@@ -3906,6 +3906,7 @@ class OrderProcessorApi:
             )
         )
         order.source_metadata["stageCategoryResults"] = stage_category_results
+        self._persist_order_processing_checkpoint(order)
         if self._is_webhook_processor(processor_profile, payload):
             order_doc = self._process_webhook_order(order, payload, processor_profile, observability)
             self._record_order_processor_cost_event(order_doc, payload, processor_profile, observability)
@@ -7269,6 +7270,42 @@ class OrderProcessorApi:
         result["session"] = session
         return result
 
+    def console_prepare_async_exception_resolution(self, exception_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        session = self.console_session(payload)
+        if not session.get("authorized"):
+            return {"session": session}
+        if "resolveExceptions" not in set(_as_list(session.get("permissions", []))):
+            return {"session": session, "error": "forbidden", "message": "User cannot resolve exceptions."}
+
+        task = self.repository.get("exceptionTasks", exception_id)
+        if task is None:
+            return {"session": session, "error": "notFound", "message": f"Exception task {exception_id} was not found."}
+        if not self._session_can_access_customer(session, self._exception_customer_id(task)):
+            return {"session": session, "error": "forbidden", "message": "Exception is outside this user's assignments."}
+
+        resolution = dict(_pick(payload, "resolution", default=payload) or {})
+        if not self._exception_resolution_should_queue(task, resolution):
+            return {"session": session, "queued": False, "exceptionTask": task}
+
+        self._audit(
+            _pick(task, "tenantId", "tenant_id", default="default"),
+            "exception.resolutionQueued",
+            correlation_context(payload, exception_id)["correlationId"],
+            exception_id,
+            {
+                "exceptionTaskId": exception_id,
+                "type": _pick(task, "type", default=""),
+                "orderRunId": _pick(task, "orderRunId", "order_run_id", default=None),
+                "emailMessageId": _pick(task, "emailMessageId", "email_message_id", default=None),
+                "resolution": resolution,
+            },
+            customer_id=self._exception_customer_id(task),
+            order_run_id=_pick(task, "orderRunId", "order_run_id", default=None),
+            email_message_id=_pick(task, "emailMessageId", "email_message_id", default=None),
+            actor=self._actor_from_payload(payload),
+        )
+        return {"session": session, "queued": True, "exceptionTask": task}
+
     def console_clear_active_processing_run(self, run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         session = self.console_session(payload)
         if not session.get("authorized"):
@@ -7931,6 +7968,22 @@ class OrderProcessorApi:
                     return {"reprocess": self.reprocess_order(order_run_id, {"source": "exceptionResolution"})}
             return {"status": "triaged"}
         return {"status": "recorded"}
+
+    def _exception_resolution_should_queue(self, task: dict[str, Any], resolution: dict[str, Any]) -> bool:
+        action = str(_pick(resolution, "action", "resolutionAction", "resolution_action", default="") or "").strip()
+        if action in {
+            "emailReprocess",
+            "reprocessEmail",
+            "forceOrder",
+            "forceOrderProcessor",
+            "orderReprocess",
+            "reprocessOrder",
+        }:
+            return True
+        task_type = str(_pick(task, "type", default="") or "")
+        if task_type in {"parserFailure", "outputGeneration"}:
+            return bool(_pick(resolution, "reprocess", "reprocessOrder", "rerun", default=False))
+        return False
 
     def _apply_disregard_resolution(self, task: dict[str, Any], resolution: dict[str, Any]) -> dict[str, Any]:
         now = utc_now()
@@ -9335,6 +9388,10 @@ def console_assign_customer_user(customer_id: str, payload: dict[str, Any]) -> d
 
 def console_resolve_exception(exception_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     return default_api.console_resolve_exception(exception_id, payload)
+
+
+def console_prepare_async_exception_resolution(exception_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return default_api.console_prepare_async_exception_resolution(exception_id, payload)
 
 
 def console_clear_active_processing_run(run_id: str, payload: dict[str, Any]) -> dict[str, Any]:

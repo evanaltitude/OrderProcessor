@@ -29,6 +29,7 @@ from order_processor import api as order_api  # noqa: E402
 
 ITEM_IMPORT_TYPE = "items"
 DEFAULT_ITEM_IMPORT_JOB_CHUNK_SIZE = 50
+ORDER_REPROCESS_QUEUE_NAME = os.environ.get("ORDER_PROCESSOR_REPROCESS_JOB_QUEUE", "order-reprocess-jobs")
 
 for logger_name in ("azure", "azure.core.pipeline.policies.http_logging_policy"):
     logging.getLogger(logger_name).setLevel(logging.WARNING)
@@ -231,6 +232,7 @@ def _queue_account_url() -> str:
 
 def _enqueue_storage_queue_message(queue_name: str, message: str) -> None:
     from azure.identity import DefaultAzureCredential
+    from azure.core.exceptions import ResourceExistsError
     from azure.storage.queue import QueueClient, TextBase64EncodePolicy
 
     client = QueueClient(
@@ -242,6 +244,10 @@ def _enqueue_storage_queue_message(queue_name: str, message: str) -> None:
         connection_timeout=2,
         read_timeout=5,
     )
+    try:
+        client.create_queue(timeout=5)
+    except ResourceExistsError:
+        pass
     client.send_message(message, timeout=5)
 
 
@@ -314,6 +320,36 @@ def _handle_import_request(req: Any, import_type: str, queued: Any, callback: An
             "chunkSize": _import_job_chunk_size(import_type) if len(jobs) > 1 else 0,
             "receivedAt": first_job["receivedAt"],
             "message": "Import payload was accepted and queued for background processing.",
+        },
+        status_code=202,
+    )
+
+
+def _handle_console_exception_resolution(req: Any, exception_id: str) -> Any:
+    unauthorized = _shared_key_response(req)
+    if unauthorized is not None:
+        return unauthorized
+
+    payload = _payload_with_headers(req)
+    prepared = order_api.console_prepare_async_exception_resolution(exception_id, payload)
+    if prepared.get("error") or not prepared.get("queued"):
+        return _response(order_api.console_resolve_exception(exception_id, payload))
+
+    job = {
+        "kind": "consoleExceptionResolution",
+        "exceptionId": exception_id,
+        "payload": payload,
+        "acceptedAt": datetime.now(UTC).isoformat(),
+    }
+    _enqueue_storage_queue_message(ORDER_REPROCESS_QUEUE_NAME, json.dumps(job, separators=(",", ":")))
+    return _response(
+        {
+            **prepared,
+            "accepted": True,
+            "queued": True,
+            "status": "queued",
+            "queueName": ORDER_REPROCESS_QUEUE_NAME,
+            "message": "Exception resolution was accepted and queued for background processing.",
         },
         status_code=202,
     )
@@ -456,6 +492,23 @@ if func is not None:
             return
         raise ValueError(f"Unknown import job type: {import_type}")
 
+    @app.queue_trigger(
+        arg_name="msg",
+        queue_name=ORDER_REPROCESS_QUEUE_NAME,
+        connection="AzureWebJobsStorage",
+    )
+    def order_reprocess_jobs_queue(msg: func.QueueMessage) -> None:
+        job = json.loads(msg.get_body().decode("utf-8"))
+        kind = str(job.get("kind") or "").strip()
+        if kind == "consoleExceptionResolution":
+            exception_id = str(job.get("exceptionId") or "").strip()
+            payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
+            if not exception_id:
+                raise ValueError("Queued exception resolution did not include exceptionId.")
+            order_api.resolve_exception(exception_id, payload)
+            return
+        raise ValueError(f"Unknown order reprocess job type: {kind}")
+
     @app.timer_trigger(
         arg_name="timer",
         schedule="%ORDER_PROCESSOR_GRAPH_SUBSCRIPTION_RENEWAL_CRON%",
@@ -549,7 +602,7 @@ if func is not None:
 
     @app.route(route="console/exceptions/{id}/resolve", methods=["POST"])
     def console_exceptions_resolve(req: func.HttpRequest) -> func.HttpResponse:
-        return _handle(req, lambda: order_api.console_resolve_exception(req.route_params["id"], _payload_with_headers(req)))
+        return _handle_console_exception_resolution(req, req.route_params["id"])
 
     @app.route(route="console/monitor/active/{id}/clear", methods=["POST"])
     def console_monitor_active_clear(req: func.HttpRequest) -> func.HttpResponse:
