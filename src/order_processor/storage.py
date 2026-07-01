@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 import os
+import time
 from typing import Any
 
 from .data_model import (
@@ -159,6 +160,20 @@ class CosmosRepository:
             raise ValueError(f"Unknown Cosmos container: {container}")
         return self.database.get_container_client(container)
 
+    def _query_items(self, container: str, **kwargs: Any) -> list[dict[str, Any]]:
+        last_error: RuntimeError | None = None
+        for attempt in range(3):
+            try:
+                return list(self._container(container).query_items(**kwargs))
+            except RuntimeError as exc:
+                if "OrderedDict mutated during iteration" not in str(exc):
+                    raise
+                last_error = exc
+                time.sleep(0.05 * (attempt + 1))
+        if last_error is not None:
+            raise last_error
+        return []
+
     def upsert(self, container: str, document: dict[str, Any]) -> dict[str, Any]:
         normalized = normalize_document_for_storage(container, document)
         self._container(container).upsert_item(normalized)
@@ -166,12 +181,11 @@ class CosmosRepository:
 
     def get(self, container: str, document_id: str) -> dict[str, Any] | None:
         query = "SELECT * FROM c WHERE c.id = @id"
-        results = list(
-            self._container(container).query_items(
-                query=query,
-                parameters=[{"name": "@id", "value": document_id}],
-                enable_cross_partition_query=True,
-            )
+        results = self._query_items(
+            container,
+            query=query,
+            parameters=[{"name": "@id", "value": document_id}],
+            enable_cross_partition_query=True,
         )
         return results[0] if results else None
 
@@ -183,16 +197,15 @@ class CosmosRepository:
         return True
 
     def list(self, container: str) -> list[dict[str, Any]]:
-        return list(self._container(container).query_items(query="SELECT * FROM c", enable_cross_partition_query=True))
+        return self._query_items(container, query="SELECT * FROM c", enable_cross_partition_query=True)
 
     def query_by_tenant(self, container: str, tenant_id: str) -> list[dict[str, Any]]:
         query = "SELECT * FROM c WHERE c.tenantId = @tenantId"
-        return list(
-            self._container(container).query_items(
-                query=query,
-                parameters=[{"name": "@tenantId", "value": tenant_id}],
-                enable_cross_partition_query=True,
-            )
+        return self._query_items(
+            container,
+            query=query,
+            parameters=[{"name": "@tenantId", "value": tenant_id}],
+            enable_cross_partition_query=True,
         )
 
     def query_by_tenant_fields(self, container: str, tenant_id: str, fields: list[str]) -> list[dict[str, Any]]:
@@ -206,12 +219,11 @@ class CosmosRepository:
             return self.query_by_tenant(container, tenant_id)
         projection = ", ".join(f'"{field}": c.{field}' for field in selected_fields)
         query = f"SELECT VALUE {{{projection}}} FROM c WHERE c.tenantId = @tenantId"
-        return list(
-            self._container(container).query_items(
-                query=query,
-                parameters=[{"name": "@tenantId", "value": tenant_id}],
-                enable_cross_partition_query=True,
-            )
+        return self._query_items(
+            container,
+            query=query,
+            parameters=[{"name": "@tenantId", "value": tenant_id}],
+            enable_cross_partition_query=True,
         )
 
     def query_by_tenant_page(
@@ -273,48 +285,44 @@ class CosmosRepository:
             f"ORDER BY c.{order_field} {direction} OFFSET {safe_offset} LIMIT {safe_limit}"
         )
         count_query = f"SELECT VALUE COUNT(1) FROM c WHERE {where_clause}"
-        items = list(
-            self._container(container).query_items(
-                query=query,
-                parameters=parameters,
-                enable_cross_partition_query=True,
-            )
+        items = self._query_items(
+            container,
+            query=query,
+            parameters=parameters,
+            enable_cross_partition_query=True,
         )
-        counts = list(
-            self._container(container).query_items(
-                query=count_query,
-                parameters=parameters,
-                enable_cross_partition_query=True,
-            )
+        counts = self._query_items(
+            container,
+            query=count_query,
+            parameters=parameters,
+            enable_cross_partition_query=True,
         )
         return {"items": items, "total": int(counts[0] if counts else 0), "limit": safe_limit, "offset": safe_offset}
 
     def query_by_tenant_stats(self, container: str, tenant_id: str, date_field: str = "lastImportedAt") -> dict[str, Any]:
         field = date_field if _safe_cosmos_path(date_field) else "lastImportedAt"
         parameters = [{"name": "@tenantId", "value": tenant_id}]
-        count_rows = list(
-            self._container(container).query_items(
-                query="SELECT VALUE COUNT(1) FROM c WHERE c.tenantId = @tenantId",
-                parameters=parameters,
-                enable_cross_partition_query=True,
-            )
+        count_rows = self._query_items(
+            container,
+            query="SELECT VALUE COUNT(1) FROM c WHERE c.tenantId = @tenantId",
+            parameters=parameters,
+            enable_cross_partition_query=True,
         )
 
         def max_date(path: str) -> str:
             if not _safe_cosmos_path(path):
                 return ""
-            rows = list(
-                self._container(container).query_items(
-                    query=(
-                        f"SELECT VALUE MAX(c.{path}) FROM c "
-                        f"WHERE c.tenantId = @tenantId "
-                        f"AND IS_DEFINED(c.{path}) "
-                        f"AND NOT IS_NULL(c.{path}) "
-                        f"AND c.{path} != ''"
-                    ),
-                    parameters=parameters,
-                    enable_cross_partition_query=True,
-                )
+            rows = self._query_items(
+                container,
+                query=(
+                    f"SELECT VALUE MAX(c.{path}) FROM c "
+                    f"WHERE c.tenantId = @tenantId "
+                    f"AND IS_DEFINED(c.{path}) "
+                    f"AND NOT IS_NULL(c.{path}) "
+                    f"AND c.{path} != ''"
+                ),
+                parameters=parameters,
+                enable_cross_partition_query=True,
             )
             return str(rows[0] or "") if rows else ""
 
@@ -336,15 +344,14 @@ class CosmosRepository:
 
     def query_by_customer(self, container: str, tenant_id: str, customer_id: str) -> list[dict[str, Any]]:
         query = "SELECT * FROM c WHERE c.tenantId = @tenantId AND c.customerId = @customerId"
-        return list(
-            self._container(container).query_items(
-                query=query,
-                parameters=[
-                    {"name": "@tenantId", "value": tenant_id},
-                    {"name": "@customerId", "value": customer_id},
-                ],
-                enable_cross_partition_query=True,
-            )
+        return self._query_items(
+            container,
+            query=query,
+            parameters=[
+                {"name": "@tenantId", "value": tenant_id},
+                {"name": "@customerId", "value": customer_id},
+            ],
+            enable_cross_partition_query=True,
         )
 
     def partition_key_for(self, container: str, document: dict[str, Any]) -> str | list[str]:
@@ -365,15 +372,14 @@ class CosmosRepository:
             "FROM c WHERE c.tenantId = @tenantId AND IS_DEFINED(c.embedding) "
             "ORDER BY VectorDistance(c.embedding, @embedding)"
         )
-        rows = list(
-            self._container("customers").query_items(
-                query=query,
-                parameters=[
-                    {"name": "@tenantId", "value": tenant_id},
-                    {"name": "@embedding", "value": embedding},
-                ],
-                enable_cross_partition_query=True,
-            )
+        rows = self._query_items(
+            "customers",
+            query=query,
+            parameters=[
+                {"name": "@tenantId", "value": tenant_id},
+                {"name": "@embedding", "value": embedding},
+            ],
+            enable_cross_partition_query=True,
         )
         results: list[dict[str, Any]] = []
         for row in rows:
