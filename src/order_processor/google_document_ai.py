@@ -9,6 +9,7 @@ import re
 from typing import Any, Protocol
 from urllib import request as urlrequest
 
+from .data_model import CONTAINER_NAMES
 from .models import OrderLine
 
 
@@ -118,20 +119,11 @@ def google_document_ai_jwt_from_repository(
         or os.environ.get("GOOGLE_DOCUMENT_AI_AUTH_DOCUMENT_ID")
         or DEFAULT_GOOGLE_AUTH_DOCUMENT_ID
     )
-    containers = [
-        str(
-            settings.get("googleAuthContainer")
-            or settings.get("thirdPartyServiceAuthContainer")
-            or os.environ.get("GOOGLE_DOCUMENT_AI_AUTH_CONTAINER")
-            or "tenants"
-        )
-    ]
-    for fallback in ("tenants", "aiCostSources"):
-        if fallback not in containers:
-            containers.append(fallback)
+    containers = _candidate_auth_containers(repository, settings)
+    candidate_ids = _candidate_auth_document_ids(document_id, tenant_id)
 
     for container in containers:
-        for candidate_id in (document_id, "google"):
+        for candidate_id in candidate_ids:
             document = _repository_get(repository, container, candidate_id)
             jwt = _jwt_from_auth_document(document)
             if jwt:
@@ -261,18 +253,85 @@ def _repository_get(repository: Any, container: str, document_id: str) -> dict[s
     return document if isinstance(document, dict) else None
 
 
+def _candidate_auth_containers(repository: Any, settings: dict[str, Any]) -> list[str]:
+    configured = str(
+        settings.get("googleAuthContainer")
+        or settings.get("thirdPartyServiceAuthContainer")
+        or os.environ.get("GOOGLE_DOCUMENT_AI_AUTH_CONTAINER")
+        or "tenants"
+    ).strip()
+    containers: list[str] = []
+    for name in (configured, "tenants", "aiCostSources", *CONTAINER_NAMES, *_cosmos_container_names(repository)):
+        if name and name not in containers:
+            containers.append(name)
+    return containers
+
+
+def _candidate_auth_document_ids(document_id: str, tenant_id: str) -> list[str]:
+    ids: list[str] = []
+    for value in (document_id, "google", tenant_id):
+        candidate = str(value or "").strip()
+        if candidate and candidate not in ids:
+            ids.append(candidate)
+    return ids
+
+
+def _cosmos_container_names(repository: Any) -> list[str]:
+    database = getattr(repository, "database", None)
+    if database is None:
+        return []
+    try:
+        containers = database.list_containers()
+    except Exception:
+        return []
+    names: list[str] = []
+    for item in containers:
+        name = ""
+        if isinstance(item, dict):
+            name = str(item.get("id") or item.get("name") or "").strip()
+        else:
+            name = str(getattr(item, "id", "") or getattr(item, "name", "") or "").strip()
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
 def _jwt_from_auth_document(document: dict[str, Any] | None) -> str:
     if not isinstance(document, dict):
         return ""
     authentications = document.get("authentications")
     if isinstance(authentications, list):
         for item in authentications:
-            if not isinstance(item, dict):
-                continue
-            if str(item.get("id") or "").lower() == "google" and str(item.get("serviceId") or item.get("service_id") or "").lower() == "google":
-                return str(item.get("jwt") or "").strip()
+            jwt = _jwt_from_auth_item(item)
+            if jwt:
+                return jwt
+    if isinstance(authentications, dict):
+        for key, item in authentications.items():
+            if isinstance(item, dict):
+                candidate = dict(item)
+                candidate.setdefault("id", key)
+            else:
+                candidate = {"id": key, "serviceId": key, "jwt": item}
+            jwt = _jwt_from_auth_item(candidate)
+            if jwt:
+                return jwt
+    settings = document.get("settings")
+    if isinstance(settings, dict):
+        jwt = _jwt_from_auth_document(settings)
+        if jwt:
+            return jwt
     if str(document.get("id") or "").lower() == "google" and str(document.get("serviceId") or document.get("service_id") or "").lower() == "google":
         return str(document.get("jwt") or "").strip()
+    return ""
+
+
+def _jwt_from_auth_item(item: Any) -> str:
+    if not isinstance(item, dict):
+        return ""
+    item_id = str(item.get("id") or "").lower()
+    service_id = str(item.get("serviceId") or item.get("service_id") or "").lower()
+    if item_id == "google" and service_id == "google":
+        return str(item.get("jwt") or "").strip()
     return ""
 
 

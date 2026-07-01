@@ -235,6 +235,46 @@ class OrderProcessingEngineTests(unittest.TestCase):
 
         self.assertEqual(jwt, "direct-google-jwt")
 
+    def test_google_document_ai_jwt_can_come_from_tenant_settings_authentication_map(self) -> None:
+        repo = InMemoryRepository()
+        repo.upsert(
+            "tenants",
+            {
+                "id": "altitude",
+                "settings": {
+                    "authentications": {
+                        "google": {
+                            "serviceId": "google",
+                            "jwt": "tenant-settings-google-jwt",
+                        }
+                    }
+                },
+            },
+        )
+
+        jwt = google_document_ai_jwt_from_repository(repo, "altitude", {})
+
+        self.assertEqual(jwt, "tenant-settings-google-jwt")
+
+    def test_google_document_ai_jwt_scans_live_cosmos_containers_for_auth_document(self) -> None:
+        repo = _FakeCosmosAuthRepository(
+            {
+                "serviceAuthentications": [
+                    {
+                        "id": "third-party-service-authentication",
+                        "authentications": [
+                            {"id": "microsoft", "serviceId": "microsoft", "jwt": "ignored"},
+                            {"id": "google", "serviceId": "google", "jwt": "cosmos-google-jwt"},
+                        ],
+                    }
+                ]
+            }
+        )
+
+        jwt = google_document_ai_jwt_from_repository(repo, "altitude", {})
+
+        self.assertEqual(jwt, "cosmos-google-jwt")
+
 
     def test_process_order_uses_processor_profile_and_generates_xlsx_output_when_requested(self) -> None:
         repo = InMemoryRepository()
@@ -341,6 +381,41 @@ class OrderProcessingEngineTests(unittest.TestCase):
         with zipfile.ZipFile(io.BytesIO(workbook)) as archive:
             self.assertIn("xl/worksheets/sheet1.xml", archive.namelist())
             self.assertIn(b"provided_item_number", archive.read("xl/worksheets/sheet1.xml"))
+
+
+class _FakeCosmosAuthRepository:
+    def __init__(self, documents_by_container: dict[str, list[dict]]) -> None:
+        self.database = _FakeCosmosDatabase(documents_by_container)
+
+    def get(self, container: str, document_id: str) -> None:
+        raise ValueError(f"Unknown Cosmos container: {container}")
+
+
+class _FakeCosmosDatabase:
+    def __init__(self, documents_by_container: dict[str, list[dict]]) -> None:
+        self.documents_by_container = documents_by_container
+
+    def list_containers(self) -> list[dict[str, str]]:
+        return [{"id": name} for name in self.documents_by_container]
+
+    def get_container_client(self, name: str) -> "_FakeCosmosContainer":
+        return _FakeCosmosContainer(self.documents_by_container.get(name, []))
+
+
+class _FakeCosmosContainer:
+    def __init__(self, documents: list[dict]) -> None:
+        self.documents = documents
+
+    def query_items(
+        self,
+        *,
+        query: str,
+        parameters: list[dict[str, str]],
+        enable_cross_partition_query: bool,
+    ) -> list[dict]:
+        document_id = next((item["value"] for item in parameters if item.get("name") == "@id"), "")
+        return [item for item in self.documents if item.get("id") == document_id]
+
 
 def _xlsx_bytes(rows: list[list[str]]) -> bytes:
     sheet_rows = []
