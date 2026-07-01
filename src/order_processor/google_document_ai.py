@@ -128,6 +128,9 @@ def google_document_ai_jwt_from_repository(
             jwt = _jwt_from_auth_document(document)
             if jwt:
                 return jwt
+    jwt = _jwt_from_external_auth_cosmos(settings, document_id)
+    if jwt:
+        return jwt
 
     raise ValueError(
         "Google Document AI JWT was not found. Expected a third-party-service-authentication document "
@@ -322,6 +325,66 @@ def _jwt_from_auth_document(document: dict[str, Any] | None) -> str:
             return jwt
     if str(document.get("id") or "").lower() == "google" and str(document.get("serviceId") or document.get("service_id") or "").lower() == "google":
         return str(document.get("jwt") or "").strip()
+    return ""
+
+
+def _jwt_from_external_auth_cosmos(settings: dict[str, Any], document_id: str) -> str:
+    endpoint = str(
+        settings.get("googleAuthCosmosEndpoint")
+        or settings.get("thirdPartyServiceAuthCosmosEndpoint")
+        or os.environ.get("GOOGLE_DOCUMENT_AI_AUTH_COSMOS_ENDPOINT")
+        or ""
+    ).strip()
+    if not endpoint:
+        return ""
+    database_name = str(
+        settings.get("googleAuthCosmosDatabase")
+        or settings.get("thirdPartyServiceAuthCosmosDatabase")
+        or os.environ.get("GOOGLE_DOCUMENT_AI_AUTH_COSMOS_DATABASE")
+        or "third-party-authentications"
+    ).strip()
+    container_name = str(
+        settings.get("googleAuthCosmosContainer")
+        or settings.get("thirdPartyServiceAuthCosmosContainer")
+        or os.environ.get("GOOGLE_DOCUMENT_AI_AUTH_COSMOS_CONTAINER")
+        or "authentications"
+    ).strip()
+    if not database_name or not container_name:
+        return ""
+    try:
+        from azure.cosmos import CosmosClient
+        from azure.identity import DefaultAzureCredential
+    except ModuleNotFoundError:
+        return ""
+
+    credential: Any = DefaultAzureCredential()
+    key = str(
+        settings.get("googleAuthCosmosKey")
+        or settings.get("thirdPartyServiceAuthCosmosKey")
+        or os.environ.get("GOOGLE_DOCUMENT_AI_AUTH_COSMOS_KEY")
+        or ""
+    ).strip()
+    if key:
+        credential = key
+    try:
+        container = CosmosClient(endpoint, credential=credential).get_database_client(database_name).get_container_client(container_name)
+        for candidate_id in ("google", document_id):
+            rows = list(
+                container.query_items(
+                    query="SELECT * FROM c WHERE c.id = @id OR c.serviceId = @serviceId OR c.service_id = @serviceId",
+                    parameters=[
+                        {"name": "@id", "value": candidate_id},
+                        {"name": "@serviceId", "value": "google"},
+                    ],
+                    enable_cross_partition_query=True,
+                )
+            )
+            for row in rows:
+                jwt = _jwt_from_auth_document(row if isinstance(row, dict) else None)
+                if jwt:
+                    return jwt
+    except Exception:
+        return ""
     return ""
 
 

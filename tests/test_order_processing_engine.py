@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import io
 import sys
+import types
 import unittest
 import zipfile
 from pathlib import Path
@@ -275,6 +276,29 @@ class OrderProcessingEngineTests(unittest.TestCase):
 
         self.assertEqual(jwt, "cosmos-google-jwt")
 
+    def test_google_document_ai_jwt_can_come_from_external_auth_cosmos(self) -> None:
+        original_cosmos = sys.modules.get("azure.cosmos")
+        original_identity = sys.modules.get("azure.identity")
+        sys.modules["azure.cosmos"] = types.SimpleNamespace(CosmosClient=_FakeExternalAuthCosmosClient)
+        sys.modules["azure.identity"] = types.SimpleNamespace(DefaultAzureCredential=lambda: "credential")
+        try:
+            jwt = google_document_ai_jwt_from_repository(
+                None,
+                "altitude",
+                {"googleAuthCosmosEndpoint": "https://auth.example.com:443/"},
+            )
+        finally:
+            if original_cosmos is None:
+                sys.modules.pop("azure.cosmos", None)
+            else:
+                sys.modules["azure.cosmos"] = original_cosmos
+            if original_identity is None:
+                sys.modules.pop("azure.identity", None)
+            else:
+                sys.modules["azure.identity"] = original_identity
+
+        self.assertEqual(jwt, "external-google-jwt")
+
 
     def test_process_order_uses_processor_profile_and_generates_xlsx_output_when_requested(self) -> None:
         repo = InMemoryRepository()
@@ -415,6 +439,31 @@ class _FakeCosmosContainer:
     ) -> list[dict]:
         document_id = next((item["value"] for item in parameters if item.get("name") == "@id"), "")
         return [item for item in self.documents if item.get("id") == document_id]
+
+
+class _FakeExternalAuthCosmosClient:
+    def __init__(self, endpoint: str, credential: object) -> None:
+        self.endpoint = endpoint
+        self.credential = credential
+
+    def get_database_client(self, name: str) -> "_FakeExternalAuthDatabase":
+        return _FakeExternalAuthDatabase()
+
+
+class _FakeExternalAuthDatabase:
+    def get_container_client(self, name: str) -> "_FakeExternalAuthContainer":
+        return _FakeExternalAuthContainer()
+
+
+class _FakeExternalAuthContainer:
+    def query_items(
+        self,
+        *,
+        query: str,
+        parameters: list[dict[str, str]],
+        enable_cross_partition_query: bool,
+    ) -> list[dict]:
+        return [{"id": "google", "serviceId": "google", "jwt": "external-google-jwt"}]
 
 
 def _xlsx_bytes(rows: list[list[str]]) -> bytes:
