@@ -147,7 +147,8 @@ foreach ($timer in $timers) {
 
 $queueTriggers = @(
     @{ Name = "graph_notifications_queue"; EntryPoint = "graph_notifications_queue"; QueueName = "%ORDER_PROCESSOR_GRAPH_NOTIFICATION_QUEUE%" },
-    @{ Name = "import_jobs_queue"; EntryPoint = "import_jobs_queue"; QueueName = "%ORDER_PROCESSOR_IMPORT_JOB_QUEUE%" }
+    @{ Name = "import_jobs_queue"; EntryPoint = "import_jobs_queue"; QueueName = "%ORDER_PROCESSOR_IMPORT_JOB_QUEUE%" },
+    @{ Name = "order_reprocess_jobs_queue"; EntryPoint = "order_reprocess_jobs_queue"; QueueName = "%ORDER_PROCESSOR_REPROCESS_JOB_QUEUE%" }
 )
 
 foreach ($queueTrigger in $queueTriggers) {
