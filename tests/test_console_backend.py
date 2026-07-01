@@ -473,6 +473,8 @@ class ConsoleBackendTests(unittest.TestCase):
             prompt="Resolve customer",
             email_message_id="email-1",
         )
+        api._upsert_monitor_record_for_exception(task)
+        self.assertEqual(repo.get("monitorRecords", task["id"])["section"], "exceptions")
 
         result = api.resolve_exception(
             task["id"],
@@ -488,8 +490,12 @@ class ConsoleBackendTests(unittest.TestCase):
         self.assertEqual(result["resolutionResult"]["status"], "manualOverride")
         self.assertTrue(result["resolutionResult"]["manualOverride"])
         self.assertEqual(stored_task["status"], "resolved")
+        self.assertIn("resolvedAt", stored_task)
+        self.assertIn("updatedAt", stored_task)
         self.assertEqual(stored_email["status"], ProcessingStatus.COMPLETED.value)
         self.assertEqual(stored_email["source"]["manualOverride"]["notes"], "Handled manually")
+        self.assertIsNone(repo.get("monitorRecords", task["id"]))
+        self.assertEqual(repo.get("monitorRecords", "email-1")["section"], "nonOrderEmails")
 
     def test_console_microsoft_auth_start_requires_configuration(self) -> None:
         api, _, _ = self._api()

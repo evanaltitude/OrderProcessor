@@ -7685,13 +7685,17 @@ class OrderProcessorApi:
         resolution.setdefault("actor", self._actor_from_payload(payload))
         resolution_result = self._apply_exception_resolution(existing, resolution)
         resolution_status = str(_pick(resolution_result, "status", default="resolved") or "resolved")
+        now = utc_now()
         existing["status"] = (
             ExceptionStatus.OPEN.value if resolution_status in {"notFound", "invalid", "failed", "updated"} else ExceptionStatus.RESOLVED.value
         )
         existing["resolution"] = resolution
         existing["resolvedBy"] = self._actor_from_payload(payload)
+        existing["updatedAt"] = now
         if existing["status"] == ExceptionStatus.RESOLVED.value:
-            existing["resolved_at"] = utc_now()
+            existing["resolved_at"] = now
+            existing["resolvedAt"] = now
+            self.repository.delete("monitorRecords", exception_id)
         stored = self.repository.upsert("exceptionTasks", existing)
         self._upsert_monitor_record_for_exception(stored)
         event_type = (

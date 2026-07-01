@@ -2010,6 +2010,18 @@ async function resolveTask(id, type) {
   await refresh();
 }
 
+function removeExceptionFromState(id) {
+  if (!id || !state.dashboard) return;
+  const matches = (task) => [task?.exceptionId, task?.id].filter(Boolean).includes(id);
+  if (state.dashboard.monitor?.exceptions) {
+    state.dashboard.monitor.exceptions = state.dashboard.monitor.exceptions.filter((task) => !matches(task));
+  }
+  if (state.dashboard.exceptionQueue) {
+    state.dashboard.exceptionQueue = state.dashboard.exceptionQueue.filter((task) => !matches(task));
+  }
+  renderExceptions();
+}
+
 async function resolveExceptionForm(form) {
   const id = form.dataset.exceptionId;
   const type = form.dataset.exceptionType;
@@ -2047,6 +2059,11 @@ async function resolveExceptionForm(form) {
   }
   const result = await post(`/console/exceptions/${id}/resolve`, { resolution });
   showDetails(result);
+  const storedStatus = result?.exceptionTask?.status || "";
+  const resultStatus = result?.resolutionResult?.status || "";
+  if (!actionFailed(result) && storedStatus === "resolved" && !["updated", "invalid", "failed", "notFound"].includes(resultStatus)) {
+    removeExceptionFromState(id);
+  }
   await refresh();
 }
 
