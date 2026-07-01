@@ -282,6 +282,10 @@ ROUTE_NUMBER_PATTERNS = [
     re.compile(r"\broute\s*[:#-]?\s*([A-Z0-9-]{1,})\b", re.I),
 ]
 
+LOCATION_LABEL_PATTERNS = [
+    re.compile(r"\b(?:ship\s*to|ship-to|delivery|deliver\s*to|location)\b", re.I),
+]
+
 ALIAS_CODE_TYPES = {"customercode", "customer_code", "code", "accountnumber", "account_number"}
 ALIAS_STORE_TYPES = {"storenumber", "store_number", "store", "location", "locationnumber", "location_number"}
 ALIAS_ROUTE_TYPES = {"routenumber", "route_number", "route"}
@@ -458,6 +462,91 @@ def _known_file_name_patterns(customer: CustomerProfile, aliases: list[CustomerA
     return [value for value in values if value]
 
 
+def _normalized_location_text(value: str) -> str:
+    text = re.sub(r"[^A-Z0-9]+", " ", (value or "").upper())
+    replacements = {
+        " STREET ": " ST ",
+        " ROAD ": " RD ",
+        " AVENUE ": " AVE ",
+        " BOULEVARD ": " BLVD ",
+        " DRIVE ": " DR ",
+        " LANE ": " LN ",
+        " HIGHWAY ": " HWY ",
+        " PARKWAY ": " PKWY ",
+        " NORTH ": " N ",
+        " SOUTH ": " S ",
+        " EAST ": " E ",
+        " WEST ": " W ",
+    }
+    text = f" {text} "
+    for source, target in replacements.items():
+        text = text.replace(source, target)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _compact_location_text(value: str) -> str:
+    return re.sub(r"[^A-Z0-9]", "", _normalized_location_text(value))
+
+
+def _contains_location_value(haystack: str, needle: str) -> bool:
+    compact_needle = _compact_location_text(needle)
+    if not compact_needle or len(compact_needle) < 3:
+        return False
+    return compact_needle in _compact_location_text(haystack)
+
+
+def _location_candidate(customer: CustomerProfile, text: str) -> DeterministicCandidate | None:
+    if not text:
+        return None
+    has_location_context = any(pattern.search(text) for pattern in LOCATION_LABEL_PATTERNS)
+    address_match = _contains_location_value(text, customer.address1)
+    zip_match = bool(customer.postal_code and re.search(rf"\b{re.escape(customer.postal_code)}\b", text, re.I))
+    city_match = _contains_location_value(text, customer.city)
+    state_match = bool(customer.state and re.search(rf"\b{re.escape(customer.state)}\b", text, re.I))
+    name_match = _contains_location_value(text, customer.name)
+    store_match = bool(customer.store_number and re.search(rf"\b{re.escape(customer.store_number)}\b", text, re.I))
+
+    confidence = 0.0
+    evidence: list[str] = []
+    if address_match:
+        confidence += 0.72
+        evidence.append("address")
+    if zip_match:
+        confidence += 0.18
+        evidence.append("zip")
+    if city_match:
+        confidence += 0.12
+        evidence.append("city")
+    if state_match:
+        confidence += 0.04
+        evidence.append("state")
+    if name_match:
+        confidence += 0.16
+        evidence.append("name")
+    if store_match:
+        confidence += 0.16
+        evidence.append("store")
+    if has_location_context and evidence:
+        confidence += 0.04
+        evidence.append("locationContext")
+
+    if address_match and (zip_match or city_match or name_match):
+        confidence = max(confidence, 0.97)
+    elif store_match and (name_match or city_match or zip_match):
+        confidence = max(confidence, 0.96)
+    elif name_match and city_match and (zip_match or state_match):
+        confidence = max(confidence, 0.9)
+    elif not (address_match or store_match or (name_match and city_match)):
+        return None
+
+    return DeterministicCandidate(
+        customer=customer,
+        match_method="shipToLocation",
+        confidence=min(confidence, 0.99),
+        reason=f"ship-to/delivery location matched {', '.join(evidence)}",
+    )
+
+
 def _candidate_payload(candidate: CustomerProfile, confidence: float, method: str, reason: str) -> dict[str, Any]:
     return {
         "customerId": candidate.id,
@@ -628,6 +717,10 @@ def deterministic_customer_candidates(
                     )
                 )
                 break
+
+        location_candidate = _location_candidate(customer, signals.text)
+        if location_candidate is not None:
+            candidates.append(location_candidate)
 
     return signals, candidates
 

@@ -990,6 +990,11 @@ class ConsoleBackendTests(unittest.TestCase):
                 "name": "Webstore orders",
                 "phase": "webstoreOrder",
                 "outcome": "knownCustomerNonOrder",
+                "filterLogic": "or",
+                "filterConditions": [
+                    {"field": "Subject", "operator": "Starts With", "value": "Hollywood Feed PO#"},
+                    {"field": "Body", "operator": "Contains", "value": "Ship To"},
+                ],
                 "customerCodeSource": "bodyText",
                 "customerCodeRegex": r"Customer:\s*(?P<customerCode>\d+)",
                 "subjectTemplate": "Cust: {customerCode} - {originalSubject}",
@@ -1002,6 +1007,14 @@ class ConsoleBackendTests(unittest.TestCase):
 
         stored = repo.get("routingRules", result["routingRule"]["id"])
         self.assertEqual(stored["phase"], "webstoreOrder")
+        self.assertEqual(stored["filterLogic"], "any")
+        self.assertEqual(
+            stored["filterConditions"],
+            [
+                {"field": "subject", "operator": "startsWith", "value": "Hollywood Feed PO#"},
+                {"field": "body", "operator": "contains", "value": "Ship To"},
+            ],
+        )
         self.assertEqual(stored["customerCodeExtraction"]["source"], "bodyText")
         self.assertEqual(stored["subjectUpdate"]["template"], "Cust: {customerCode} - {originalSubject}")
         self.assertEqual(stored["emailActions"]["moves"]["nonOrder"]["field"], "csrFolder")
@@ -1050,6 +1063,40 @@ class ConsoleBackendTests(unittest.TestCase):
         self.assertNotIn("error", result)
         self.assertTrue(result["routingRule"]["id"])
         self.assertIsNotNone(repo.get("routingRules", result["routingRule"]["id"]))
+
+    def test_console_upsert_profiles_generate_ids_when_console_sends_blank_id(self) -> None:
+        api, repo, _ = self._api()
+        admin_headers = {"x-ms-client-principal": _easy_auth_header("connect@focuseautomate.com")}
+
+        processor_result = api.console_upsert_processor_profile(
+            {
+                "tenantId": "altitude",
+                "headers": admin_headers,
+                "id": "",
+                "customerId": "_global",
+                "name": "Hollywood Feed Email Body",
+                "processorType": "emailBody",
+                "settings": {"baseProcessorType": "emailBody"},
+            }
+        )
+        output_result = api.console_upsert_output_profile(
+            {
+                "tenantId": "altitude",
+                "headers": admin_headers,
+                "id": "",
+                "customerId": "_global",
+                "name": "Universal Order File",
+                "outputType": "universalOrderJson",
+                "settings": {},
+            }
+        )
+
+        self.assertNotIn("error", processor_result)
+        self.assertNotIn("error", output_result)
+        self.assertTrue(processor_result["processorProfile"]["id"])
+        self.assertTrue(output_result["outputProfile"]["id"])
+        self.assertIsNotNone(repo.get("processorProfiles", processor_result["processorProfile"]["id"]))
+        self.assertIsNotNone(repo.get("outputProfiles", output_result["outputProfile"]["id"]))
 
     def test_console_upsert_routing_rule_returns_validation_error_for_bad_regex(self) -> None:
         api, repo, _ = self._api()

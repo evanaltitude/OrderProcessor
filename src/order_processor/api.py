@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 import json
 import os
@@ -81,6 +82,7 @@ from .microsoft_graph import (
     client_credentials_access_token,
     config_from_environment,
     exchange_authorization_code,
+    graph_delete,
     graph_get,
     graph_patch,
     graph_post,
@@ -107,12 +109,33 @@ from .output_generation import (
     output_artifact_store_from_environment,
 )
 from .routing import default_order_signal, rule_matches
+from .email_body_processing import extract_email_body_order as _extract_email_body_order
+from .google_document_ai import (
+    DocumentAiClient,
+    GoogleDocumentAiClient,
+    extract_order_from_google_document_ai_response as _extract_google_document_ai_order,
+)
+from .spreadsheet_processing import (
+    analyze_spreadsheet_layout,
+    extract_order_lines as _extract_spreadsheet_order_lines,
+    normalize_spreadsheet as _normalize_spreadsheet_payload,
+)
 from .storage import InMemoryRepository, repository_from_environment
 
 
 BOOTSTRAP_CONSOLE_ADMIN_EMAIL = "connect@focuseautomate.com"
 SYSTEM_TENANT_ID = "__system__"
 PROCESSING_CATEGORY = "Processing"
+ORDER_PROCESSING_CATEGORY = "Order Processing - Do Not Move"
+PROCESSING_EXCEPTION_CATEGORY = "Processing Exception"
+OUTLOOK_CATEGORY_COLORS = {
+    PROCESSING_CATEGORY: "preset9",
+    ORDER_PROCESSING_CATEGORY: "preset9",
+    PROCESSING_EXCEPTION_CATEGORY: "preset0",
+    "csrAction": "preset3",
+    "csrReview": "preset7",
+    "csrValidate": "preset8",
+}
 WEBHOOK_PROCESSOR_TYPES = {"webhook", "customwebhook", "powerautomatewebhook", "powerautomate"}
 MICROSOFT_AI_COST_PROVIDER = "microsoft"
 GOOGLE_DOCUMENT_AI_COST_PROVIDER = "googleDocumentAi"
@@ -390,6 +413,89 @@ def _regex_validation_error(field_name: str, patterns: list[str]) -> dict[str, A
     return None
 
 
+ROUTING_FILTER_FIELD_ALIASES = {
+    "sender": "sender",
+    "from": "sender",
+    "senderemail": "sender",
+    "senderaddress": "sender",
+    "recipient": "recipient",
+    "recipients": "recipient",
+    "to": "recipient",
+    "toemail": "recipient",
+    "toaddress": "recipient",
+    "subject": "subject",
+    "body": "body",
+    "bodytext": "body",
+    "emailbody": "body",
+}
+ROUTING_FILTER_OPERATOR_ALIASES = {
+    "equal": "equals",
+    "equals": "equals",
+    "is": "equals",
+    "contains": "contains",
+    "contain": "contains",
+    "startswith": "startsWith",
+    "starts": "startsWith",
+    "endswith": "endsWith",
+    "ends": "endsWith",
+}
+
+
+def _normalize_routing_filter_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+def _routing_filter_logic(value: Any) -> str:
+    normalized = _normalize_routing_filter_key(value)
+    return "any" if normalized in {"any", "or"} else "all"
+
+
+def _normalize_routing_filter_conditions(
+    value: Any,
+    *,
+    strict: bool = False,
+) -> tuple[list[dict[str, str]], dict[str, Any] | None]:
+    conditions: list[dict[str, str]] = []
+    for index, item in enumerate(_as_list(value)):
+        if not isinstance(item, dict):
+            if strict:
+                return [], {
+                    "error": "invalidRoutingFilterCondition",
+                    "field": f"filterConditions[{index}]",
+                    "message": "Filter conditions must be objects.",
+                }
+            continue
+        raw_value = str(_pick(item, "value", "text", "matchValue", default="") or "").strip()
+        if not raw_value:
+            continue
+        field = ROUTING_FILTER_FIELD_ALIASES.get(
+            _normalize_routing_filter_key(_pick(item, "field", "source", default=""))
+        )
+        if not field:
+            if strict:
+                return [], {
+                    "error": "invalidRoutingFilterField",
+                    "field": f"filterConditions[{index}].field",
+                    "message": "Filter field must be Sender, Recipient, Subject, or Body.",
+                    "allowedValues": ["sender", "recipient", "subject", "body"],
+                }
+            continue
+        operator = ROUTING_FILTER_OPERATOR_ALIASES.get(
+            _normalize_routing_filter_key(_pick(item, "operator", "match", "comparison", default="contains"))
+        )
+        if not operator:
+            if strict:
+                return [], {
+                    "error": "invalidRoutingFilterOperator",
+                    "field": f"filterConditions[{index}].operator",
+                    "message": "Filter operator must be Equal, Contains, Starts With, or Ends With.",
+                    "allowedValues": ["equals", "contains", "startsWith", "endsWith"],
+                }
+            continue
+        conditions.append({"field": field, "operator": operator, "value": raw_value})
+    return conditions, None
+
+
 def _routing_outcome_from_value(value: Any) -> RoutingOutcome | None:
     if isinstance(value, RoutingOutcome):
         return value
@@ -528,6 +634,9 @@ def _routing_rule_from_doc(doc: dict[str, Any]) -> RoutingRule:
         _pick(doc, "outcome", default=RoutingOutcome.NEEDS_CUSTOMER_IDENTIFICATION)
     ) or RoutingOutcome.NEEDS_HUMAN_REVIEW
     priority = _routing_priority_from_value(_pick(doc, "priority", default=100)) or 100
+    filter_conditions, _ = _normalize_routing_filter_conditions(
+        _pick(doc, "filterConditions", "filter_conditions", default=[])
+    )
 
     return RoutingRule(
         id=str(_pick(doc, "id")),
@@ -541,6 +650,8 @@ def _routing_rule_from_doc(doc: dict[str, Any]) -> RoutingRule:
         processor_profile_id=_pick(doc, "processorProfileId", "processor_profile_id", default=None),
         mailbox_account_ids=list(_as_list(_pick(doc, "mailboxAccountIds", "mailbox_account_ids", default=[]))),
         mailbox_addresses=list(_as_list(_pick(doc, "mailboxAddresses", "mailbox_addresses", default=[]))),
+        filter_conditions=filter_conditions,
+        filter_logic=_routing_filter_logic(_pick(doc, "filterLogic", "filter_logic", default="all")),
         sender_equals=list(_as_list(_pick(doc, "senderEquals", "sender_equals", default=[]))),
         sender_domains=list(_as_list(_pick(doc, "senderDomains", "sender_domains", default=[]))),
         subject_regex=list(_as_list(_pick(doc, "subjectRegex", "subject_regex", default=[]))),
@@ -792,6 +903,31 @@ def _document_status(document: dict[str, Any]) -> str:
     return str(_pick(document, "status", default="") or "")
 
 
+def _bounded_worker_count(
+    count: int,
+    *,
+    configured: Any = None,
+    env_var: str = "",
+    default: int = 8,
+    upper_bound: int = 32,
+) -> int:
+    raw = configured
+    if raw in {None, ""} and env_var:
+        raw = os.environ.get(env_var, "")
+    try:
+        value = int(str(raw).strip()) if raw not in {None, ""} else default
+    except ValueError:
+        value = default
+    return max(1, min(max(1, count), max(1, upper_bound), max(1, value)))
+
+
+def _parallel_ordered(items: list[Any], callback: Any, *, max_workers: int) -> list[Any]:
+    if len(items) <= 1 or max_workers <= 1:
+        return [callback(item) for item in items]
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        return list(executor.map(callback, items))
+
+
 def _action_key_for_routing_outcome(outcome: RoutingOutcome) -> str:
     if outcome == RoutingOutcome.KNOWN_ORDER:
         return "processedOrder"
@@ -847,6 +983,7 @@ class OrderProcessorApi:
         customer_vector_store_manager: Any | None = None,
         output_artifact_store: OutputArtifactStore | None = None,
         secret_store: Any | None = None,
+        google_document_ai_client: DocumentAiClient | None = None,
     ) -> None:
         self.repository = repository or InMemoryRepository()
         self.customer_vector_search = (
@@ -872,6 +1009,7 @@ class OrderProcessorApi:
         )
         self.output_artifact_store = output_artifact_store or output_artifact_store_from_environment()
         self.secret_store = secret_store if secret_store is not None else secret_store_from_environment()
+        self.google_document_ai_client = google_document_ai_client or GoogleDocumentAiClient()
         self._console_cache: dict[tuple[Any, ...], tuple[float, Any]] = {}
         self._monitor_backfill_checked_tenants: set[str] = set()
 
@@ -1043,8 +1181,10 @@ class OrderProcessorApi:
     ) -> RoutingDecision:
         if decision.customer_id:
             return decision
+        if decision.outcome == RoutingOutcome.KNOWN_ORDER:
+            decision.matched_signals["customerIdentificationDeferred"] = "order customer identification runs after processor extraction"
+            return decision
         if decision.outcome not in {
-            RoutingOutcome.KNOWN_ORDER,
             RoutingOutcome.KNOWN_CUSTOMER_NON_ORDER,
             RoutingOutcome.NEEDS_CUSTOMER_IDENTIFICATION,
         }:
@@ -1159,7 +1299,17 @@ class OrderProcessorApi:
         else:
             mailboxes = self.repository.list("mailboxAccounts")
 
-        results = [self._poll_mailbox(mailbox, limit=limit, payload=payload) for mailbox in mailboxes]
+        mailbox_workers = _bounded_worker_count(
+            len(mailboxes),
+            configured=_pick(payload, "mailboxWorkers", "mailbox_workers", default=None),
+            env_var="ORDER_PROCESSOR_MAILBOX_POLL_WORKERS",
+            default=4,
+        )
+        results = _parallel_ordered(
+            list(mailboxes),
+            lambda mailbox: self._poll_mailbox(mailbox, limit=limit, payload=payload),
+            max_workers=mailbox_workers,
+        )
         return {
             "mailboxPoll": {
                 "tenantId": tenant_id or "*",
@@ -1247,11 +1397,18 @@ class OrderProcessorApi:
 
     def process_graph_notifications(self, payload: dict[str, Any]) -> dict[str, Any]:
         notifications = list(_as_list(_pick(payload, "notifications", "value", default=[])))
-        results = [
-            self._process_graph_notification(notification)
-            for notification in notifications
-            if isinstance(notification, dict)
-        ]
+        notification_items = [notification for notification in notifications if isinstance(notification, dict)]
+        notification_workers = _bounded_worker_count(
+            len(notification_items),
+            configured=_pick(payload, "notificationWorkers", "notification_workers", default=None),
+            env_var="ORDER_PROCESSOR_GRAPH_NOTIFICATION_WORKERS",
+            default=16,
+        )
+        results = _parallel_ordered(
+            notification_items,
+            self._process_graph_notification,
+            max_workers=notification_workers,
+        )
         return {
             "graphNotifications": {
                 "notificationCount": len(notifications),
@@ -1635,8 +1792,18 @@ class OrderProcessorApi:
             messages = self._graph_recent_messages(access_token, mailbox_address, limit)
             result["status"] = "active"
             result["messageCount"] = len(messages)
-            for message in messages:
-                poll_item = self._ingest_graph_message(access_token, mailbox, message)
+            message_workers = _bounded_worker_count(
+                len(messages),
+                configured=_pick(payload, "messageWorkers", "message_workers", default=None),
+                env_var="ORDER_PROCESSOR_MAILBOX_MESSAGE_WORKERS",
+                default=8,
+            )
+            poll_items = _parallel_ordered(
+                list(messages),
+                lambda message: self._ingest_graph_message(access_token, mailbox, message),
+                max_workers=message_workers,
+            )
+            for poll_item in poll_items:
                 result["processedCount"] += int(poll_item.get("processed", False))
                 if poll_item.get("status") == "ingested":
                     result["ingestedCount"] += 1
@@ -2117,8 +2284,9 @@ class OrderProcessorApi:
         graph_message_id: str,
         ingest_result: dict[str, Any],
         existing_categories: list[Any],
+        action_plan: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        action_plan = self._email_action_plan_from_ingest_result(ingest_result)
+        action_plan = action_plan if action_plan is not None else self._email_action_plan_from_ingest_result(ingest_result)
         email_message = _as_dict(_pick(ingest_result, "emailMessage", "email_message", default={}))
         tenant_id = str(_pick(email_message, "tenantId", "tenant_id", default=""))
         email_message_id = str(_pick(email_message, "id", default=""))
@@ -2250,7 +2418,17 @@ class OrderProcessorApi:
 
         now = utc_now()
         source = dict(_pick(email, "source", default={}) or {})
+        history = [item for item in _as_list(source.get("graphEmailActionHistory")) if isinstance(item, dict)]
+        history.append(action_result)
+        source["graphEmailActionHistory"] = history[-20:]
         source["graphEmailActions"] = action_result
+        for item in reversed(_as_list(_pick(action_result, "applied", default=[]))):
+            if not isinstance(item, dict) or _pick(item, "action", default="") != "move":
+                continue
+            moved_graph_message_id = str(_pick(item, "movedGraphMessageId", "moved_graph_message_id", default="") or "")
+            if moved_graph_message_id:
+                source["graphMessageId"] = moved_graph_message_id
+                break
         patched = _as_dict(_pick(action_result, "patched", default={}))
         if "subject" in patched:
             email["subject"] = str(patched.get("subject") or "")
@@ -2523,6 +2701,109 @@ class OrderProcessorApi:
         matched_signals = _as_dict(_pick(decision, "matchedSignals", "matched_signals", default={}))
         return _as_dict(_pick(matched_signals, "emailActions", "email_actions", default={}))
 
+    def _email_action_plan_for_action_key(
+        self,
+        email: dict[str, Any],
+        decision: dict[str, Any],
+        action_key: str,
+    ) -> dict[str, Any]:
+        tenant_id = str(_pick(email, "tenantId", "tenant_id", default="") or "")
+        rule_id = str(_pick(decision, "ruleId", "rule_id", default="") or "")
+        rule_doc = self.repository.get("routingRules", rule_id) if rule_id else None
+        if not tenant_id or not rule_doc:
+            return {
+                "actionKey": action_key,
+                "productionActionsEnabled": True,
+                "subject": {},
+                "move": {"mode": "none", "enabled": False},
+                "categories": [],
+            }
+        customer_id = str(
+            _pick(email, "customerId", "customer_id", default="")
+            or _pick(decision, "customerId", "customer_id", default="")
+            or ""
+        )
+        customer_doc = self.repository.get("customers", customer_id) if customer_id else None
+        return build_email_action_plan(
+            _email_from_payload(email),
+            _customer_from_doc(customer_doc) if customer_doc else None,
+            _routing_rule_from_doc(rule_doc),
+            action_key,
+        ) or {
+            "actionKey": action_key,
+            "productionActionsEnabled": True,
+            "subject": {},
+            "move": {"mode": "none", "enabled": False},
+            "categories": [],
+        }
+
+    def _lifecycle_email_action_plan(
+        self,
+        email: dict[str, Any],
+        decision: dict[str, Any],
+        action_key: str,
+        categories: list[str],
+    ) -> dict[str, Any]:
+        plan = dict(self._email_action_plan_for_action_key(email, decision, action_key))
+        plan["actionKey"] = action_key
+        plan["categories"] = [category for category in categories if category]
+        if action_key == "orderStart":
+            plan["subject"] = {}
+        return plan
+
+    def _order_completion_action_plan(
+        self,
+        email: dict[str, Any],
+        decision: dict[str, Any],
+        order_result: dict[str, Any] | None,
+        *,
+        failed: bool = False,
+    ) -> dict[str, Any]:
+        order_run = _as_dict(_pick(order_result or {}, "orderRun", "order_run", default={}))
+        status = str(_pick(order_run, "status", default="") or "")
+        unresolved_count = int(_pick(order_result or {}, "unresolvedLineCount", "unresolved_line_count", default=0) or 0)
+        if failed or status == ProcessingStatus.FAILED.value:
+            return self._lifecycle_email_action_plan(email, decision, "failedOrder", [PROCESSING_EXCEPTION_CATEGORY])
+
+        category = self._csr_order_completion_category(email, order_run, unresolved_count)
+        return self._lifecycle_email_action_plan(email, decision, "processedOrder", [category])
+
+    def _csr_order_completion_category(
+        self,
+        email: dict[str, Any],
+        order_run: dict[str, Any],
+        unresolved_count: int,
+    ) -> str:
+        customer_id = str(
+            _pick(order_run, "customerId", "customer_id", default="")
+            or _pick(email, "customerId", "customer_id", default="")
+            or ""
+        )
+        customer = self.repository.get("customers", customer_id) if customer_id else None
+        csr_name = self._customer_csr_category_name(customer or {})
+        if not csr_name:
+            return PROCESSING_EXCEPTION_CATEGORY
+        suffix = "Validate" if unresolved_count > 0 or str(_pick(order_run, "status", default="")) == ProcessingStatus.NEEDS_REVIEW.value else "Review"
+        return f"{csr_name} - {suffix}"
+
+    def _non_order_action_category(self, email: dict[str, Any], decision: dict[str, Any]) -> str:
+        customer_id = str(
+            _pick(email, "customerId", "customer_id", default="")
+            or _pick(decision, "customerId", "customer_id", default="")
+            or ""
+        )
+        customer = self.repository.get("customers", customer_id) if customer_id else None
+        csr_name = self._customer_csr_category_name(customer or {})
+        return f"{csr_name} - Action" if csr_name else PROCESSING_EXCEPTION_CATEGORY
+
+    @staticmethod
+    def _customer_csr_category_name(customer: dict[str, Any]) -> str:
+        for field_name in ("csrName", "csr_name", "csrFolder", "csr_folder", "csrEmail", "csr_email"):
+            value = str(_pick(customer, field_name, default="") or "").strip()
+            if value:
+                return value
+        return ""
+
     @staticmethod
     def _merged_graph_categories(existing_categories: list[Any], configured_categories: list[Any]) -> list[str]:
         seen: set[str] = set()
@@ -2731,41 +3012,138 @@ class OrderProcessorApi:
         ingest_result = self.ingest_email(ingest_payload)
         processed = False
         order_run = ingest_result.get("orderRun")
-        if order_run and self._should_process_polled_order(order_run, source_payload, body_text):
-            process_payload = {
-                "tenantId": tenant_id,
-                "emailMessageId": email_id,
-                "customerId": order_run.get("customerId"),
-                "processorProfileId": order_run.get("processorProfileId"),
-                "mailbox": mailbox_address,
-                "sender": sender,
-                "subject": ingest_payload["subject"],
-                "receivedAt": ingest_payload["receivedAt"],
-                "bodyText": body_text,
-                "sourceMetadata": {
-                    "provider": "microsoftGraph",
-                    "graphMessageId": graph_message_id,
-                    "mailboxAccountId": mailbox_id,
-                },
-                **source_payload,
-            }
-            self.process_order(order_run["id"], process_payload)
-            processed = True
-        email_action_result = self._apply_graph_email_actions(
-            access_token,
-            mailbox_address,
-            graph_message_id,
-            ingest_result,
-            current_categories,
-        )
-        self._update_email_after_graph_actions(email_id, ingest_result, email_action_result)
+        decision = _as_dict(_pick(ingest_result, "routingDecision", "routing_decision", default={}))
+        stored_email = self.repository.get("emailMessages", email_id) or _as_dict(ingest_result.get("emailMessage"))
+        email_action_result: dict[str, Any] = {"status": "skipped", "reason": "no lifecycle action"}
+        order_start_action_result: dict[str, Any] | None = None
+        order_completion_action_result: dict[str, Any] | None = None
+        order_processing_result: dict[str, Any] | None = None
+        active_graph_message_id = graph_message_id
+
+        if order_run:
+            start_plan = self._lifecycle_email_action_plan(
+                stored_email,
+                decision,
+                "orderStart",
+                [ORDER_PROCESSING_CATEGORY],
+            )
+            order_start_action_result = self._apply_graph_email_actions(
+                access_token,
+                mailbox_address,
+                active_graph_message_id,
+                ingest_result,
+                current_categories,
+                action_plan=start_plan,
+            )
+            self._update_email_after_graph_actions(email_id, ingest_result, order_start_action_result)
+            stored_email = self.repository.get("emailMessages", email_id) or stored_email
+            active_graph_message_id = self._graph_message_id_for_email(stored_email) or active_graph_message_id
+
+            if self._should_process_polled_order(order_run, source_payload, body_text):
+                process_payload = {
+                    "tenantId": tenant_id,
+                    "emailMessageId": email_id,
+                    "customerId": order_run.get("customerId"),
+                    "processorProfileId": order_run.get("processorProfileId"),
+                    "mailbox": mailbox_address,
+                    "sender": sender,
+                    "subject": ingest_payload["subject"],
+                    "receivedAt": ingest_payload["receivedAt"],
+                    "bodyText": body_text,
+                    "sourceMetadata": {
+                        "provider": "microsoftGraph",
+                        "graphMessageId": active_graph_message_id,
+                        "mailboxAccountId": mailbox_id,
+                    },
+                    **source_payload,
+                }
+                try:
+                    order_processing_result = self.process_order(order_run["id"], process_payload)
+                    processed = True
+                except Exception as exc:
+                    stored_email = self.repository.get("emailMessages", email_id) or stored_email
+                    failure_plan = self._order_completion_action_plan(
+                        stored_email,
+                        decision,
+                        None,
+                        failed=True,
+                    )
+                    order_completion_action_result = self._apply_graph_email_actions(
+                        access_token,
+                        mailbox_address,
+                        active_graph_message_id,
+                        ingest_result,
+                        [],
+                        action_plan=failure_plan,
+                    )
+                    self._update_email_after_graph_actions(email_id, ingest_result, order_completion_action_result)
+                    return {
+                        "status": "failed",
+                        "error": True,
+                        "reason": str(exc),
+                        "emailMessageId": email_id,
+                        "graphMessageId": active_graph_message_id,
+                        "orderRunId": order_run.get("id") if order_run else "",
+                        "processed": False,
+                        "processingCategoryResult": processing_category_result,
+                        "orderStartActionResult": order_start_action_result,
+                        "emailActionResult": order_completion_action_result,
+                    }
+
+            stored_email = self.repository.get("emailMessages", email_id) or stored_email
+            active_graph_message_id = self._graph_message_id_for_email(stored_email) or active_graph_message_id
+            completion_plan = self._order_completion_action_plan(
+                stored_email,
+                decision,
+                order_processing_result,
+            )
+            order_completion_action_result = self._apply_graph_email_actions(
+                access_token,
+                mailbox_address,
+                active_graph_message_id,
+                ingest_result,
+                [],
+                action_plan=completion_plan,
+            )
+            self._update_email_after_graph_actions(email_id, ingest_result, order_completion_action_result)
+            email_action_result = order_completion_action_result
+        else:
+            outcome = str(_pick(decision, "outcome", default=""))
+            if outcome == RoutingOutcome.KNOWN_CUSTOMER_NON_ORDER.value:
+                action_category = self._non_order_action_category(stored_email, decision)
+                non_order_plan = self._lifecycle_email_action_plan(
+                    stored_email,
+                    decision,
+                    "nonOrder",
+                    [action_category],
+                )
+                email_action_result = self._apply_graph_email_actions(
+                    access_token,
+                    mailbox_address,
+                    active_graph_message_id,
+                    ingest_result,
+                    current_categories,
+                    action_plan=non_order_plan,
+                )
+                self._update_email_after_graph_actions(email_id, ingest_result, email_action_result)
+            else:
+                email_action_result = self._apply_graph_email_actions(
+                    access_token,
+                    mailbox_address,
+                    active_graph_message_id,
+                    ingest_result,
+                    current_categories,
+                )
+                self._update_email_after_graph_actions(email_id, ingest_result, email_action_result)
         return {
             "status": "ingested",
             "emailMessageId": email_id,
-            "graphMessageId": graph_message_id,
+            "graphMessageId": active_graph_message_id,
             "orderRunId": order_run.get("id") if order_run else "",
             "processed": processed,
             "processingCategoryResult": processing_category_result,
+            "orderStartActionResult": order_start_action_result,
+            "orderCompletionActionResult": order_completion_action_result,
             "emailActionResult": email_action_result,
         }
 
@@ -3283,7 +3661,38 @@ class OrderProcessorApi:
                 "observability": observability,
             }
 
+        payload = self._payload_with_google_document_ai_extraction(order, payload, processor_profile, observability)
         order = process_order_payload(order, payload, processor_profile)
+
+        customer_identification_result = None
+        if not order.customer_id and order.status != ProcessingStatus.FAILED:
+            customer_identification_result = self._identify_customer_for_order(order, payload, observability)
+            if customer_identification_result is not None:
+                order.source_metadata["customerIdentification"] = _api_value(customer_identification_result)
+                if (
+                    customer_identification_result.status == MatchStatus.MATCHED
+                    and customer_identification_result.customer_id
+                ):
+                    order.customer_id = customer_identification_result.customer_id
+                    self._apply_order_customer_identification(order, customer_identification_result)
+                else:
+                    self._create_exception(
+                        tenant_id=order.tenant_id,
+                        task_type="customerIdentification",
+                        prompt="Resolve customer match for extracted order.",
+                        order_run_id=order.id,
+                        email_message_id=order.email_message_id,
+                        customer_id=customer_identification_result.customer_id,
+                        correlation_id=order.correlation_id,
+                        context={
+                            "result": _api_value(customer_identification_result),
+                            "sourceMetadata": order.source_metadata,
+                            "subject": _pick(payload, "subject", default=_pick(order.source_metadata, "subject", default="")),
+                            "sender": _pick(payload, "sender", default=_pick(order.source_metadata, "sender", default="")),
+                            "orderCustomerIdentificationText": self._order_customer_identification_text(order, payload),
+                            "observability": observability,
+                        },
+                    )
 
         items = [_item_from_doc(doc) for doc in self.repository.query_by_customer("items", order.tenant_id, GLOBAL_CUSTOMER_ID)]
         if items and order.lines:
@@ -3369,6 +3778,346 @@ class OrderProcessorApi:
         )
         self._record_order_processor_cost_event(order_doc, payload, processor_profile, observability)
         return {"orderRun": _api_value(order), "unresolvedLineCount": len(unresolved), "observability": observability}
+
+    def normalize_spreadsheet(self, payload: dict[str, Any]) -> dict[str, Any]:
+        settings = dict(_pick(payload, "processorSettings", "processor_settings", "settings", default={}) or {})
+        normalization = _normalize_spreadsheet_payload(payload, settings)
+        return {"normalization": normalization}
+
+    def extract_spreadsheet_order_lines(self, payload: dict[str, Any]) -> dict[str, Any]:
+        settings = dict(_pick(payload, "processorSettings", "processor_settings", "settings", default={}) or {})
+        normalization = _pick(payload, "normalization", "normalizedWorkbook", default=None)
+        if isinstance(normalization, dict) and not isinstance(_pick(payload, "layout", "spreadsheetLayout", default=None), dict):
+            payload = {
+                **payload,
+                "layout": analyze_spreadsheet_layout(normalization, payload, settings),
+            }
+        extraction = _extract_spreadsheet_order_lines(payload, settings)
+        return {"extraction": extraction}
+
+    def extract_email_body_order(self, payload: dict[str, Any]) -> dict[str, Any]:
+        settings = dict(_pick(payload, "processorSettings", "processor_settings", "settings", default={}) or {})
+        extraction = _extract_email_body_order(payload, settings)
+        return {"extraction": extraction}
+
+    def extract_google_document_ai_order(self, payload: dict[str, Any]) -> dict[str, Any]:
+        settings = self._processor_settings_for_payload(payload, None)
+        response = self.google_document_ai_client.process_pdf(
+            payload,
+            repository=self.repository,
+            tenant_id=str(_pick(payload, "tenantId", "tenant_id", default="default") or "default"),
+            settings=settings,
+        )
+        extraction = _extract_google_document_ai_order(response, payload, settings)
+        return {"extraction": extraction}
+
+    def _payload_with_google_document_ai_extraction(
+        self,
+        order: OrderRun,
+        payload: dict[str, Any],
+        processor_profile: ProcessorProfile | None,
+        observability: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._should_run_google_document_ai(payload, processor_profile):
+            return payload
+        settings = self._processor_settings_for_payload(payload, processor_profile)
+        try:
+            response = self.google_document_ai_client.process_pdf(
+                payload,
+                repository=self.repository,
+                tenant_id=order.tenant_id,
+                settings=settings,
+            )
+            extraction = _extract_google_document_ai_order(response, payload, settings)
+        except Exception as exc:
+            extraction = {
+                "schemaVersion": "google-document-ai-order-v1",
+                "status": "failed",
+                "purchaseOrder": "",
+                "lineCount": 0,
+                "lines": [],
+                "customerIdentification": {},
+                "headers": {},
+                "rawDocument": {},
+                "googleDocumentAi": {
+                    "processor": "googleDocumentAi",
+                    "error": type(exc).__name__,
+                },
+                "warnings": [],
+                "errors": [{"code": "googleDocumentAiFailed", "message": str(exc)}],
+                "requiresHumanReview": True,
+                "observability": observability,
+            }
+        return {
+            **payload,
+            "googleDocumentAiExtraction": extraction,
+        }
+
+    def _should_run_google_document_ai(
+        self,
+        payload: dict[str, Any],
+        processor_profile: ProcessorProfile | None,
+    ) -> bool:
+        if any(
+            _pick(payload, key, default=None) is not None
+            for key in (
+                "googleDocumentAiExtraction",
+                "google_document_ai_extraction",
+                "googleDocumentAiResult",
+                "google_document_ai_result",
+                "googleDocumentAiResponse",
+                "google_document_ai_response",
+                "documentIntelligenceResult",
+                "document_intelligence_result",
+                "azureDocumentIntelligenceResult",
+                "azure_document_intelligence_result",
+                "extractedText",
+                "extracted_text",
+            )
+        ):
+            return False
+        if not self._payload_has_pdf_source(payload):
+            return False
+        settings = self._processor_settings_for_payload(payload, processor_profile)
+        processor_type = str(
+            _pick(payload, "processorType", "processor_type", default=None)
+            or (processor_profile.processor_type if processor_profile else None)
+            or settings.get("processorType")
+            or settings.get("processor_type")
+            or ""
+        )
+        normalized = re.sub(r"[^a-z0-9]", "", processor_type.lower())
+        return normalized in {"pdf", "googledocumentai", "googledocumentaipdf", "orderprocessgoogledocumentaipdf"}
+
+    def _processor_settings_for_payload(
+        self,
+        payload: dict[str, Any],
+        processor_profile: ProcessorProfile | None,
+    ) -> dict[str, Any]:
+        settings: dict[str, Any] = {}
+        if processor_profile:
+            settings.update(processor_profile.settings)
+            settings.setdefault("profileName", processor_profile.name)
+        settings.update(dict(_pick(payload, "processorSettings", "processor_settings", "settings", default={}) or {}))
+        return settings
+
+    @staticmethod
+    def _payload_has_pdf_source(payload: dict[str, Any]) -> bool:
+        if any(
+            key in payload
+            for key in (
+                "sourceContent",
+                "source_content",
+                "sourceContentBase64",
+                "source_content_base64",
+                "content",
+                "contentBase64",
+                "content_base64",
+            )
+        ):
+            return True
+        for item in _as_list(_pick(payload, "attachments", default=[])):
+            if not isinstance(item, dict):
+                continue
+            name = str(_pick(item, "name", "fileName", "file_name", default="") or "").lower()
+            content_type = str(_pick(item, "contentType", "content_type", "mimeType", default="") or "").lower()
+            if name.endswith(".pdf") or content_type == "application/pdf":
+                return True
+        return False
+
+    def _identify_customer_for_order(
+        self,
+        order: OrderRun,
+        payload: dict[str, Any],
+        observability: dict[str, Any],
+    ) -> CustomerIdentificationResult:
+        email = self._order_customer_identification_email(order, payload)
+        customers = [_customer_from_doc(doc) for doc in self.repository.query_by_tenant("customers", order.tenant_id)]
+        aliases = [
+            _customer_alias_from_doc(doc)
+            for doc in self.repository.query_by_tenant("customerAliases", order.tenant_id)
+        ]
+        result = identify_customer_from_email(
+            email,
+            customers,
+            aliases=aliases,
+            vector_search=self.customer_vector_search,
+            ai_identifier=self.customer_ai_identifier,
+            confidence_threshold=DEFAULT_CUSTOMER_CONFIDENCE_THRESHOLD,
+        )
+        self._record_customer_identification_cost_event(
+            email,
+            result,
+            {
+                **payload,
+                "processorType": "customerIdentification",
+                "operationType": "orderCustomerIdentification",
+                "orderProcessorType": order.processor_type,
+                "orderRunId": order.id,
+            },
+            observability,
+        )
+        self._audit(
+            order.tenant_id,
+            "order.customerIdentified",
+            observability["correlationId"],
+            order.id,
+            {
+                "orderRunId": order.id,
+                "emailMessageId": order.email_message_id,
+                "customerId": result.customer_id,
+                "status": result.status,
+                "matchMethod": result.match_method,
+                "confidence": result.confidence,
+                "result": _api_value(result),
+                "observability": observability,
+            },
+            customer_id=result.customer_id,
+            order_run_id=order.id,
+            email_message_id=order.email_message_id,
+        )
+        return result
+
+    def _apply_order_customer_identification(
+        self,
+        order: OrderRun,
+        result: CustomerIdentificationResult,
+    ) -> None:
+        existing_email = self.repository.get("emailMessages", order.email_message_id)
+        if existing_email is None:
+            return
+        existing_email["customerId"] = result.customer_id
+        existing_email["customerIdentification"] = _api_value(result)
+        routing = dict(_pick(existing_email, "routing", default={}) or {})
+        matched_signals = dict(_pick(routing, "matchedSignals", "matched_signals", default={}) or {})
+        matched_signals["orderCustomerIdentification"] = _api_value(result)
+        routing["matchedSignals"] = matched_signals
+        existing_email["routing"] = routing
+        existing_email["updatedAt"] = utc_now()
+        stored_email = self.repository.upsert("emailMessages", existing_email)
+        self._upsert_monitor_record_for_email(stored_email, order=to_dict(order))
+
+    def _order_customer_identification_email(self, order: OrderRun, payload: dict[str, Any]) -> EmailMessage:
+        stored_email = self.repository.get("emailMessages", order.email_message_id) or {}
+        email_payload = {
+            "tenantId": order.tenant_id,
+            "id": order.email_message_id or _pick(payload, "emailMessageId", "email_message_id", default=order.id),
+            "messageId": _pick(stored_email, "messageId", "message_id", default=_pick(payload, "messageId", "message_id", default=order.email_message_id)),
+            "mailbox": _pick(stored_email, "mailbox", default=_pick(payload, "mailbox", default=_pick(order.source_metadata, "mailbox", default=""))),
+            "sender": _pick(stored_email, "sender", default=_pick(payload, "sender", default=_pick(order.source_metadata, "sender", default=""))),
+            "subject": _pick(stored_email, "subject", default=_pick(payload, "subject", default=_pick(order.source_metadata, "subject", default=""))),
+            "receivedAt": _pick(stored_email, "receivedAt", "received_at", default=_pick(payload, "receivedAt", "received_at", default=_pick(order.source_metadata, "receivedAt", default=utc_now()))),
+            "bodyText": self._order_customer_identification_text(order, payload),
+            "bodyHtml": _pick(stored_email, "bodyHtml", "body_html", default=_pick(payload, "bodyHtml", "body_html", default="")),
+            "attachments": list(
+                _as_list(_pick(stored_email, "attachments", default=_pick(payload, "attachments", default=[])))
+            ),
+            "status": ProcessingStatus.PROCESSING,
+            "mailboxAccountId": _pick(stored_email, "mailboxAccountId", "mailbox_account_id", default=_pick(payload, "mailboxAccountId", "mailbox_account_id", default=None)),
+            "customerId": order.customer_id,
+            "orderRunId": order.id,
+            "correlationId": order.correlation_id,
+            "source": {
+                **dict(_pick(stored_email, "source", default={}) or {}),
+                "orderCustomerIdentification": {
+                    "orderRunId": order.id,
+                    "processorType": order.processor_type,
+                    "sourceType": order.source_type,
+                },
+            },
+        }
+        return _email_from_payload(email_payload)
+
+    def _order_customer_identification_text(self, order: OrderRun, payload: dict[str, Any]) -> str:
+        parts: list[str] = []
+        for label, value in (
+            ("email subject", _pick(payload, "subject", default=_pick(order.source_metadata, "subject", default=""))),
+            ("email sender", _pick(payload, "sender", default=_pick(order.source_metadata, "sender", default=""))),
+            ("email body", _pick(payload, "bodyText", "body_text", default="")),
+            ("email html", _html_to_text(str(_pick(payload, "bodyHtml", "body_html", default="") or ""))),
+            ("source file", order.source_file_name),
+            ("purchase order", order.po_number),
+        ):
+            if str(value or "").strip():
+                parts.append(f"{label}: {value}")
+
+        stored_email = self.repository.get("emailMessages", order.email_message_id) or {}
+        for label, value in (
+            ("stored email subject", _pick(stored_email, "subject", default="")),
+            ("stored email sender", _pick(stored_email, "sender", default="")),
+            ("stored email body", _pick(stored_email, "bodyText", "body_text", default="")),
+        ):
+            if str(value or "").strip():
+                parts.append(f"{label}: {value}")
+
+        customer_metadata = self._order_customer_metadata_fragments(order.source_metadata)
+        parts.extend(customer_metadata)
+        for line in order.lines[:5]:
+            raw = dict(line.raw or {})
+            values = raw.get("values") if isinstance(raw.get("values"), dict) else raw
+            parts.append(
+                "order row: "
+                + json.dumps(
+                    {
+                        "lineNumber": line.line_number,
+                        "description": line.description,
+                        "item": line.provided_item_number,
+                        "upc": line.provided_upc,
+                        "quantity": line.quantity,
+                        "raw": values,
+                    },
+                    ensure_ascii=True,
+                    default=str,
+                )
+            )
+        return "\n".join(dict.fromkeys(part for part in parts if part.strip()))[:16000]
+
+    def _order_customer_metadata_fragments(self, metadata: dict[str, Any]) -> list[str]:
+        fragments: list[str] = []
+        spreadsheet = _as_dict(_pick(metadata, "spreadsheet", default={}))
+        customer_identification = _as_dict(_pick(spreadsheet, "customerIdentification", default={}))
+        search_text = str(_pick(customer_identification, "customerSearchText", "customer_search_text", default="") or "")
+        if search_text.strip():
+            fragments.append(f"extracted order customer search text:\n{search_text}")
+        signals = _as_dict(_pick(customer_identification, "signals", default={}))
+        if signals:
+            fragments.append("extracted order customer signals: " + json.dumps(signals, ensure_ascii=True, default=str))
+        for group in _as_list(_pick(spreadsheet, "orderGroups", "order_groups", default=[])):
+            if not isinstance(group, dict):
+                continue
+            group_text = str(_pick(group, "customerSearchText", "customer_search_text", default="") or "")
+            if group_text.strip():
+                fragments.append(f"order group customer search text:\n{group_text}")
+
+        email_body = _as_dict(_pick(metadata, "emailBody", "email_body", default={}))
+        email_body_customer_identification = _as_dict(_pick(email_body, "customerIdentification", default={}))
+        email_search_text = str(
+            _pick(email_body_customer_identification, "customerSearchText", "customer_search_text", default="") or ""
+        )
+        if email_search_text.strip():
+            fragments.append(f"email body customer search text:\n{email_search_text}")
+        email_signals = _as_dict(_pick(email_body_customer_identification, "signals", default={}))
+        if email_signals:
+            fragments.append("email body customer signals: " + json.dumps(email_signals, ensure_ascii=True, default=str))
+
+        google_document_ai = _as_dict(_pick(metadata, "googleDocumentAi", "google_document_ai", default={}))
+        google_customer_identification = _as_dict(_pick(google_document_ai, "customerIdentification", default={}))
+        google_search_text = str(
+            _pick(google_customer_identification, "customerSearchText", "customer_search_text", default="") or ""
+        )
+        if google_search_text.strip():
+            fragments.append(f"google document ai customer search text:\n{google_search_text}")
+        google_signals = _as_dict(_pick(google_customer_identification, "signals", default={}))
+        if google_signals:
+            fragments.append("google document ai customer signals: " + json.dumps(google_signals, ensure_ascii=True, default=str))
+
+        for key in ("customerIdentification", "documentCustomerIdentification", "document_intelligence", "documentIntelligence"):
+            value = _pick(metadata, key, default=None)
+            if isinstance(value, dict):
+                text = str(_pick(value, "customerSearchText", "customer_search_text", "shipTo", "ship_to", default="") or "")
+                if text.strip():
+                    fragments.append(f"{key}: {text}")
+        return fragments
 
     def identify_customer(self, payload: dict[str, Any]) -> dict[str, Any]:
         email_payload = _pick(payload, "emailMessage", "email", default=payload)
@@ -3753,6 +4502,11 @@ class OrderProcessorApi:
             "customerAliases": [_api_value(item) for item in aliases],
         }
         result["csrDirectory"] = self._refresh_tenant_csr_directory(tenant_id)
+        result["mailboxCategorySync"] = self._sync_mailbox_categories_after_customer_import(
+            tenant_id,
+            result["csrDirectory"],
+            payload,
+        )
         observability = correlation_context(payload, archive.import_run_id)
         result["observability"] = observability
         if self.customer_vector_store_manager and len(imported) > 0:
@@ -4025,6 +4779,224 @@ class OrderProcessorApi:
         self.repository.upsert("tenants", tenant)
         return directory
 
+    def _sync_mailbox_categories_after_customer_import(
+        self,
+        tenant_id: str,
+        csr_directory: list[dict[str, Any]],
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not _bool_flag(
+            _pick(
+                payload,
+                "syncMailboxCategories",
+                "sync_mailbox_categories",
+                default=os.environ.get("ORDER_PROCESSOR_SYNC_MAILBOX_CATEGORIES", "true"),
+            ),
+            default=True,
+        ):
+            return {"status": "skipped", "reason": "mailbox category sync disabled"}
+
+        mailboxes = [
+            mailbox
+            for mailbox in self.repository.query_by_tenant("mailboxAccounts", tenant_id)
+            if mailbox and _mailbox_enabled(mailbox)
+        ]
+        if not mailboxes:
+            self._store_managed_mailbox_category_state(tenant_id, csr_directory, {})
+            return {"status": "skipped", "reason": "no active mailbox accounts", "mailboxCount": 0}
+
+        desired_categories = self._desired_outlook_categories(csr_directory)
+        previous_managed = self._previous_managed_csr_categories(tenant_id)
+        results = [
+            self._sync_mailbox_master_categories(mailbox, desired_categories, previous_managed)
+            for mailbox in mailboxes
+        ]
+        self._store_managed_mailbox_category_state(tenant_id, csr_directory, desired_categories)
+        failed_count = sum(1 for result in results if result.get("status") == "failed")
+        applied_count = sum(1 for result in results if result.get("status") in {"applied", "partial"})
+        return {
+            "status": "failed" if failed_count == len(results) else "partial" if failed_count else "applied" if applied_count else "skipped",
+            "mailboxCount": len(results),
+            "appliedCount": applied_count,
+            "failedCount": failed_count,
+            "desiredCategoryCount": len(desired_categories),
+            "results": results,
+        }
+
+    def _desired_outlook_categories(self, csr_directory: list[dict[str, Any]]) -> dict[str, str]:
+        categories: dict[str, str] = {
+            PROCESSING_CATEGORY: OUTLOOK_CATEGORY_COLORS[PROCESSING_CATEGORY],
+            ORDER_PROCESSING_CATEGORY: OUTLOOK_CATEGORY_COLORS[ORDER_PROCESSING_CATEGORY],
+            PROCESSING_EXCEPTION_CATEGORY: OUTLOOK_CATEGORY_COLORS[PROCESSING_EXCEPTION_CATEGORY],
+        }
+        for csr in csr_directory:
+            csr_name = str(_pick(csr, "name", "folder", "email", default="") or "").strip()
+            if not csr_name:
+                continue
+            categories[f"{csr_name} - Action"] = OUTLOOK_CATEGORY_COLORS["csrAction"]
+            categories[f"{csr_name} - Review"] = OUTLOOK_CATEGORY_COLORS["csrReview"]
+            categories[f"{csr_name} - Validate"] = OUTLOOK_CATEGORY_COLORS["csrValidate"]
+        return categories
+
+    def _previous_managed_csr_categories(self, tenant_id: str) -> set[str]:
+        tenant = self.repository.get("tenants", tenant_id) or {}
+        settings = dict(_pick(tenant, "settings", default={}) or {})
+        state = dict(settings.get("managedMailboxCategories") or {})
+        return {
+            str(value).strip()
+            for value in _as_list(state.get("csrCategories"))
+            if str(value).strip()
+        }
+
+    def _store_managed_mailbox_category_state(
+        self,
+        tenant_id: str,
+        csr_directory: list[dict[str, Any]],
+        desired_categories: dict[str, str],
+    ) -> None:
+        tenant = self.repository.get("tenants", tenant_id) or {
+            "id": tenant_id,
+            "tenantId": tenant_id,
+            "name": tenant_id,
+            "environment": "",
+            "status": "active",
+            "createdAt": utc_now(),
+        }
+        settings = dict(_pick(tenant, "settings", default={}) or {})
+        csr_categories = sorted(
+            category
+            for category in desired_categories
+            if category not in {PROCESSING_CATEGORY, ORDER_PROCESSING_CATEGORY, PROCESSING_EXCEPTION_CATEGORY}
+        )
+        settings["managedMailboxCategories"] = {
+            "fixedCategories": [
+                PROCESSING_CATEGORY,
+                ORDER_PROCESSING_CATEGORY,
+                PROCESSING_EXCEPTION_CATEGORY,
+            ],
+            "csrCategories": csr_categories,
+            "csrCount": len(csr_directory),
+            "updatedAt": utc_now(),
+        }
+        tenant["settings"] = settings
+        tenant["updatedAt"] = utc_now()
+        self.repository.upsert("tenants", tenant)
+
+    def _sync_mailbox_master_categories(
+        self,
+        mailbox: dict[str, Any],
+        desired_categories: dict[str, str],
+        previous_managed_csr_categories: set[str],
+    ) -> dict[str, Any]:
+        mailbox_address = str(_pick(mailbox, "mailboxAddress", "mailbox_address", default="") or "").strip().lower()
+        result: dict[str, Any] = {
+            "mailboxAccountId": str(_pick(mailbox, "id", default="") or ""),
+            "mailboxAddress": mailbox_address,
+            "status": "skipped",
+            "created": [],
+            "updated": [],
+            "deleted": [],
+            "errors": [],
+        }
+        if not mailbox_address:
+            result["reason"] = "mailbox address missing"
+            return result
+
+        try:
+            candidates = self._graph_access_token_candidates(mailbox, auth_mode="auto")
+        except MicrosoftGraphError as exc:
+            result.update({"status": "failed", "reason": str(exc), "statusCode": exc.status_code, "details": exc.details})
+            return result
+        if not candidates:
+            result["reason"] = "no Microsoft Graph access token"
+            return result
+
+        last_error: MicrosoftGraphError | None = None
+        for candidate in candidates:
+            try:
+                sync_result = self._sync_mailbox_master_categories_with_token(
+                    candidate["accessToken"],
+                    mailbox_address,
+                    desired_categories,
+                    previous_managed_csr_categories,
+                )
+                result.update(sync_result)
+                result["authMethod"] = candidate["authMethod"]
+                return result
+            except MicrosoftGraphError as exc:
+                last_error = exc
+                if exc.status_code not in {401, 403}:
+                    break
+        result.update(
+            {
+                "status": "failed",
+                "reason": str(last_error) if last_error else "Microsoft Graph category sync failed",
+                "statusCode": last_error.status_code if last_error else None,
+                "details": last_error.details if last_error else None,
+            }
+        )
+        return result
+
+    def _sync_mailbox_master_categories_with_token(
+        self,
+        access_token: str,
+        mailbox_address: str,
+        desired_categories: dict[str, str],
+        previous_managed_csr_categories: set[str],
+    ) -> dict[str, Any]:
+        encoded_mailbox = parse.quote(mailbox_address, safe="")
+        base_url = f"https://graph.microsoft.com/v1.0/users/{encoded_mailbox}/outlook/masterCategories"
+        existing_response = graph_get(access_token, base_url)
+        existing_by_name = {
+            str(_pick(item, "displayName", "display_name", default="")): dict(item)
+            for item in _as_list(existing_response.get("value"))
+            if isinstance(item, dict) and str(_pick(item, "displayName", "display_name", default="")).strip()
+        }
+        created: list[str] = []
+        updated: list[str] = []
+        deleted: list[str] = []
+        errors: list[dict[str, Any]] = []
+
+        for display_name, color in desired_categories.items():
+            existing = existing_by_name.get(display_name)
+            if not existing:
+                graph_post(access_token, base_url, {"displayName": display_name, "color": color})
+                created.append(display_name)
+                continue
+            existing_color = str(_pick(existing, "color", default="") or "")
+            category_id = str(_pick(existing, "id", default="") or "")
+            if category_id and existing_color != color:
+                graph_patch(access_token, f"{base_url}/{parse.quote(category_id, safe='')}", {"color": color})
+                updated.append(display_name)
+
+        desired_names = set(desired_categories)
+        for display_name in sorted(previous_managed_csr_categories - desired_names):
+            existing = existing_by_name.get(display_name)
+            category_id = str(_pick(existing or {}, "id", default="") or "")
+            if not category_id:
+                continue
+            try:
+                graph_delete(access_token, f"{base_url}/{parse.quote(category_id, safe='')}")
+                deleted.append(display_name)
+            except MicrosoftGraphError as exc:
+                errors.append(
+                    {
+                        "displayName": display_name,
+                        "reason": str(exc),
+                        "statusCode": exc.status_code,
+                        "details": exc.details,
+                    }
+                )
+
+        status = "partial" if errors and (created or updated or deleted) else "failed" if errors else "applied" if created or updated or deleted else "skipped"
+        return {
+            "status": status,
+            "created": created,
+            "updated": updated,
+            "deleted": deleted,
+            "errors": errors,
+        }
+
     def _ensure_ai_cost_source_for_tenant(self, tenant: dict[str, Any]) -> dict[str, Any]:
         tenant_id = str(_pick(tenant, "tenantId", "tenant_id", "id", default="default") or "default")
         source_id = stable_id(tenant_id, MICROSOFT_AI_COST_PROVIDER, "ai-cost-source")
@@ -4273,17 +5245,31 @@ class OrderProcessorApi:
             default=None,
         )
         document_model_id = str(_pick(source_metadata, "documentIntelligenceModelId", default="") or "")
-        is_document_ai = processor_type == "pdf" and (document_result is not None or document_model_id)
-        if not self._has_ai_cost_signal(cost_input) and not is_document_ai:
+        google_document_ai = _as_dict(_pick(source_metadata, "googleDocumentAi", "google_document_ai", default={}))
+        is_azure_document_ai = processor_type == "pdf" and (document_result is not None or document_model_id)
+        is_google_document_ai = processor_type == "pdf" and bool(google_document_ai)
+        if not self._has_ai_cost_signal(cost_input) and not (is_azure_document_ai or is_google_document_ai):
             return None
-        provider = cost_input["provider"] or MICROSOFT_AI_COST_PROVIDER
+        provider = cost_input["provider"] or (GOOGLE_DOCUMENT_AI_COST_PROVIDER if is_google_document_ai else MICROSOFT_AI_COST_PROVIDER)
         operation_type = str(
             _pick(cost_input["explicit"], "operationType", "operation_type", default="")
-            or ("azureDocumentIntelligence" if is_document_ai else "orderProcessor")
+            or (
+                "googleDocumentAi"
+                if is_google_document_ai
+                else "azureDocumentIntelligence"
+                if is_azure_document_ai
+                else "orderProcessor"
+            )
         )
         usage = dict(cost_input["usage"])
-        if is_document_ai and not _pick(usage, "documentPages", "document_pages", "pages", default=None):
-            usage["documentPages"] = _pick(payload, "documentPages", "document_pages", "pageCount", "page_count", default=0)
+        if (is_azure_document_ai or is_google_document_ai) and not _pick(usage, "documentPages", "document_pages", "pages", default=None):
+            raw_document = _as_dict(_pick(google_document_ai, "rawDocument", "raw_document", default={}))
+            usage["documentPages"] = _pick(
+                raw_document,
+                "pageCount",
+                "page_count",
+                default=_pick(payload, "documentPages", "document_pages", "pageCount", "page_count", default=0),
+            )
         event_payload = {
             **cost_input["explicit"],
             "tenantId": str(_pick(order_doc, "tenantId", "tenant_id", default="default") or "default"),
@@ -6017,6 +7003,13 @@ class OrderProcessorApi:
                 "message": "Priority must be a whole number greater than zero.",
                 "field": "priority",
             }
+        filter_conditions, filter_error = _normalize_routing_filter_conditions(
+            _pick(payload, "filterConditions", "filter_conditions", default=[]),
+            strict=True,
+        )
+        if filter_error:
+            return filter_error
+        filter_logic = _routing_filter_logic(_pick(payload, "filterLogic", "filter_logic", default="all"))
         subject_regex = _normalize_regex_list(_pick(payload, "subjectRegex", "subject_regex", default=[]))
         body_regex = _normalize_regex_list(_pick(payload, "bodyRegex", "body_regex", default=[]))
         known_webstore_patterns = _normalize_regex_list(
@@ -6079,6 +7072,8 @@ class OrderProcessorApi:
             "processorProfileId": _pick(payload, "processorProfileId", "processor_profile_id", default=None),
             "mailboxAccountIds": list(_as_list(_pick(payload, "mailboxAccountIds", "mailbox_account_ids", default=[]))),
             "mailboxAddresses": list(_as_list(_pick(payload, "mailboxAddresses", "mailbox_addresses", default=[]))),
+            "filterConditions": filter_conditions,
+            "filterLogic": filter_logic,
             "senderEquals": list(_as_list(_pick(payload, "senderEquals", "sender_equals", default=[]))),
             "senderDomains": list(_as_list(_pick(payload, "senderDomains", "sender_domains", default=[]))),
             "subjectRegex": subject_regex,
@@ -6142,6 +7137,7 @@ class OrderProcessorApi:
             email_actions.setdefault("csrField", csr_field)
         moves = dict(email_actions.get("moves") or {})
         for action_key, prefix in {
+            "orderStart": "orderStart",
             "processedOrder": "processed",
             "failedOrder": "failed",
             "nonOrder": "nonOrder",
@@ -6149,6 +7145,10 @@ class OrderProcessorApi:
             mode = _pick(payload, f"{prefix}MoveMode", f"{prefix}_move_mode", default=None)
             folder = _pick(payload, f"{prefix}MoveFolder", f"{prefix}_move_folder", default=None)
             field = _pick(payload, f"{prefix}MoveCustomerField", f"{prefix}_move_customer_field", default=None)
+            if action_key == "orderStart":
+                mode = mode or _pick(payload, "orderProcessingMoveMode", "order_processing_move_mode", default=None)
+                folder = folder or _pick(payload, "orderProcessingMoveFolder", "order_processing_move_folder", default=None)
+                field = field or _pick(payload, "orderProcessingMoveCustomerField", "order_processing_move_customer_field", default=None)
             if mode or folder or field:
                 moves[action_key] = {
                     "mode": mode or ("customerField" if field else "staticFolder"),
@@ -6259,13 +7259,17 @@ class OrderProcessorApi:
         return {"customerIdentificationRule": stored}
 
     def upsert_processor_profile(self, payload: dict[str, Any]) -> dict[str, Any]:
-        tenant_id = _pick(payload, "tenantId", "tenant_id", default="default")
-        customer_id = _pick(payload, "customerId", "customer_id", default=GLOBAL_CUSTOMER_ID)
+        tenant_id = str(_pick(payload, "tenantId", "tenant_id", default="default") or "default").strip() or "default"
+        customer_id = str(
+            _pick(payload, "customerId", "customer_id", default=GLOBAL_CUSTOMER_ID) or GLOBAL_CUSTOMER_ID
+        ).strip() or GLOBAL_CUSTOMER_ID
+        name = str(_pick(payload, "name", default="") or "").strip()
+        profile_id = str(_pick(payload, "id", "processorProfileId", "processor_profile_id", default="") or "").strip()
         profile = ProcessorProfile(
-            id=_pick(payload, "id", "processorProfileId", "processor_profile_id", default=stable_id(tenant_id, customer_id, _pick(payload, "name", default="processor"))),
+            id=profile_id or stable_id(tenant_id, customer_id, name or "processor"),
             tenant_id=tenant_id,
             customer_id=customer_id,
-            name=_pick(payload, "name", default=""),
+            name=name,
             processor_type=_pick(payload, "processorType", "processor_type", default="csv"),
             output_profile_id=_pick(payload, "outputProfileId", "output_profile_id", default=None),
             settings=dict(_pick(payload, "settings", default={}) or {}),
@@ -6276,13 +7280,17 @@ class OrderProcessorApi:
         return {"processorProfile": stored}
 
     def upsert_output_profile(self, payload: dict[str, Any]) -> dict[str, Any]:
-        tenant_id = _pick(payload, "tenantId", "tenant_id", default="default")
-        customer_id = _pick(payload, "customerId", "customer_id", default=GLOBAL_CUSTOMER_ID)
+        tenant_id = str(_pick(payload, "tenantId", "tenant_id", default="default") or "default").strip() or "default"
+        customer_id = str(
+            _pick(payload, "customerId", "customer_id", default=GLOBAL_CUSTOMER_ID) or GLOBAL_CUSTOMER_ID
+        ).strip() or GLOBAL_CUSTOMER_ID
+        name = str(_pick(payload, "name", default="") or "").strip()
+        profile_id = str(_pick(payload, "id", "outputProfileId", "output_profile_id", default="") or "").strip()
         profile = OutputProfile(
-            id=_pick(payload, "id", "outputProfileId", "output_profile_id", default=stable_id(tenant_id, customer_id, _pick(payload, "name", default="output"))),
+            id=profile_id or stable_id(tenant_id, customer_id, name or "output"),
             tenant_id=tenant_id,
             customer_id=customer_id,
-            name=_pick(payload, "name", default=""),
+            name=name,
             output_type=_pick(payload, "outputType", "output_type", default="csv"),
             destination=dict(_pick(payload, "destination", default={}) or {}),
             settings=dict(_pick(payload, "settings", default={}) or {}),
@@ -7772,6 +8780,22 @@ def ingest_email(payload: dict[str, Any]) -> dict[str, Any]:
 
 def process_order(order_run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     return default_api.process_order(order_run_id, payload)
+
+
+def normalize_spreadsheet(payload: dict[str, Any]) -> dict[str, Any]:
+    return default_api.normalize_spreadsheet(payload)
+
+
+def extract_spreadsheet_order_lines(payload: dict[str, Any]) -> dict[str, Any]:
+    return default_api.extract_spreadsheet_order_lines(payload)
+
+
+def extract_email_body_order(payload: dict[str, Any]) -> dict[str, Any]:
+    return default_api.extract_email_body_order(payload)
+
+
+def extract_google_document_ai_order(payload: dict[str, Any]) -> dict[str, Any]:
+    return default_api.extract_google_document_ai_order(payload)
 
 
 def identify_customer(payload: dict[str, Any]) -> dict[str, Any]:

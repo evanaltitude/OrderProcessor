@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import sys
 import unittest
 from pathlib import Path
@@ -24,6 +25,16 @@ class FakeCustomerVectorSearch:
         limit: int = 5,
     ) -> list[CustomerVectorCandidate]:
         return self.candidates[:limit]
+
+
+class FakeGoogleDocumentAiClient:
+    def __init__(self, response: dict) -> None:
+        self.response = response
+        self.calls: list[dict] = []
+
+    def process_pdf(self, payload: dict, *, repository: object, tenant_id: str, settings: dict) -> dict:
+        self.calls.append({"payload": payload, "repository": repository, "tenantId": tenant_id, "settings": settings})
+        return self.response
 
 
 class ApiTests(unittest.TestCase):
@@ -132,6 +143,344 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(result["routingDecision"]["outcome"], "needsCustomerIdentification")
         self.assertIsNone(result["emailMessage"].get("customerId"))
         self.assertIsNone(result["orderRun"])
+
+    def test_known_order_identifies_customer_after_spreadsheet_extraction(self) -> None:
+        repo = InMemoryRepository()
+        api = OrderProcessorApi(repo)
+        mailbox = api.upsert_mailbox(
+            {
+                "tenantId": "altitude",
+                "mailboxAddress": "orders@example.com",
+                "displayName": "Orders",
+            }
+        )["mailboxAccount"]
+        repo.upsert(
+            "customers",
+            {
+                "id": "classic-pet-marysville",
+                "tenantId": "altitude",
+                "customerCode": "100025",
+                "name": "CLASSIC PET II - MARYSVILLE",
+                "address1": "3180 GRATIOT BLVD",
+                "city": "MARYSVILLE",
+                "state": "MI",
+                "postalCode": "48040",
+                "storeNumber": "25",
+            },
+        )
+        repo.upsert(
+            "processorProfiles",
+            {
+                "id": "spreadsheet-default",
+                "tenantId": "altitude",
+                "customerId": "_global",
+                "name": "Spreadsheet AI Layout",
+                "processorType": "spreadsheet",
+            },
+        )
+        repo.upsert(
+            "routingRules",
+            {
+                "id": "spreadsheet-orders",
+                "tenantId": "altitude",
+                "name": "Spreadsheet orders",
+                "outcome": "knownOrder",
+                "priority": 1,
+                "processorProfileId": "spreadsheet-default",
+                "mailboxAccountIds": [mailbox["id"]],
+                "senderDomains": ["retailer.example"],
+                "attachmentExtensions": ["csv"],
+                "requiredAttachment": True,
+            },
+        )
+
+        ingest = api.ingest_email(
+            {
+                "tenantId": "altitude",
+                "mailbox": "orders@example.com",
+                "mailboxAccountId": mailbox["id"],
+                "messageId": "spreadsheet-message-1",
+                "sender": "buyer@retailer.example",
+                "subject": "PO 22316",
+                "bodyText": "Please process attached order.",
+                "attachments": [{"name": "order.csv", "contentType": "text/csv"}],
+            }
+        )
+        self.assertEqual(ingest["routingDecision"]["outcome"], "knownOrder")
+        self.assertIsNone(ingest["emailMessage"].get("customerId"))
+        self.assertIsNone(ingest["orderRun"].get("customerId"))
+
+        source = "\n".join(
+            [
+                "Ship To,CLASSIC PET II - MARYSVILLE",
+                "Address,3180 GRATIOT BLVD",
+                "City,MARYSVILLE,State,MI,Zip,48040",
+                "",
+                "Supplier Code,Barcode,Product,Qty Ordered",
+                "188010145,860003377529,Treats,2",
+            ]
+        )
+        processed = api.process_order(
+            ingest["orderRun"]["id"],
+            {
+                "tenantId": "altitude",
+                "processorProfileId": "spreadsheet-default",
+                "sourceContent": source,
+                "sourceFileName": "order.csv",
+                "sender": "buyer@retailer.example",
+                "subject": "PO 22316",
+                "bodyText": "Please process attached order.",
+            },
+        )
+
+        self.assertEqual(processed["orderRun"]["customerId"], "classic-pet-marysville")
+        self.assertEqual(processed["orderRun"]["sourceMetadata"]["customerIdentification"]["customerCode"], "100025")
+        stored_email = repo.get("emailMessages", ingest["emailMessage"]["id"])
+        self.assertEqual(stored_email["customerId"], "classic-pet-marysville")
+        self.assertIn("orderCustomerIdentification", stored_email["routing"]["matchedSignals"])
+
+    def test_known_order_identifies_customer_after_email_body_extraction(self) -> None:
+        repo = InMemoryRepository()
+        api = OrderProcessorApi(repo)
+        mailbox = api.upsert_mailbox(
+            {
+                "tenantId": "altitude",
+                "mailboxAddress": "orders@example.com",
+                "displayName": "Orders",
+            }
+        )["mailboxAccount"]
+        repo.upsert(
+            "customers",
+            {
+                "id": "classic-pet-marysville",
+                "tenantId": "altitude",
+                "customerCode": "100025",
+                "name": "CLASSIC PET II - MARYSVILLE",
+                "address1": "3180 GRATIOT BLVD",
+                "city": "MARYSVILLE",
+                "state": "MI",
+                "postalCode": "48040",
+                "storeNumber": "25",
+            },
+        )
+        repo.upsert(
+            "processorProfiles",
+            {
+                "id": "email-body-default",
+                "tenantId": "altitude",
+                "customerId": "_global",
+                "name": "Email body processor",
+                "processorType": "emailBody",
+            },
+        )
+        repo.upsert(
+            "routingRules",
+            {
+                "id": "email-body-orders",
+                "tenantId": "altitude",
+                "name": "Email body orders",
+                "outcome": "knownOrder",
+                "priority": 1,
+                "processorProfileId": "email-body-default",
+                "mailboxAccountIds": [mailbox["id"]],
+                "senderDomains": ["retailer.example"],
+                "subjectRegex": ["PO|order"],
+            },
+        )
+        body = "\n".join(
+            [
+                "Ship To: CLASSIC PET II - MARYSVILLE",
+                "3180 GRATIOT BLVD",
+                "Marysville MI 48040",
+                "",
+                "Item Number | UPC | Quantity | Description",
+                "188010145 | 860003377529 | 2 | Treats",
+            ]
+        )
+
+        ingest = api.ingest_email(
+            {
+                "tenantId": "altitude",
+                "mailbox": "orders@example.com",
+                "mailboxAccountId": mailbox["id"],
+                "messageId": "email-body-message-1",
+                "sender": "buyer@retailer.example",
+                "subject": "PO EB-1004",
+                "bodyText": body,
+            }
+        )
+        self.assertEqual(ingest["routingDecision"]["outcome"], "knownOrder")
+        self.assertIsNone(ingest["emailMessage"].get("customerId"))
+        self.assertIsNone(ingest["orderRun"].get("customerId"))
+
+        processed = api.process_order(
+            ingest["orderRun"]["id"],
+            {
+                "tenantId": "altitude",
+                "processorProfileId": "email-body-default",
+                "sender": "buyer@retailer.example",
+                "subject": "PO EB-1004",
+                "bodyText": body,
+            },
+        )
+
+        self.assertEqual(processed["orderRun"]["customerId"], "classic-pet-marysville")
+        self.assertEqual(processed["orderRun"]["sourceType"], "emailBody")
+        self.assertIn("emailBody", processed["orderRun"]["sourceMetadata"])
+        self.assertIn("universalOrderJson", {item["type"] for item in processed["orderRun"]["outputArtifacts"]})
+        stored_email = repo.get("emailMessages", ingest["emailMessage"]["id"])
+        self.assertEqual(stored_email["customerId"], "classic-pet-marysville")
+        self.assertIn("orderCustomerIdentification", stored_email["routing"]["matchedSignals"])
+
+    def test_known_order_identifies_customer_after_google_document_ai_pdf_extraction(self) -> None:
+        repo = InMemoryRepository()
+        google_client = FakeGoogleDocumentAiClient(_google_document_ai_response())
+        api = OrderProcessorApi(repo, google_document_ai_client=google_client)
+        mailbox = api.upsert_mailbox(
+            {
+                "tenantId": "altitude",
+                "mailboxAddress": "orders@example.com",
+                "displayName": "Orders",
+            }
+        )["mailboxAccount"]
+        repo.upsert(
+            "tenants",
+            {
+                "id": "third-party-service-authentication",
+                "authentications": [{"id": "google", "serviceId": "google", "jwt": "jwt-for-google"}],
+            },
+        )
+        repo.upsert(
+            "customers",
+            {
+                "id": "classic-pet-marysville",
+                "tenantId": "altitude",
+                "customerCode": "100025",
+                "name": "CLASSIC PET II - MARYSVILLE",
+                "address1": "3180 GRATIOT BLVD",
+                "city": "MARYSVILLE",
+                "state": "MI",
+                "postalCode": "48040",
+                "storeNumber": "25",
+            },
+        )
+        repo.upsert(
+            "processorProfiles",
+            {
+                "id": "pdf-google-default",
+                "tenantId": "altitude",
+                "customerId": "_global",
+                "name": "Google Document AI PDF",
+                "processorType": "pdf",
+            },
+        )
+        repo.upsert(
+            "routingRules",
+            {
+                "id": "pdf-orders",
+                "tenantId": "altitude",
+                "name": "PDF orders",
+                "outcome": "knownOrder",
+                "priority": 1,
+                "processorProfileId": "pdf-google-default",
+                "mailboxAccountIds": [mailbox["id"]],
+                "senderDomains": ["retailer.example"],
+                "attachmentExtensions": ["pdf"],
+                "requiredAttachment": True,
+            },
+        )
+
+        ingest = api.ingest_email(
+            {
+                "tenantId": "altitude",
+                "mailbox": "orders@example.com",
+                "mailboxAccountId": mailbox["id"],
+                "messageId": "pdf-message-1",
+                "sender": "buyer@retailer.example",
+                "subject": "PO 9001",
+                "bodyText": "Please process attached PDF.",
+                "attachments": [{"name": "order.pdf", "contentType": "application/pdf"}],
+            }
+        )
+        self.assertEqual(ingest["routingDecision"]["outcome"], "knownOrder")
+        self.assertIsNone(ingest["orderRun"].get("customerId"))
+
+        processed = api.process_order(
+            ingest["orderRun"]["id"],
+            {
+                "tenantId": "altitude",
+                "processorProfileId": "pdf-google-default",
+                "sender": "buyer@retailer.example",
+                "subject": "PO 9001",
+                "sourceContent": b"%PDF-1.4 fixture",
+                "sourceFileName": "order.pdf",
+            },
+        )
+
+        self.assertEqual(processed["orderRun"]["customerId"], "classic-pet-marysville")
+        self.assertEqual(processed["orderRun"]["sourceType"], "pdf")
+        self.assertEqual(processed["orderRun"]["poNumber"], "PO-9001")
+        self.assertEqual(processed["orderRun"]["lines"][0]["providedUpc"], "860003377529")
+        self.assertIn("googleDocumentAi", processed["orderRun"]["sourceMetadata"])
+        self.assertIn("universalOrderJson", {item["type"] for item in processed["orderRun"]["outputArtifacts"]})
+        self.assertEqual(len(google_client.calls), 1)
+        stored_email = repo.get("emailMessages", ingest["emailMessage"]["id"])
+        self.assertEqual(stored_email["customerId"], "classic-pet-marysville")
+        self.assertIn("orderCustomerIdentification", stored_email["routing"]["matchedSignals"])
+
+    def test_non_order_email_identifies_customer_after_non_order_routing(self) -> None:
+        repo = InMemoryRepository()
+        api = OrderProcessorApi(repo)
+        mailbox = api.upsert_mailbox(
+            {
+                "tenantId": "altitude",
+                "mailboxAddress": "orders@example.com",
+                "displayName": "Orders",
+            }
+        )["mailboxAccount"]
+        repo.upsert(
+            "customers",
+            {
+                "id": "classic-pet-marysville",
+                "tenantId": "altitude",
+                "customerCode": "100025",
+                "name": "CLASSIC PET II - MARYSVILLE",
+                "senderDomains": ["classicpet.example"],
+            },
+        )
+        repo.upsert(
+            "routingRules",
+            {
+                "id": "non-order",
+                "tenantId": "altitude",
+                "name": "General non-order",
+                "outcome": "knownCustomerNonOrder",
+                "priority": 1,
+                "mailboxAccountIds": [mailbox["id"]],
+                "senderDomains": ["classicpet.example"],
+                "subjectRegex": ["question|inquiry"],
+            },
+        )
+
+        result = api.ingest_email(
+            {
+                "tenantId": "altitude",
+                "mailbox": "orders@example.com",
+                "mailboxAccountId": mailbox["id"],
+                "messageId": "non-order-message-1",
+                "sender": "manager@classicpet.example",
+                "subject": "Product inquiry",
+                "bodyText": "Can you check availability?",
+            }
+        )
+
+        self.assertEqual(result["routingDecision"]["outcome"], "knownCustomerNonOrder")
+        self.assertEqual(result["emailMessage"]["customerId"], "classic-pet-marysville")
+        self.assertIsNone(result["orderRun"])
+        self.assertEqual(
+            result["routingDecision"]["matchedSignals"]["customerIdentification"]["customerCode"],
+            "100025",
+        )
 
     def test_disabled_mailbox_is_ignored_without_exception_or_order_run(self) -> None:
         repo = InMemoryRepository()
@@ -365,7 +714,7 @@ class ApiTests(unittest.TestCase):
         self.assertIsNone(result["orderRun"])
         self.assertIsNone(result["exceptionTask"])
 
-    def test_order_rule_without_customer_match_creates_exception_instead_of_order_run(self) -> None:
+    def test_order_rule_without_customer_defers_customer_identification_until_processing(self) -> None:
         repo = InMemoryRepository()
         api = OrderProcessorApi(repo)
         mailbox = api.upsert_mailbox(
@@ -401,10 +750,14 @@ class ApiTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(result["routingDecision"]["outcome"], "needsCustomerIdentification")
-        self.assertIsNone(result["orderRun"])
-        self.assertEqual(result["exceptionTask"]["type"], "routing")
-        self.assertIn("customerIdentification", result["routingDecision"]["matchedSignals"])
+        self.assertEqual(result["routingDecision"]["outcome"], "knownOrder")
+        self.assertIsNotNone(result["orderRun"])
+        self.assertIsNone(result["orderRun"].get("customerId"))
+        self.assertIsNone(result["exceptionTask"])
+        self.assertEqual(
+            result["routingDecision"]["matchedSignals"]["customerIdentificationDeferred"],
+            "order customer identification runs after processor extraction",
+        )
 
     def test_graph_ingest_applies_routing_email_actions(self) -> None:
         repo = InMemoryRepository()
@@ -488,13 +841,135 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(
             patch_calls[1][1],
             {
-                "categories": ["CSR: Jane", "Process"],
+                "categories": ["Jane - Action"],
                 "subject": "Cust: 100029 Rte: R12 - New webstore order",
             },
         )
         self.assertEqual(len(move_calls), 1)
         self.assertTrue(move_calls[0][0].endswith("/messages/graph-message-1/move"))
         self.assertEqual(move_calls[0][1], {"destinationId": "folder-jane"})
+
+    def test_graph_order_email_uses_start_and_completion_categories(self) -> None:
+        repo = InMemoryRepository()
+        api = OrderProcessorApi(repo)
+        mailbox = api.upsert_mailbox(
+            {
+                "tenantId": "altitude",
+                "mailboxAddress": "orders@example.com",
+            }
+        )["mailboxAccount"]
+        api.upsert_customer_config(
+            {
+                "tenantId": "altitude",
+                "id": "pilot-customer",
+                "customerCode": "PILOT",
+                "name": "Pilot",
+                "csrFolder": "Jane",
+            }
+        )
+        repo.upsert(
+            "items",
+            {
+                "id": "item-1",
+                "tenantId": "altitude",
+                "customerId": "_global",
+                "internalItemNumber": "10001",
+                "description": "Test Item",
+                "customerItemNumbers": ["SKU-1"],
+            },
+        )
+        api.upsert_processor_profile(
+            {
+                "tenantId": "altitude",
+                "customerId": "_global",
+                "id": "csv-default",
+                "name": "CSV",
+                "processorType": "csv",
+            }
+        )
+        api.upsert_routing_rule(
+            {
+                "tenantId": "altitude",
+                "customerId": "pilot-customer",
+                "id": "pilot-orders",
+                "name": "Pilot orders",
+                "phase": "orderCandidate",
+                "outcome": "knownOrder",
+                "processorProfileId": "csv-default",
+                "mailboxAccountIds": [mailbox["id"]],
+                "subjectRegex": ["PO"],
+                "orderStartMoveMode": "staticFolder",
+                "orderStartMoveFolder": "In Process",
+                "processedMoveMode": "staticFolder",
+                "processedMoveFolder": "Processed",
+            }
+        )
+        csv_body = base64.b64encode(b"item_number,quantity,description\nSKU-1,2,Test Item\n").decode("ascii")
+        patch_calls: list[tuple[str, dict[str, object]]] = []
+        move_calls: list[tuple[str, dict[str, object]]] = []
+
+        def graph_get_response(_token: str, url: str) -> dict[str, object]:
+            if url.endswith("/attachments"):
+                return {
+                    "value": [
+                        {
+                            "id": "attachment-1",
+                            "name": "order.csv",
+                            "contentType": "text/csv",
+                            "size": 50,
+                            "isInline": False,
+                            "contentBytes": csv_body,
+                        }
+                    ]
+                }
+            if "In+Process" in url or "In%20Process" in url or "In Process" in url:
+                return {"value": [{"id": "folder-in-process", "displayName": "In Process"}]}
+            if "Processed" in url:
+                return {"value": [{"id": "folder-processed", "displayName": "Processed"}]}
+            return {"value": []}
+
+        def graph_patch_response(_token: str, url: str, payload: dict[str, object]) -> dict[str, object]:
+            patch_calls.append((url, payload))
+            return {}
+
+        def graph_post_response(_token: str, url: str, payload: dict[str, object]) -> dict[str, object]:
+            move_calls.append((url, payload))
+            if payload.get("destinationId") == "folder-in-process":
+                return {"id": "moved-in-process"}
+            return {"id": "moved-processed"}
+
+        with patch("order_processor.api.graph_get", side_effect=graph_get_response), patch(
+            "order_processor.api.graph_patch",
+            side_effect=graph_patch_response,
+        ), patch("order_processor.api.graph_post", side_effect=graph_post_response):
+            result = api._ingest_graph_message(
+                "access-token",
+                mailbox,
+                {
+                    "id": "graph-message-1",
+                    "internetMessageId": "<graph-message-1@example.com>",
+                    "subject": "PO 123",
+                    "from": {"emailAddress": {"address": "buyer@example.com"}},
+                    "receivedDateTime": "2026-06-24T12:00:00Z",
+                    "body": {"contentType": "text", "content": "Order attached."},
+                    "categories": [],
+                    "hasAttachments": True,
+                    "isRead": False,
+                },
+            )
+
+        stored_email = repo.get("emailMessages", result["emailMessageId"])
+        self.assertTrue(result["processed"])
+        self.assertEqual(result["orderStartActionResult"]["status"], "applied")
+        self.assertEqual(result["orderCompletionActionResult"]["status"], "applied")
+        self.assertEqual(patch_calls[0][1], {"categories": ["Processing"]})
+        self.assertEqual(patch_calls[1][1], {"categories": ["Order Processing - Do Not Move"]})
+        self.assertEqual(patch_calls[2][1], {"categories": ["Jane - Review"]})
+        self.assertEqual(move_calls[0][1], {"destinationId": "folder-in-process"})
+        self.assertTrue(move_calls[1][0].endswith("/messages/moved-in-process/move"))
+        self.assertEqual(move_calls[1][1], {"destinationId": "folder-processed"})
+        self.assertEqual(stored_email["categories"], ["Jane - Review"])
+        self.assertEqual(stored_email["source"]["graphMessageId"], "moved-processed")
 
     def test_graph_email_actions_can_be_explicitly_disabled(self) -> None:
         repo = InMemoryRepository()
@@ -905,6 +1380,35 @@ class ApiTests(unittest.TestCase):
         self.assertIn("platformAdmin", console_user["roles"])
         self.assertEqual(assignment["customerId"], "pilot-customer")
         self.assertEqual(assignment["roles"], ["orderViewer"])
+
+
+def _google_document_ai_response() -> dict:
+    return {
+        "document": {
+            "mimeType": "application/pdf",
+            "text": "Ship To CLASSIC PET II - MARYSVILLE 3180 GRATIOT BLVD Marysville MI 48040",
+            "entities": [
+                {"id": "1", "type": "purchase_order", "mentionText": "PO-9001", "confidence": 0.99},
+                {"id": "2", "type": "ship_to_name", "mentionText": "CLASSIC PET II - MARYSVILLE", "confidence": 0.98},
+                {"id": "3", "type": "ship_to_address", "mentionText": "3180 GRATIOT BLVD\nMarysville MI 48040", "confidence": 0.98},
+                {"id": "4", "type": "remit_to_name", "mentionText": "Classic Pet HQ", "confidence": 0.9},
+                {"id": "5", "type": "remit_to_address", "mentionText": "100 Billing St", "confidence": 0.9},
+                {
+                    "id": "6",
+                    "type": "line_item",
+                    "mentionText": "188010145 860003377529 Treats 2",
+                    "confidence": 0.97,
+                    "properties": [
+                        {"type": "item_number", "mentionText": "188010145", "confidence": 0.99},
+                        {"type": "upc_number", "mentionText": "860003377529", "confidence": 0.99},
+                        {"type": "description", "mentionText": "Treats", "confidence": 0.95},
+                        {"type": "quantity", "mentionText": "2", "confidence": 0.99},
+                    ],
+                },
+            ],
+            "pages": [{"pageNumber": 1}],
+        }
+    }
 
 
 if __name__ == "__main__":

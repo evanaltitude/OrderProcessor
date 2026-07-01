@@ -56,6 +56,8 @@ const ROUTING_PATHS = {
     outcome: "knownCustomerNonOrder",
     customerCodeSource: "subject",
     requiredAttachment: false,
+    orderStartMoveMode: "none",
+    orderStartMoveTarget: "",
     processedMoveMode: "none",
     processedMoveTarget: "",
     nonOrderMoveMode: "customerField",
@@ -69,6 +71,8 @@ const ROUTING_PATHS = {
     customerCodeSource: "subject",
     priorProcessedSubjectRegex: "Cust:\\s*(?P<customerCode>\\d+)",
     requiredAttachment: false,
+    orderStartMoveMode: "none",
+    orderStartMoveTarget: "",
     processedMoveMode: "none",
     processedMoveTarget: "",
     nonOrderMoveMode: "customerField",
@@ -81,6 +85,8 @@ const ROUTING_PATHS = {
     outcome: "knownCustomerNonOrder",
     customerCodeSource: "combined",
     requiredAttachment: false,
+    orderStartMoveMode: "none",
+    orderStartMoveTarget: "",
     processedMoveMode: "none",
     processedMoveTarget: "",
     nonOrderMoveMode: "customerField",
@@ -93,12 +99,26 @@ const ROUTING_PATHS = {
     outcome: "knownOrder",
     customerCodeSource: "combined",
     requiredAttachment: true,
+    orderStartMoveMode: "none",
+    orderStartMoveTarget: "",
     processedMoveMode: "customerField",
     processedMoveTarget: "csrFolder",
     nonOrderMoveMode: "none",
     nonOrderMoveTarget: ""
   }
 };
+const ROUTING_CONDITION_FIELDS = [
+  { value: "sender", label: "Sender" },
+  { value: "recipient", label: "Recipient" },
+  { value: "subject", label: "Subject" },
+  { value: "body", label: "Body" }
+];
+const ROUTING_CONDITION_OPERATORS = [
+  { value: "equals", label: "Equal" },
+  { value: "contains", label: "Contains" },
+  { value: "startsWith", label: "Starts With" },
+  { value: "endsWith", label: "Ends With" }
+];
 const SYSTEM_TENANT_ID = "__system__";
 const SUPPORTED_FILE_TYPE_OPTIONS = [
   { value: "csv", label: "CSV" },
@@ -207,6 +227,88 @@ function moveFromForm(form, prefix) {
     folder: mode === "staticFolder" ? target : "",
     field: mode === "customerField" ? target : ""
   };
+}
+
+function routingConditionOptionHtml(options, selectedValue) {
+  return options
+    .map((option) => `<option value="${escapeHtml(option.value)}"${option.value === selectedValue ? " selected" : ""}>${escapeHtml(option.label)}</option>`)
+    .join("");
+}
+
+function normalizeRoutingCondition(condition = {}) {
+  const fieldValues = new Set(ROUTING_CONDITION_FIELDS.map((option) => option.value));
+  const operatorValues = new Set(ROUTING_CONDITION_OPERATORS.map((option) => option.value));
+  const field = fieldValues.has(condition.field) ? condition.field : "sender";
+  const operator = operatorValues.has(condition.operator) ? condition.operator : "contains";
+  return {
+    field,
+    operator,
+    value: String(condition.value || "")
+  };
+}
+
+function routingConditionRowHtml(condition, index, total) {
+  const normalized = normalizeRoutingCondition(condition);
+  return `
+    <div class="routing-condition-row" data-index="${index}">
+      <select class="routing-condition-field" aria-label="Filter field">
+        ${routingConditionOptionHtml(ROUTING_CONDITION_FIELDS, normalized.field)}
+      </select>
+      <select class="routing-condition-operator" aria-label="Filter operator">
+        ${routingConditionOptionHtml(ROUTING_CONDITION_OPERATORS, normalized.operator)}
+      </select>
+      <input class="routing-condition-value" aria-label="Filter value" value="${escapeHtml(normalized.value)}" placeholder="Text to match">
+      <button class="secondary" data-action="remove-routing-condition" type="button"${total <= 1 ? " disabled" : ""}>Remove</button>
+    </div>
+  `;
+}
+
+function renderRoutingConditions(conditions = [], logic = "all") {
+  const form = el("routingForm");
+  const rows = conditions.length ? conditions.map(normalizeRoutingCondition) : [normalizeRoutingCondition()];
+  setValue(form, "filterLogic", logic === "any" ? "any" : "all");
+  el("routingConditionRows").innerHTML = rows
+    .map((condition, index) => routingConditionRowHtml(condition, index, rows.length))
+    .join("");
+}
+
+function allRoutingConditionRowsFromForm(form) {
+  return [...form.querySelectorAll(".routing-condition-row")]
+    .map((row) => ({
+      field: row.querySelector(".routing-condition-field")?.value || "sender",
+      operator: row.querySelector(".routing-condition-operator")?.value || "contains",
+      value: row.querySelector(".routing-condition-value")?.value.trim() || ""
+    }));
+}
+
+function routingConditionsFromForm(form) {
+  return allRoutingConditionRowsFromForm(form).filter((condition) => condition.value);
+}
+
+function routingConditionsFromRule(rule = {}) {
+  if (Array.isArray(rule.filterConditions) && rule.filterConditions.length) {
+    return rule.filterConditions;
+  }
+  return [];
+}
+
+function addRoutingCondition() {
+  const form = el("routingForm");
+  renderRoutingConditions(
+    [...allRoutingConditionRowsFromForm(form), normalizeRoutingCondition({ field: "subject", operator: "contains" })],
+    value(form, "filterLogic") || "all"
+  );
+}
+
+function removeRoutingCondition(index) {
+  const form = el("routingForm");
+  const rows = allRoutingConditionRowsFromForm(form);
+  if (rows.length <= 1) {
+    renderRoutingConditions(rows, value(form, "filterLogic") || "all");
+    return;
+  }
+  rows.splice(index, 1);
+  renderRoutingConditions(rows, value(form, "filterLogic") || "all");
 }
 
 function compactObject(object) {
@@ -625,6 +727,8 @@ function applyRoutingPathDefaults() {
   setValue(form, "outcome", path.outcome);
   setValue(form, "customerCodeSource", path.customerCodeSource);
   setChecked(form, "requiredAttachment", path.requiredAttachment);
+  setValue(form, "orderStartMoveMode", path.orderStartMoveMode);
+  setValue(form, "orderStartMoveTarget", path.orderStartMoveTarget);
   setValue(form, "processedMoveMode", path.processedMoveMode);
   setValue(form, "processedMoveTarget", path.processedMoveTarget);
   setValue(form, "nonOrderMoveMode", path.nonOrderMoveMode);
@@ -645,6 +749,7 @@ function clearRoutingForm() {
   setValue(form, "priority", "100");
   setChecked(form, "enabled", true);
   fillSelect(form.elements.processorProfileId, processorProfileOptions(), "");
+  renderRoutingConditions([], "all");
   applyRoutingPathDefaults();
 }
 
@@ -663,6 +768,7 @@ function loadRoutingRule(ruleId) {
   setValue(form, "senderDomains", listText(rule.senderDomains || []));
   setValue(form, "subjectRegex", listText(rule.subjectRegex || []));
   setValue(form, "bodyRegex", listText(rule.bodyRegex || []));
+  renderRoutingConditions(routingConditionsFromRule(rule), rule.filterLogic || "all");
   setValue(form, "attachmentExtensions", listText(rule.attachmentExtensions || []));
   setValue(form, "attachmentNameRegex", listText(rule.attachmentNameRegex || []));
   setValue(form, "priorProcessedSubjectRegex", listText(rule.priorProcessedSubjectRegex || []));
@@ -670,6 +776,9 @@ function loadRoutingRule(ruleId) {
   setValue(form, "customerCodeRegex", rule.customerCodeExtraction?.regex || "");
   setValue(form, "subjectTemplate", rule.subjectUpdate?.template || "");
   setValue(form, "categoryTemplates", listText(rule.emailActions?.categoryTemplates || []));
+  const orderStartMove = rule.emailActions?.moves?.orderStart || {};
+  setValue(form, "orderStartMoveMode", orderStartMove.mode || "none");
+  setValue(form, "orderStartMoveTarget", moveTarget(orderStartMove));
   const processedMove = rule.emailActions?.moves?.processedOrder || {};
   setValue(form, "processedMoveMode", processedMove.mode || "none");
   setValue(form, "processedMoveTarget", moveTarget(processedMove));
@@ -2019,6 +2128,7 @@ function wireForms() {
     const mailbox = primaryMailbox();
     const submittedRuleId = value(form, "id");
     const submittedRuleName = value(form, "name") || "routing rule";
+    const filterConditions = routingConditionsFromForm(form);
     setFormStatus("routingFormStatus", "Saving routing rule...", "warn");
     try {
       const result = await post("/console/routing-rules", {
@@ -2031,10 +2141,12 @@ function wireForms() {
         processorProfileId: value(form, "outcome") === "knownOrder" ? value(form, "processorProfileId") : "",
         mailboxAccountIds: mailbox?.id ? [mailbox.id] : [],
         mailboxAddresses: mailbox?.mailboxAddress ? [mailbox.mailboxAddress] : [],
-        senderEquals: split(value(form, "senderEquals")),
-        senderDomains: split(value(form, "senderDomains")),
-        subjectRegex: split(value(form, "subjectRegex")),
-        bodyRegex: split(value(form, "bodyRegex")),
+        filterLogic: value(form, "filterLogic") || "all",
+        filterConditions,
+        senderEquals: filterConditions.length ? [] : split(value(form, "senderEquals")),
+        senderDomains: filterConditions.length ? [] : split(value(form, "senderDomains")),
+        subjectRegex: filterConditions.length ? [] : split(value(form, "subjectRegex")),
+        bodyRegex: filterConditions.length ? [] : split(value(form, "bodyRegex")),
         priorProcessedSubjectRegex: split(value(form, "priorProcessedSubjectRegex")),
         attachmentExtensions: split(value(form, "attachmentExtensions")),
         attachmentNameRegex: split(value(form, "attachmentNameRegex")),
@@ -2046,6 +2158,9 @@ function wireForms() {
         subjectTemplate: value(form, "subjectTemplate"),
         categoryCsrField: "csrFolder",
         categoryTemplates: split(value(form, "categoryTemplates")),
+        orderStartMoveMode: value(form, "orderStartMoveMode"),
+        orderStartMoveFolder: value(form, "orderStartMoveMode") === "staticFolder" ? value(form, "orderStartMoveTarget") : "",
+        orderStartMoveCustomerField: value(form, "orderStartMoveMode") === "customerField" ? value(form, "orderStartMoveTarget") : "",
         processedMoveMode: value(form, "processedMoveMode"),
         processedMoveFolder: value(form, "processedMoveMode") === "staticFolder" ? value(form, "processedMoveTarget") : "",
         processedMoveCustomerField: value(form, "processedMoveMode") === "customerField" ? value(form, "processedMoveTarget") : "",
@@ -2111,14 +2226,16 @@ function wireForms() {
       webhookUrl: value(form, "webhookUrl"),
       timeoutSeconds: value(form, "webhookTimeoutSeconds")
     });
-    const result = await post("/console/processor-profiles", {
-      id: value(form, "id"),
+    const profileId = value(form, "id");
+    const payload = {
       customerId: "_global",
       name: value(form, "name"),
       processorType: value(form, "processorType"),
       outputProfileId: value(form, "outputProfileId"),
       settings
-    });
+    };
+    if (profileId) payload.id = profileId;
+    const result = await post("/console/processor-profiles", payload);
     if (!showActionResult(result)) return;
     clearProcessorProfileForm();
     await refresh();
@@ -2142,14 +2259,16 @@ function wireForms() {
       url: value(form, "destinationUrl"),
       productionDeliveryEnabled: checked(form, "productionDeliveryEnabled")
     });
-    const result = await post("/console/output-profiles", {
-      id: value(form, "id"),
+    const profileId = value(form, "id");
+    const payload = {
       customerId: "_global",
       name: value(form, "name"),
       outputType: value(form, "outputType"),
       destination,
       settings
-    });
+    };
+    if (profileId) payload.id = profileId;
+    const result = await post("/console/output-profiles", payload);
     if (!showActionResult(result)) return;
     clearOutputProfileForm();
     await refresh();
@@ -2364,6 +2483,12 @@ el("clearMonitorFiltersButton").addEventListener("click", resetMonitorFiltersToT
 el("routingForm").elements.routingPath.addEventListener("change", applyRoutingPathDefaults);
 el("routingForm").elements.phase.addEventListener("change", syncRoutingDefaultsForPhase);
 el("routingForm").elements.outcome.addEventListener("change", syncRoutingDefaultsForPhase);
+el("addRoutingConditionButton").addEventListener("click", addRoutingCondition);
+el("routingConditionRows").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-action='remove-routing-condition']");
+  if (!button) return;
+  removeRoutingCondition(Number(button.closest(".routing-condition-row")?.dataset.index || 0));
+});
 [
   "downstreamCustomerSearch",
   "downstreamCustomerFilterField",

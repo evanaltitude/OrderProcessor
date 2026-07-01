@@ -105,6 +105,7 @@ def _handle(req: Any, callback: Any) -> Any:
     try:
         return _response(callback())
     except Exception as exc:
+        logging.exception("Unhandled function request error: %s", type(exc).__name__)
         if os.environ.get("ORDER_PROCESSOR_DEBUG_ERRORS", "").lower() == "true":
             return _response(
                 {
@@ -328,6 +329,22 @@ if func is not None:
     @app.route(route="orders/{orderRunId}/process", methods=["POST"])
     def orders_process(req: func.HttpRequest) -> func.HttpResponse:
         return _handle(req, lambda: order_api.process_order(req.route_params["orderRunId"], _payload_with_headers(req)))
+
+    @app.route(route="normalize-spreadsheet", methods=["POST"])
+    def normalize_spreadsheet(req: func.HttpRequest) -> func.HttpResponse:
+        return _handle(req, lambda: order_api.normalize_spreadsheet(_payload_with_headers(req)))
+
+    @app.route(route="extract-order-lines", methods=["POST"])
+    def extract_order_lines(req: func.HttpRequest) -> func.HttpResponse:
+        return _handle(req, lambda: order_api.extract_spreadsheet_order_lines(_payload_with_headers(req)))
+
+    @app.route(route="extract-email-body-order", methods=["POST"])
+    def extract_email_body_order(req: func.HttpRequest) -> func.HttpResponse:
+        return _handle(req, lambda: order_api.extract_email_body_order(_payload_with_headers(req)))
+
+    @app.route(route="extract-google-document-ai-order", methods=["POST"])
+    def extract_google_document_ai_order(req: func.HttpRequest) -> func.HttpResponse:
+        return _handle(req, lambda: order_api.extract_google_document_ai_order(_payload_with_headers(req)))
 
     @app.route(route="customers/identify", methods=["POST"])
     def customers_identify(req: func.HttpRequest) -> func.HttpResponse:

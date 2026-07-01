@@ -11,6 +11,8 @@ from .pilot_shadow import run_pilot_shadow_case
 
 SUPPORTED_PROCESSOR_TYPES = {
     "csv",
+    "spreadsheet",
+    "spreadsheetailayout",
     "xlsx",
     "xls",
     "xlt",
@@ -383,6 +385,7 @@ def _routing_rule_has_matcher(rule: dict[str, Any]) -> bool:
     matcher_fields = [
         "mailboxAccountIds",
         "mailboxAddresses",
+        "filterConditions",
         "senderEquals",
         "senderDomains",
         "subjectRegex",

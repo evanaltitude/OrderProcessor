@@ -358,19 +358,22 @@
                 <label>Order processor profile
                   <select name="processorProfileId"></select>
                 </label>
-                <h3 class="form-section-title">Match conditions</h3>
-                <label>Sender emails
-                  <input name="senderEquals" placeholder="buyer@example.com">
-                </label>
-                <label>Sender domains
-                  <input name="senderDomains" placeholder="customer.com">
-                </label>
-                <label>Subject patterns
-                  <input name="subjectRegex" placeholder="PO|Purchase Order">
-                </label>
-                <label>Body patterns
-                  <input name="bodyRegex" placeholder="Order total|Ship to">
-                </label>
+                <h3 class="form-section-title">Filter conditions</h3>
+                <div class="routing-filter-panel">
+                  <label>Condition logic
+                    <select name="filterLogic">
+                      <option value="all">All conditions are true</option>
+                      <option value="any">Any condition is true</option>
+                    </select>
+                  </label>
+                  <input name="senderEquals" type="hidden">
+                  <input name="senderDomains" type="hidden">
+                  <input name="subjectRegex" type="hidden">
+                  <input name="bodyRegex" type="hidden">
+                  <div id="routingConditionRows" class="routing-condition-rows"></div>
+                  <button id="addRoutingConditionButton" class="secondary" type="button">Add Condition</button>
+                </div>
+                <h3 class="form-section-title">File signals</h3>
                 <label>Attachment types
                   <input name="attachmentExtensions" placeholder="csv, xlsx, pdf">
                 </label>
@@ -398,6 +401,16 @@
                 </label>
                 <label>CSR category tags
                   <input name="categoryTemplates" placeholder="CSR: {csrName}">
+                </label>
+                <label>Order start email
+                  <select name="orderStartMoveMode">
+                    <option value="none">Leave in inbox</option>
+                    <option value="staticFolder">Move to folder</option>
+                    <option value="customerField">Use customer CSR folder</option>
+                  </select>
+                </label>
+                <label>Order start destination
+                  <input name="orderStartMoveTarget" placeholder="In Process Orders or csrFolder">
                 </label>
                 <label>Processed order email
                   <select name="processedMoveMode">

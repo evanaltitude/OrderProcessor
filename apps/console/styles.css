@@ -616,6 +616,36 @@ th {
   font-size: 13px;
 }
 
+.routing-filter-panel {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.routing-filter-panel > label {
+  max-width: 260px;
+}
+
+.routing-condition-rows {
+  display: grid;
+  gap: 8px;
+}
+
+.routing-condition-row {
+  display: grid;
+  grid-template-columns: minmax(130px, 0.8fr) minmax(140px, 0.8fr) minmax(180px, 1.4fr) auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.routing-condition-row button {
+  min-height: 38px;
+}
+
 .form-section-title {
   grid-column: 1 / -1;
   margin-top: 8px;
@@ -1015,6 +1045,7 @@ pre {
   .exception-overview-grid,
   .exception-preprocess-grid,
   .exception-terminal-grid,
+  .routing-condition-row,
   .checkbox-grid {
     display: grid;
     grid-template-columns: 1fr;

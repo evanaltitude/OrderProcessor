@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import csv
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
@@ -13,6 +14,10 @@ from typing import Any, Protocol
 import xml.etree.ElementTree as ET
 
 from .item_validation import validate_item
+from .email_body_processing import extract_email_body_order
+from .email_body_processing import order_lines_from_extraction as email_body_order_lines_from_extraction
+from .google_document_ai import extract_order_from_google_document_ai_response
+from .google_document_ai import order_lines_from_google_extraction
 from .models import (
     ItemRecord,
     MatchStatus,
@@ -21,6 +26,8 @@ from .models import (
     ProcessingStatus,
     ProcessorProfile,
 )
+from .spreadsheet_processing import extract_order_lines as extract_spreadsheet_order_lines
+from .spreadsheet_processing import order_lines_from_extraction
 
 
 PROCESSOR_VERSION = "phase9-universal-v1"
@@ -190,6 +197,51 @@ class LegacyWorkbookOrderProcessor:
 
 
 @dataclass(slots=True)
+class SpreadsheetOrderProcessor:
+    processor_type: str = "spreadsheet"
+
+    def parse(
+        self,
+        order: OrderRun,
+        payload: dict[str, Any] | bytes | str,
+        context: OrderProcessorContext | None = None,
+    ) -> OrderRun:
+        settings = _settings(context)
+        extraction = extract_spreadsheet_order_lines(payload, settings)
+        order.source_type = "spreadsheet"
+        if isinstance(payload, dict):
+            order.source_file_name = str(
+                _pick(payload, "sourceFileName", "source_file_name", "fileName", "file_name", default=order.source_file_name)
+                or order.source_file_name
+            )
+        order.source_metadata["spreadsheet"] = {
+            "normalization": extraction.get("normalization", {}),
+            "layout": extraction.get("layout", {}),
+            "customerIdentification": dict(extraction.get("layout", {}).get("customerIdentification", {}) or {}),
+            "orderGroups": [
+                {key: value for key, value in group.items() if key != "lines"}
+                for group in extraction.get("orderGroups", [])
+                if isinstance(group, dict)
+            ],
+            "requiresHumanReview": bool(extraction.get("requiresHumanReview")),
+        }
+        order.parse_warnings.extend(
+            [dict(item) for item in extraction.get("warnings", []) if isinstance(item, dict)]
+        )
+        if extraction.get("purchaseOrder") and not order.po_number:
+            order.po_number = str(extraction.get("purchaseOrder") or "")
+        order.lines = order_lines_from_extraction(extraction)
+        if extraction.get("status") == "failed" or not order.lines:
+            for error in extraction.get("errors", []):
+                if isinstance(error, dict):
+                    order.errors.append(dict(error))
+            order.status = ProcessingStatus.FAILED
+        else:
+            order.status = ProcessingStatus.PROCESSING
+        return order
+
+
+@dataclass(slots=True)
 class PdfOrderProcessor:
     processor_type: str = "pdf"
 
@@ -204,6 +256,46 @@ class PdfOrderProcessor:
             rows = _rows_from_payload(payload)
             if rows is not None:
                 _apply_rows_to_order(order, rows, settings, "pdf")
+                return order
+
+            google_extraction = _pick(
+                payload,
+                "googleDocumentAiExtraction",
+                "google_document_ai_extraction",
+                default=None,
+            )
+            google_result = _pick(
+                payload,
+                "googleDocumentAiResult",
+                "google_document_ai_result",
+                "googleDocumentAiResponse",
+                "google_document_ai_response",
+                default=None,
+            )
+            if not isinstance(google_extraction, dict) and isinstance(google_result, dict):
+                google_extraction = extract_order_from_google_document_ai_response(google_result, payload, settings)
+            if isinstance(google_extraction, dict):
+                order.source_type = "pdf"
+                order.source_metadata["googleDocumentAi"] = {
+                    "customerIdentification": dict(google_extraction.get("customerIdentification", {}) or {}),
+                    "headers": dict(google_extraction.get("headers", {}) or {}),
+                    "rawDocument": dict(google_extraction.get("rawDocument", {}) or {}),
+                    "processor": dict(google_extraction.get("googleDocumentAi", {}) or {}),
+                    "requiresHumanReview": bool(google_extraction.get("requiresHumanReview")),
+                }
+                order.parse_warnings.extend(
+                    [dict(item) for item in google_extraction.get("warnings", []) if isinstance(item, dict)]
+                )
+                if google_extraction.get("purchaseOrder") and not order.po_number:
+                    order.po_number = str(google_extraction.get("purchaseOrder") or "")
+                order.lines = order_lines_from_google_extraction(google_extraction)
+                if google_extraction.get("status") == "failed" or not order.lines:
+                    for error in google_extraction.get("errors", []):
+                        if isinstance(error, dict):
+                            order.errors.append(dict(error))
+                    order.status = ProcessingStatus.FAILED
+                else:
+                    order.status = ProcessingStatus.PROCESSING
                 return order
 
             extracted = _pick(
@@ -230,10 +322,10 @@ class PdfOrderProcessor:
 
         _append_error(
             order,
-            "documentIntelligenceExtractionRequired",
-            "PDF processing requires Azure Document Intelligence extracted tables or text before line parsing.",
-            integration="azureDocumentIntelligence",
-            modelId=settings.get("documentIntelligenceModelId", "prebuilt-layout"),
+            "documentExtractionRequired",
+            "PDF processing requires Google Document AI extraction, Azure Document Intelligence extracted tables, or text before line parsing.",
+            integration="googleDocumentAi",
+            modelId=settings.get("googleDocumentAiProcessorId", "d3e3bcfffcbad47c"),
         )
         order.source_type = "pdf"
         order.status = ProcessingStatus.FAILED
@@ -251,13 +343,27 @@ class EmailBodyOrderProcessor:
         context: OrderProcessorContext | None = None,
     ) -> OrderRun:
         settings = _settings(context)
-        if isinstance(payload, dict) and _rows_from_payload(payload) is not None:
-            rows = _rows_from_payload(payload) or []
+        extraction = extract_email_body_order(payload, settings)
+        order.source_type = "emailBody"
+        order.source_metadata["emailBody"] = {
+            "customerIdentification": dict(extraction.get("customerIdentification", {}) or {}),
+            "aiExtraction": dict(extraction.get("aiExtraction", {}) or {}),
+            "source": dict(extraction.get("source", {}) or {}),
+            "requiresHumanReview": bool(extraction.get("requiresHumanReview")),
+        }
+        order.parse_warnings.extend(
+            [dict(item) for item in extraction.get("warnings", []) if isinstance(item, dict)]
+        )
+        if extraction.get("purchaseOrder") and not order.po_number:
+            order.po_number = str(extraction.get("purchaseOrder") or "")
+        order.lines = email_body_order_lines_from_extraction(extraction)
+        if extraction.get("status") == "failed" or not order.lines:
+            for error in extraction.get("errors", []):
+                if isinstance(error, dict):
+                    order.errors.append(dict(error))
+            order.status = ProcessingStatus.FAILED
         else:
-            text = _email_body_text(payload)
-            rows = rows_from_text_table(text, settings)
-            _apply_po_from_text(order, text)
-        _apply_rows_to_order(order, rows, settings, "emailBody")
+            order.status = ProcessingStatus.PROCESSING
         return order
 
 
@@ -296,6 +402,8 @@ class CustomerOverrideOrderProcessor:
 
 def create_order_processor(processor_type: str, settings: dict[str, Any] | None = None) -> OrderProcessor:
     normalized = _normalize_processor_type(processor_type)
+    if normalized == "spreadsheet":
+        return SpreadsheetOrderProcessor()
     if normalized == "csv":
         return CsvOrderProcessor()
     if normalized == "xlsx":
@@ -436,15 +544,15 @@ def rows_from_text_table(text: str, settings: dict[str, Any] | None = None) -> l
     return rows
 
 
-def validate_order_lines(order: OrderRun, items: list[ItemRecord]) -> OrderRun:
+def validate_order_lines(order: OrderRun, items: list[ItemRecord], max_workers: int | None = None) -> OrderRun:
     if not order.customer_id:
         order.errors.append({"code": "missingCustomer", "message": "Cannot validate lines without a customer."})
         for line in order.lines:
             line.validation_errors.append({"code": "missingCustomer"})
         return order
 
-    for line in order.lines:
-        result = validate_item(
+    def validate_line(line: OrderLine):
+        return validate_item(
             tenant_id=order.tenant_id,
             customer_id=order.customer_id,
             provided_item_number=line.provided_item_number,
@@ -452,6 +560,15 @@ def validate_order_lines(order: OrderRun, items: list[ItemRecord]) -> OrderRun:
             description=line.description,
             items=items,
         )
+
+    if len(order.lines) > 1:
+        worker_count = max_workers or _item_validation_worker_count(len(order.lines))
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            results = list(executor.map(validate_line, order.lines))
+    else:
+        results = [validate_line(line) for line in order.lines]
+
+    for line, result in zip(order.lines, results, strict=True):
         line.validation_status = result.status
         line.validation_confidence = result.confidence
         line.validation_method = result.match_method
@@ -460,6 +577,16 @@ def validate_order_lines(order: OrderRun, items: list[ItemRecord]) -> OrderRun:
         if result.unresolved_reason:
             line.validation_errors.append({"code": "unresolvedItem", "message": result.unresolved_reason})
     return order
+
+
+def _item_validation_worker_count(line_count: int) -> int:
+    configured = os.environ.get("ORDER_ITEM_VALIDATION_MAX_WORKERS")
+    if configured:
+        try:
+            return max(1, min(int(configured), line_count))
+        except ValueError:
+            pass
+    return max(1, min(8, line_count))
 
 
 class AzureDocumentIntelligenceExtractor:
@@ -617,7 +744,12 @@ def _source_text(payload: dict[str, Any] | bytes | str, settings: dict[str, Any]
         value = _pick(payload, "sourceContent", "source_content", "content", default="")
         if isinstance(value, bytes):
             return _decode_bytes(value)
-        return _strip_bom(str(value or ""))
+        if value:
+            return _strip_bom(str(value or ""))
+        encoded = _pick(payload, "sourceContentBase64", "source_content_base64", default=None)
+        if encoded:
+            return _decode_bytes(base64.b64decode(str(encoded)))
+        return ""
     if isinstance(payload, bytes):
         return _decode_bytes(payload)
     return _strip_bom(str(payload or ""))
@@ -786,6 +918,11 @@ def _normalize_processor_type(processor_type: str) -> str:
         "csv": "csv",
         "csvparse": "csv",
         "orderprocesscsvparse": "csv",
+        "spreadsheet": "spreadsheet",
+        "spreadsheetailayout": "spreadsheet",
+        "orderprocessspreadsheetailayout": "spreadsheet",
+        "orderprocessspreadsheet": "spreadsheet",
+        "spreadsheetorder": "spreadsheet",
         "xlsx": "xlsx",
         "excelxlsx": "xlsx",
         "xls": "xls",
@@ -829,6 +966,9 @@ def _has_source_payload(payload: dict[str, Any]) -> bool:
             "sourceRows",
             "source_rows",
             "rows",
+            "content",
+            "contentBase64",
+            "attachments",
             "bodyText",
             "body_text",
             "sourceText",

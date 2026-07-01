@@ -165,6 +165,89 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(decision.outcome, RoutingOutcome.IGNORED)
         self.assertIn("known webstore pattern matched", decision.reasons)
 
+    def test_rule_can_match_structured_filter_conditions_with_all_logic(self) -> None:
+        email = EmailMessage(
+            id="email-1",
+            tenant_id="altitude",
+            mailbox="orders@example.com",
+            message_id="message-1",
+            sender="Buyer <buyer@pilot.example>",
+            subject="Hollywood Feed PO#480913369",
+            body_text="Ship to Nashville TN",
+            received_at="2026-06-19T12:00:00Z",
+        )
+        rule = RoutingRule(
+            id="rule-1",
+            tenant_id="altitude",
+            name="hollywood feed email body",
+            outcome=RoutingOutcome.KNOWN_ORDER,
+            filter_logic="all",
+            filter_conditions=[
+                {"field": "sender", "operator": "endsWith", "value": "@pilot.example"},
+                {"field": "subject", "operator": "startsWith", "value": "Hollywood Feed PO#"},
+                {"field": "body", "operator": "contains", "value": "ship to"},
+            ],
+        )
+
+        matches, reasons = rule_matches(email, rule)
+
+        self.assertTrue(matches)
+        self.assertIn("all filter conditions matched", reasons)
+
+    def test_rule_can_match_structured_filter_conditions_with_any_logic_and_recipient(self) -> None:
+        email = EmailMessage(
+            id="email-1",
+            tenant_id="altitude",
+            mailbox="orders@example.com",
+            message_id="message-1",
+            sender="buyer@example.com",
+            subject="hello",
+            body_text="status question",
+            received_at="2026-06-19T12:00:00Z",
+            source={"toRecipients": ["orders@frontierdistributing.com"]},
+        )
+        rule = RoutingRule(
+            id="rule-1",
+            tenant_id="altitude",
+            name="recipient route",
+            outcome=RoutingOutcome.KNOWN_CUSTOMER_NON_ORDER,
+            filter_logic="any",
+            filter_conditions=[
+                {"field": "subject", "operator": "contains", "value": "purchase order"},
+                {"field": "recipient", "operator": "equals", "value": "orders@frontierdistributing.com"},
+            ],
+        )
+
+        matches, reasons = rule_matches(email, rule)
+
+        self.assertTrue(matches)
+        self.assertIn("one filter condition matched", reasons)
+
+    def test_structured_filter_condition_failure_blocks_rule(self) -> None:
+        email = EmailMessage(
+            id="email-1",
+            tenant_id="altitude",
+            mailbox="orders@example.com",
+            message_id="message-1",
+            sender="buyer@example.com",
+            subject="question",
+            received_at="2026-06-19T12:00:00Z",
+        )
+        rule = RoutingRule(
+            id="rule-1",
+            tenant_id="altitude",
+            name="subject order",
+            outcome=RoutingOutcome.KNOWN_ORDER,
+            filter_conditions=[
+                {"field": "subject", "operator": "startsWith", "value": "Hollywood Feed PO#"},
+            ],
+        )
+
+        matches, reasons = rule_matches(email, rule)
+
+        self.assertFalse(matches)
+        self.assertEqual(reasons, ["filter condition did not match: subject startsWith Hollywood Feed PO#"])
+
     def test_invalid_regex_does_not_crash_rule_evaluation(self) -> None:
         email = EmailMessage(
             id="email-1",

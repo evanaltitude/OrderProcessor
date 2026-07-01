@@ -30,6 +30,7 @@ infra/*.json
 # Sensitive exported reference data from the legacy Frontier environment.
 # These local exports can contain direct workflow callback URLs, API keys,
 # connection references, and tenant-specific endpoints.
+references/
 power-automate/solutions/OrdersAutomations/
 docs/reverse-engineering/ORDER_PROCESS_FLOW_ANALYSIS.md
 docs/reverse-engineering/order-process-flow-analysis.json

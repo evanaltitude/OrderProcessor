@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
+import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -18,7 +21,8 @@ from order_processor.imports import (
 from order_processor.imports import InMemorySourceRowArchive
 from order_processor.customer_vector_store import CustomerVectorStoreManager, customer_vector_store_reference_id
 from order_processor.data_model import GLOBAL_CUSTOMER_ID
-from order_processor.models import ItemRecord, OrderRun, ProcessingStatus
+from order_processor.microsoft_graph import MicrosoftGraphError
+from order_processor.models import ItemRecord, ItemValidationResult, MatchStatus, OrderLine, OrderRun, ProcessingStatus
 from order_processor.order_processing import CsvOrderProcessor, validate_order_lines
 from order_processor.output_generation import order_to_json, order_to_line_csv
 from order_processor.api import OrderProcessorApi
@@ -221,6 +225,39 @@ class ImportsOutputTests(unittest.TestCase):
         self.assertIn("PILOT123", order_to_line_csv(validated))
         self.assertEqual(json.loads(order_to_json(validated))["id"], "order-run-1")
 
+    def test_order_line_validation_preserves_row_order_when_parallel(self) -> None:
+        order = OrderRun(
+            id="order-run-1",
+            tenant_id="altitude",
+            email_message_id="email-1",
+            customer_id="pilot-customer",
+            lines=[
+                OrderLine(line_number=1, provided_item_number="FIRST"),
+                OrderLine(line_number=2, provided_item_number="SECOND"),
+                OrderLine(line_number=3, provided_item_number="THIRD"),
+            ],
+        )
+        delays = {"FIRST": 0.03, "SECOND": 0.01, "THIRD": 0.0}
+
+        def fake_validate_item(**kwargs):
+            token = kwargs["provided_item_number"]
+            time.sleep(delays[token])
+            return ItemValidationResult(
+                status=MatchStatus.MATCHED,
+                matched_internal_item_number=f"INTERNAL-{token}",
+                match_method="test",
+                confidence=1.0,
+            )
+
+        with patch("order_processor.order_processing.validate_item", side_effect=fake_validate_item):
+            validate_order_lines(order, [], max_workers=3)
+
+        self.assertEqual([line.line_number for line in order.lines], [1, 2, 3])
+        self.assertEqual(
+            [line.matched_internal_item_number for line in order.lines],
+            ["INTERNAL-FIRST", "INTERNAL-SECOND", "INTERNAL-THIRD"],
+        )
+
     def test_import_customers_from_csv_archives_rows_aliases_and_daily_schedule(self) -> None:
         repo = InMemoryRepository()
         archive = InMemorySourceRowArchive()
@@ -296,6 +333,108 @@ class ImportsOutputTests(unittest.TestCase):
         self.assertEqual(result["csrDirectory"], directory)
         self.assertEqual([item["name"] for item in directory], ["mwoodward", "rrussell"])
         self.assertEqual(directory[1]["customerCodes"], ["100028", "100029"])
+
+    def test_import_customers_syncs_mailbox_master_categories_for_csrs(self) -> None:
+        repo = InMemoryRepository()
+        api = OrderProcessorApi(repo, source_archive=InMemorySourceRowArchive())
+        mailbox = api.upsert_mailbox(
+            {
+                "tenantId": "altitude",
+                "mailboxAddress": "orders@example.com",
+                "connectionId": "m365-orders",
+            }
+        )["mailboxAccount"]
+        repo.upsert(
+            "microsoftAuthConnections",
+            {
+                "id": "m365-orders",
+                "tenantId": "altitude",
+                "customerId": "_global",
+                "provider": "microsoft365",
+                "displayName": "Orders",
+                "status": "active",
+                "keyVaultSecretNames": {"refreshToken": "refresh-secret"},
+                "metadata": {},
+            },
+        )
+        api.secret_store.set_secret("refresh-secret", "refresh-token")
+        repo.upsert(
+            "tenants",
+            {
+                "id": "altitude",
+                "tenantId": "altitude",
+                "name": "Altitude",
+                "settings": {
+                    "managedMailboxCategories": {
+                        "csrCategories": ["Old CSR - Action", "Old CSR - Review", "Old CSR - Validate"]
+                    }
+                },
+            },
+        )
+        post_calls: list[dict[str, object]] = []
+        patch_calls: list[tuple[str, dict[str, object]]] = []
+        delete_calls: list[str] = []
+
+        def graph_get_response(_token: str, url: str) -> dict[str, object]:
+            self.assertIn("/users/orders%40example.com/outlook/masterCategories", url)
+            return {
+                "value": [
+                    {"id": "processing", "displayName": "Processing", "color": "preset9"},
+                    {"id": "jane-action", "displayName": "Jane - Action", "color": "preset0"},
+                    {"id": "old-review", "displayName": "Old CSR - Review", "color": "preset7"},
+                ]
+            }
+
+        def graph_post_response(_token: str, _url: str, payload: dict[str, object]) -> dict[str, object]:
+            post_calls.append(payload)
+            return {"id": str(payload["displayName"]).lower().replace(" ", "-")}
+
+        def graph_patch_response(_token: str, url: str, payload: dict[str, object]) -> dict[str, object]:
+            patch_calls.append((url, payload))
+            return {}
+
+        def graph_delete_response(_token: str, url: str) -> dict[str, object]:
+            delete_calls.append(url)
+            return {}
+
+        with patch.dict(os.environ, {"ORDER_PROCESSOR_MICROSOFT_AUTH_CLIENT_SECRET": "client-secret"}, clear=False), patch(
+            "order_processor.api.client_credentials_access_token",
+            side_effect=MicrosoftGraphError("application token unavailable"),
+        ), patch("order_processor.api.refresh_access_token", return_value={"access_token": "access-token"}), patch(
+            "order_processor.api.graph_get",
+            side_effect=graph_get_response,
+        ), patch("order_processor.api.graph_post", side_effect=graph_post_response), patch(
+            "order_processor.api.graph_patch",
+            side_effect=graph_patch_response,
+        ), patch("order_processor.api.graph_delete", side_effect=graph_delete_response):
+            result = api.import_customers(
+                {
+                    "tenantId": "altitude",
+                    "rows": [
+                        {
+                            "cust_code": "100025",
+                            "bus_name": "Classic Pet",
+                            "cust_csr": "Jane",
+                            "csr_email": "jane@example.com",
+                        }
+                    ],
+                }
+            )
+
+        created_names = {str(payload["displayName"]) for payload in post_calls}
+        stored_state = repo.get("tenants", "altitude")["settings"]["managedMailboxCategories"]
+        self.assertEqual(result["mailboxCategorySync"]["status"], "applied")
+        self.assertEqual(result["mailboxCategorySync"]["mailboxCount"], 1)
+        self.assertEqual(result["mailboxCategorySync"]["results"][0]["mailboxAccountId"], mailbox["id"])
+        self.assertIn("Order Processing - Do Not Move", created_names)
+        self.assertIn("Processing Exception", created_names)
+        self.assertIn("Jane - Review", created_names)
+        self.assertIn("Jane - Validate", created_names)
+        self.assertEqual(patch_calls[0][1], {"color": "preset3"})
+        self.assertEqual(len(delete_calls), 1)
+        self.assertIn("old-review", delete_calls[0])
+        self.assertIn("Jane - Action", stored_state["csrCategories"])
+        self.assertNotIn("Old CSR - Review", stored_state["csrCategories"])
 
     def test_import_customers_rotates_vector_store_after_customer_update(self) -> None:
         repo = InMemoryRepository()

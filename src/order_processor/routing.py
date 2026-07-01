@@ -9,6 +9,8 @@ from .models import EmailMessage, RoutingDecision, RoutingOutcome, RoutingRule
 
 
 ORDER_ATTACHMENT_EXTENSIONS = {"csv", "xlsx", "xls", "xlt", "pdf", "txt"}
+FILTER_FIELDS = {"sender", "recipient", "subject", "body"}
+FILTER_OPERATORS = {"equals", "contains", "startsWith", "endsWith"}
 
 
 def _sender_address(sender: str) -> str:
@@ -63,6 +65,125 @@ def _attachment_signals(email: EmailMessage) -> dict[str, Any]:
     }
 
 
+def _as_text_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item or "") for item in value]
+    return [str(value or "")]
+
+
+def _recipient_value(email: EmailMessage) -> str:
+    source = email.source or {}
+    values: list[str] = []
+    for key in ("toRecipients", "to_recipients", "recipients", "recipient", "to"):
+        raw_value = source.get(key)
+        if isinstance(raw_value, list):
+            for item in raw_value:
+                if isinstance(item, dict):
+                    values.extend(
+                        _as_text_list(
+                            item.get("emailAddress")
+                            or item.get("address")
+                            or item.get("email")
+                            or item.get("name")
+                        )
+                    )
+                else:
+                    values.extend(_as_text_list(item))
+        elif isinstance(raw_value, dict):
+            values.extend(
+                _as_text_list(
+                    raw_value.get("emailAddress")
+                    or raw_value.get("address")
+                    or raw_value.get("email")
+                    or raw_value.get("name")
+                )
+            )
+        else:
+            values.extend(_as_text_list(raw_value))
+    if email.mailbox:
+        values.append(email.mailbox)
+    return "\n".join(value for value in values if value)
+
+
+def _filter_condition_value(email: EmailMessage, field: str, body_value: str) -> str:
+    if field == "sender":
+        return _sender_address(email.sender)
+    if field == "recipient":
+        return _recipient_value(email)
+    if field == "subject":
+        return email.subject or ""
+    if field == "body":
+        return body_value
+    return ""
+
+
+def _condition_matches(actual: str, operator: str, expected: str) -> bool:
+    actual_text = str(actual or "").strip().lower()
+    expected_text = str(expected or "").strip().lower()
+    if not expected_text:
+        return True
+    if operator == "equals":
+        return actual_text == expected_text or any(
+            item.strip().lower() == expected_text
+            for item in str(actual or "").splitlines()
+        )
+    if operator == "startsWith":
+        return actual_text.startswith(expected_text)
+    if operator == "endsWith":
+        return actual_text.endswith(expected_text)
+    return expected_text in actual_text
+
+
+def _filter_condition_label(condition: dict[str, Any]) -> str:
+    return " ".join(
+        str(condition.get(key, "") or "").strip()
+        for key in ("field", "operator", "value")
+        if str(condition.get(key, "") or "").strip()
+    )
+
+
+def _filter_conditions_match(
+    email: EmailMessage,
+    rule: RoutingRule,
+    body_value: str,
+) -> tuple[bool, list[str]]:
+    conditions = [
+        condition
+        for condition in rule.filter_conditions
+        if isinstance(condition, dict)
+        and str(condition.get("field", "") or "").strip() in FILTER_FIELDS
+        and str(condition.get("operator", "") or "").strip() in FILTER_OPERATORS
+        and str(condition.get("value", "") or "").strip()
+    ]
+    if not conditions:
+        return True, []
+
+    results = [
+        _condition_matches(
+            _filter_condition_value(email, str(condition.get("field")), body_value),
+            str(condition.get("operator")),
+            str(condition.get("value")),
+        )
+        for condition in conditions
+    ]
+    if rule.filter_logic == "any":
+        if any(results):
+            return True, ["one filter condition matched"]
+        labels = ", ".join(_filter_condition_label(condition) for condition in conditions)
+        return False, [f"no filter conditions matched: {labels}"]
+
+    if all(results):
+        return True, ["all filter conditions matched"]
+    failed = [
+        _filter_condition_label(condition)
+        for condition, result in zip(conditions, results)
+        if not result
+    ]
+    return False, [f"filter condition did not match: {', '.join(failed)}"]
+
+
 def _rule_scope_matches(email: EmailMessage, rule: RoutingRule) -> tuple[bool, list[str]]:
     reasons: list[str] = []
 
@@ -97,6 +218,12 @@ def rule_matches(email: EmailMessage, rule: RoutingRule) -> tuple[bool, list[str
     sender = _sender_address(email.sender)
     domain = _sender_domain(email.sender)
 
+    body_value = "\n".join([email.body_text or "", email.body_html or ""])
+    filter_matches, filter_reasons = _filter_conditions_match(email, rule, body_value)
+    if not filter_matches:
+        return False, filter_reasons
+    reasons.extend(filter_reasons)
+
     if rule.sender_equals:
         allowed = {item.lower().strip() for item in rule.sender_equals}
         if sender not in allowed:
@@ -114,7 +241,6 @@ def rule_matches(email: EmailMessage, rule: RoutingRule) -> tuple[bool, list[str
             return False, ["subject did not match configured patterns"]
         reasons.append("subject pattern matched")
 
-    body_value = "\n".join([email.body_text or "", email.body_html or ""])
     if rule.body_regex:
         if not _has_regex_match(rule.body_regex, body_value):
             return False, ["body did not match configured patterns"]

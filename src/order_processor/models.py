@@ -121,6 +121,8 @@ class RoutingRule:
     processor_profile_id: str | None = None
     mailbox_account_ids: list[str] = field(default_factory=list)
     mailbox_addresses: list[str] = field(default_factory=list)
+    filter_conditions: list[dict[str, Any]] = field(default_factory=list)
+    filter_logic: str = "all"
     sender_equals: list[str] = field(default_factory=list)
     sender_domains: list[str] = field(default_factory=list)
     subject_regex: list[str] = field(default_factory=list)

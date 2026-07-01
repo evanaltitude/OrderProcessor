@@ -21,6 +21,7 @@ DEFAULT_GRAPH_SCOPES = [
     "User.Read",
     "Mail.ReadWrite.Shared",
     "Mail.Send.Shared",
+    "MailboxSettings.ReadWrite",
 ]
 
 
@@ -243,6 +244,10 @@ def graph_post(access_token: str, url: str, payload: dict[str, Any]) -> dict[str
 
 def graph_patch(access_token: str, url: str, payload: dict[str, Any]) -> dict[str, Any]:
     return graph_request(access_token, "PATCH", url, payload)
+
+
+def graph_delete(access_token: str, url: str) -> dict[str, Any]:
+    return graph_request(access_token, "DELETE", url)
 
 
 def graph_request(access_token: str, method: str, url: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:

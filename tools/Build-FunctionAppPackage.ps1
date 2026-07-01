@@ -44,6 +44,10 @@ if (-not $SkipDependencies) {
 $routes = @(
     @{ Name = "emails_ingest"; EntryPoint = "emails_ingest"; Route = "emails/ingest" },
     @{ Name = "orders_process"; EntryPoint = "orders_process"; Route = "orders/{orderRunId}/process" },
+    @{ Name = "normalize_spreadsheet"; EntryPoint = "normalize_spreadsheet"; Route = "normalize-spreadsheet" },
+    @{ Name = "extract_order_lines"; EntryPoint = "extract_order_lines"; Route = "extract-order-lines" },
+    @{ Name = "extract_email_body_order"; EntryPoint = "extract_email_body_order"; Route = "extract-email-body-order" },
+    @{ Name = "extract_google_document_ai_order"; EntryPoint = "extract_google_document_ai_order"; Route = "extract-google-document-ai-order" },
     @{ Name = "customers_identify"; EntryPoint = "customers_identify"; Route = "customers/identify" },
     @{ Name = "items_validate"; EntryPoint = "items_validate"; Route = "items/validate" },
     @{ Name = "imports_customers"; EntryPoint = "imports_customers"; Route = "imports/customers"; QueueOutput = "%ORDER_PROCESSOR_IMPORT_JOB_QUEUE%" },
