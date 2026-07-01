@@ -343,6 +343,8 @@ def _resolve_move(policy: dict[str, Any], action_key: str, customer: CustomerPro
     if normalized_mode in {"customerfield", "field", "customerrecordfield"}:
         field_name = str(move_policy.get("field") or move_policy.get("customerField") or "csrFolder")
         folder = _customer_field(customer, field_name)
+        if not folder and re.sub(r"[^a-z0-9]", "", field_name.lower()) == "csrfolder":
+            folder = _customer_csr_folder_fallback(customer)
         return {"mode": "customerField", "enabled": bool(folder), "customerField": field_name, "folderName": folder}
     return {"mode": mode, "enabled": False}
 
@@ -366,6 +368,19 @@ def _customer_field(customer: CustomerProfile | None, field_name: str) -> str:
             if candidate in row and row[candidate] not in {None, ""}:
                 return str(row[candidate])
     return ""
+
+
+def _customer_csr_folder_fallback(customer: CustomerProfile | None) -> str:
+    for field_name in ("csrName", "csr_name", "csrFolder", "csr_folder"):
+        value = _customer_field(customer, field_name).strip()
+        if value:
+            return value
+    csr_email = _customer_field(customer, "csrEmail").strip()
+    local_part = parseaddr(csr_email)[1].split("@", 1)[0] if csr_email else ""
+    if not local_part:
+        return ""
+    parts = [part for part in re.split(r"[._\\-\\s]+", local_part) if part]
+    return " ".join(part[:1].upper() + part[1:] for part in parts)
 
 
 def _render_template(template: str, context: dict[str, Any]) -> str:

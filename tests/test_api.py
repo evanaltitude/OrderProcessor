@@ -803,6 +803,50 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(plan["move"]["folderName"], "Jane")
         self.assertTrue(plan["move"]["enabled"])
 
+    def test_order_completion_move_falls_back_to_csr_name_when_csr_folder_missing(self) -> None:
+        repo = InMemoryRepository()
+        api = OrderProcessorApi(repo)
+        api.upsert_customer_config(
+            {
+                "tenantId": "altitude",
+                "id": "pilot-customer",
+                "customerCode": "PILOT",
+                "name": "Pilot",
+                "csrName": "Jane Doe",
+            }
+        )
+        api.upsert_routing_rule(
+            {
+                "tenantId": "altitude",
+                "customerId": "_global",
+                "id": "generic-order",
+                "name": "Generic order",
+                "phase": "orderCandidate",
+                "outcome": "knownOrder",
+                "processorProfileId": "pdf-default",
+                "processedMoveMode": "customerField",
+                "processedMoveCustomerField": "csrFolder",
+            }
+        )
+
+        plan = api._order_completion_action_plan(
+            {"tenantId": "altitude", "id": "email-1", "subject": "PO"},
+            {"ruleId": "generic-order"},
+            {
+                "orderRun": {
+                    "id": "order-1",
+                    "tenantId": "altitude",
+                    "customerId": "pilot-customer",
+                    "status": "completed",
+                },
+                "unresolvedLineCount": 0,
+            },
+        )
+
+        self.assertEqual(plan["categories"], ["Jane Doe - Review"])
+        self.assertEqual(plan["move"]["folderName"], "Jane Doe")
+        self.assertTrue(plan["move"]["enabled"])
+
     def test_graph_ingest_applies_routing_email_actions(self) -> None:
         repo = InMemoryRepository()
         api = OrderProcessorApi(repo)
