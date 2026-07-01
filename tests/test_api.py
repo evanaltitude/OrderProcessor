@@ -759,6 +759,50 @@ class ApiTests(unittest.TestCase):
             "order customer identification runs after processor extraction",
         )
 
+    def test_order_completion_actions_use_processor_identified_customer(self) -> None:
+        repo = InMemoryRepository()
+        api = OrderProcessorApi(repo)
+        api.upsert_customer_config(
+            {
+                "tenantId": "altitude",
+                "id": "pilot-customer",
+                "customerCode": "PILOT",
+                "name": "Pilot",
+                "csrFolder": "Jane",
+            }
+        )
+        api.upsert_routing_rule(
+            {
+                "tenantId": "altitude",
+                "customerId": "_global",
+                "id": "generic-order",
+                "name": "Generic order",
+                "phase": "orderCandidate",
+                "outcome": "knownOrder",
+                "processorProfileId": "pdf-default",
+                "processedMoveMode": "customerField",
+                "processedMoveCustomerField": "csrFolder",
+            }
+        )
+
+        plan = api._order_completion_action_plan(
+            {"tenantId": "altitude", "id": "email-1", "subject": "PO"},
+            {"ruleId": "generic-order", "customerId": None},
+            {
+                "orderRun": {
+                    "id": "order-1",
+                    "tenantId": "altitude",
+                    "customerId": "pilot-customer",
+                    "status": "completed",
+                },
+                "unresolvedLineCount": 0,
+            },
+        )
+
+        self.assertEqual(plan["categories"], ["Jane - Review"])
+        self.assertEqual(plan["move"]["folderName"], "Jane")
+        self.assertTrue(plan["move"]["enabled"])
+
     def test_graph_ingest_applies_routing_email_actions(self) -> None:
         repo = InMemoryRepository()
         api = OrderProcessorApi(repo)
@@ -976,6 +1020,82 @@ class ApiTests(unittest.TestCase):
             [item["category"] for item in result["orderProcessingResult"]["stageCategoryResults"]],
             ["Order Parsing Data - Do Not Move", "Order Validating Items - Do Not Move"],
         )
+
+    def test_graph_order_processor_exception_persists_failed_order(self) -> None:
+        repo = InMemoryRepository()
+        api = OrderProcessorApi(repo)
+        mailbox = api.upsert_mailbox(
+            {
+                "tenantId": "altitude",
+                "mailboxAddress": "orders@example.com",
+            }
+        )["mailboxAccount"]
+        api.upsert_processor_profile(
+            {
+                "tenantId": "altitude",
+                "customerId": "_global",
+                "id": "csv-default",
+                "name": "CSV",
+                "processorType": "csv",
+            }
+        )
+        api.upsert_routing_rule(
+            {
+                "tenantId": "altitude",
+                "customerId": "_global",
+                "id": "generic-orders",
+                "name": "Generic orders",
+                "phase": "orderCandidate",
+                "outcome": "knownOrder",
+                "processorProfileId": "csv-default",
+                "mailboxAccountIds": [mailbox["id"]],
+                "subjectRegex": ["PO"],
+            }
+        )
+        csv_body = base64.b64encode(b"item_number,quantity\nSKU-1,2\n").decode("ascii")
+
+        def graph_get_response(_token: str, url: str) -> dict[str, object]:
+            if url.endswith("/attachments"):
+                return {
+                    "value": [
+                        {
+                            "id": "attachment-1",
+                            "name": "order.csv",
+                            "contentType": "text/csv",
+                            "size": 50,
+                            "isInline": False,
+                            "contentBytes": csv_body,
+                        }
+                    ]
+                }
+            return {"value": []}
+
+        with patch("order_processor.api.graph_get", side_effect=graph_get_response), patch(
+            "order_processor.api.graph_patch",
+            return_value={},
+        ), patch("order_processor.api.process_order_payload", side_effect=RuntimeError("parser exploded")):
+            result = api._ingest_graph_message(
+                "access-token",
+                mailbox,
+                {
+                    "id": "graph-message-1",
+                    "internetMessageId": "<graph-message-1@example.com>",
+                    "subject": "PO 123",
+                    "from": {"emailAddress": {"address": "buyer@example.com"}},
+                    "receivedDateTime": "2026-06-24T12:00:00Z",
+                    "body": {"contentType": "text", "content": "Order attached."},
+                    "categories": [],
+                    "hasAttachments": True,
+                    "isRead": False,
+                },
+            )
+
+        order = repo.get("orderRuns", result["orderRunId"])
+        exceptions = repo.query_by_tenant("exceptionTasks", "altitude")
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(order["status"], "failed")
+        self.assertEqual(order["errors"][0]["message"], "parser exploded")
+        self.assertEqual(exceptions[0]["type"], "parserFailure")
 
     def test_graph_email_actions_can_be_explicitly_disabled(self) -> None:
         repo = InMemoryRepository()

@@ -2787,6 +2787,9 @@ class OrderProcessorApi:
         order_run = _as_dict(_pick(order_result or {}, "orderRun", "order_run", default={}))
         status = str(_pick(order_run, "status", default="") or "")
         unresolved_count = int(_pick(order_result or {}, "unresolvedLineCount", "unresolved_line_count", default=0) or 0)
+        order_customer_id = str(_pick(order_run, "customerId", "customer_id", default="") or "")
+        if order_customer_id and not _pick(email, "customerId", "customer_id", default=""):
+            email = {**email, "customerId": order_customer_id}
         if failed or status == ProcessingStatus.FAILED.value:
             return self._lifecycle_email_action_plan(email, decision, "failedOrder", [PROCESSING_EXCEPTION_CATEGORY])
 
@@ -3159,11 +3162,18 @@ class OrderProcessorApi:
                     order_processing_result = self.process_order(order_run["id"], process_payload)
                     processed = True
                 except Exception as exc:
+                    failed_order_doc = self._persist_order_processing_exception(
+                        str(order_run.get("id") or ""),
+                        process_payload,
+                        exc,
+                        stage="mailboxOrderProcessing",
+                    )
+                    order_processing_result = {"orderRun": failed_order_doc, "unresolvedLineCount": 0}
                     stored_email = self.repository.get("emailMessages", email_id) or stored_email
                     failure_plan = self._order_completion_action_plan(
                         stored_email,
                         decision,
-                        None,
+                        order_processing_result,
                         failed=True,
                     )
                     order_completion_action_result = self._apply_graph_email_actions(
@@ -3183,6 +3193,7 @@ class OrderProcessorApi:
                         "graphMessageId": active_graph_message_id,
                         "orderRunId": order_run.get("id") if order_run else "",
                         "processed": False,
+                        "orderProcessingResult": order_processing_result,
                         "processingCategoryResult": processing_category_result,
                         "orderStartActionResult": order_start_action_result,
                         "emailActionResult": order_completion_action_result,
@@ -3776,6 +3787,75 @@ class OrderProcessorApi:
                 pass
         return {"contentType": content_type, "text": text[:4000]}
 
+    def _persist_order_processing_checkpoint(self, order: OrderRun) -> dict[str, Any]:
+        order.updated_at = utc_now()
+        order_doc = self.repository.upsert("orderRuns", to_dict(order))
+        self._upsert_monitor_record_for_order(order_doc)
+        return order_doc
+
+    def _persist_order_processing_exception(
+        self,
+        order_run_id: str,
+        payload: dict[str, Any],
+        exc: Exception,
+        *,
+        stage: str,
+    ) -> dict[str, Any]:
+        existing = self.repository.get("orderRuns", order_run_id)
+        if existing:
+            order = _order_from_doc(existing)
+        else:
+            order = OrderRun(
+                id=order_run_id,
+                tenant_id=_pick(payload, "tenantId", "tenant_id", default="default"),
+                email_message_id=_pick(payload, "emailMessageId", "email_message_id", default=""),
+                customer_id=_pick(payload, "customerId", "customer_id", default=None),
+                processor_profile_id=_pick(payload, "processorProfileId", "processor_profile_id", default=None),
+            )
+        observability = correlation_context(payload, order.correlation_id or order.id)
+        order.correlation_id = observability["correlationId"]
+        order.status = ProcessingStatus.FAILED
+        order.processing_completed_at = utc_now()
+        order.updated_at = order.processing_completed_at
+        error = {
+            "code": "orderProcessingException",
+            "message": str(exc),
+            "type": type(exc).__name__,
+            "stage": stage,
+        }
+        order.errors.append(error)
+        order.source_metadata["processingException"] = error
+        order_doc = self.repository.upsert("orderRuns", to_dict(order))
+        self._upsert_monitor_record_for_order(order_doc)
+        self._create_exception(
+            tenant_id=order.tenant_id,
+            task_type="parserFailure",
+            prompt="Review order processor failure.",
+            order_run_id=order.id,
+            email_message_id=order.email_message_id,
+            customer_id=order.customer_id,
+            correlation_id=order.correlation_id,
+            context={"errors": order.errors, "sourceMetadata": order.source_metadata},
+            dedupe_key="orderProcessingException",
+        )
+        self._audit(
+            order.tenant_id,
+            "order.processed",
+            observability["correlationId"],
+            order.id,
+            {
+                "orderRunId": order.id,
+                "customerId": order.customer_id,
+                "status": order.status,
+                "errors": order.errors,
+                "observability": observability,
+            },
+            customer_id=order.customer_id,
+            order_run_id=order.id,
+            email_message_id=order.email_message_id,
+        )
+        return order_doc
+
     def process_order(self, order_run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         existing = self.repository.get("orderRuns", order_run_id)
         if existing:
@@ -3841,6 +3921,7 @@ class OrderProcessorApi:
         payload = self._payload_with_google_document_ai_extraction(order, payload, processor_profile, observability)
         order = process_order_payload(order, payload, processor_profile)
         order.source_metadata["stageCategoryResults"] = stage_category_results
+        self._persist_order_processing_checkpoint(order)
 
         customer_identification_result = None
         if not order.customer_id and order.status != ProcessingStatus.FAILED:
@@ -3881,6 +3962,8 @@ class OrderProcessorApi:
                         },
                     )
 
+        self._persist_order_processing_checkpoint(order)
+
         items = [_item_from_doc(doc) for doc in self.repository.query_by_customer("items", order.tenant_id, GLOBAL_CUSTOMER_ID)]
         if items and order.lines:
             stage_category_results.append(
@@ -3892,8 +3975,10 @@ class OrderProcessorApi:
                 )
             )
             order.source_metadata["stageCategoryResults"] = stage_category_results
+            self._persist_order_processing_checkpoint(order)
             order = validate_order_lines(order, items)
             order.source_metadata["stageCategoryResults"] = stage_category_results
+            self._persist_order_processing_checkpoint(order)
 
         unresolved = [
             line
@@ -8080,32 +8165,42 @@ class OrderProcessorApi:
                     "graphReprocessSource": graph_reprocess_source,
                     "ingestResult": ingest_result,
                 }
-            processed = self.process_order(
-                str(_pick(order_run, "id", default="")),
-                {
-                    "tenantId": _pick(email_message, "tenantId", "tenant_id", default=_pick(email, "tenantId", "tenant_id", default="default")),
-                    "emailMessageId": _pick(email_message, "id", default=_pick(email, "id", default="")),
-                    "customerId": _pick(order_run, "customerId", "customer_id", default=_document_customer_id(email_message)),
-                    "processorProfileId": processor_profile_id,
-                    "mailbox": _pick(email_message, "mailbox", default=_pick(email, "mailbox", default="")),
-                    "sender": _pick(email_message, "sender", default=_pick(email, "sender", default="")),
-                    "subject": _pick(email_message, "subject", default=_pick(email, "subject", default="")),
-                    "receivedAt": _pick(email_message, "receivedAt", "received_at", default=_pick(email, "receivedAt", "received_at", default=utc_now())),
-                    "bodyText": _pick(email, "bodyText", "body_text", default=""),
-                    "bodyHtml": _pick(email, "bodyHtml", "body_html", default=""),
-                    "attachments": list(_as_list(_pick(graph_reprocess_source, "attachments", default=_pick(email, "attachments", default=[])))),
-                    "sourceMetadata": {
-                        "provider": "exceptionResolution",
-                        "emailMessageId": _pick(email, "id", default=""),
-                        "graphReprocessSource": {
-                            key: value
-                            for key, value in graph_reprocess_source.items()
-                            if key not in {"attachments", "sourcePayload"}
-                        },
+            process_payload = {
+                "tenantId": _pick(email_message, "tenantId", "tenant_id", default=_pick(email, "tenantId", "tenant_id", default="default")),
+                "emailMessageId": _pick(email_message, "id", default=_pick(email, "id", default="")),
+                "customerId": _pick(order_run, "customerId", "customer_id", default=_document_customer_id(email_message)),
+                "processorProfileId": processor_profile_id,
+                "mailbox": _pick(email_message, "mailbox", default=_pick(email, "mailbox", default="")),
+                "sender": _pick(email_message, "sender", default=_pick(email, "sender", default="")),
+                "subject": _pick(email_message, "subject", default=_pick(email, "subject", default="")),
+                "receivedAt": _pick(email_message, "receivedAt", "received_at", default=_pick(email, "receivedAt", "received_at", default=utc_now())),
+                "bodyText": _pick(email, "bodyText", "body_text", default=""),
+                "bodyHtml": _pick(email, "bodyHtml", "body_html", default=""),
+                "attachments": list(_as_list(_pick(graph_reprocess_source, "attachments", default=_pick(email, "attachments", default=[])))),
+                "sourceMetadata": {
+                    "provider": "exceptionResolution",
+                    "emailMessageId": _pick(email, "id", default=""),
+                    "graphReprocessSource": {
+                        key: value
+                        for key, value in graph_reprocess_source.items()
+                        if key not in {"attachments", "sourcePayload"}
                     },
-                    **source_payload,
                 },
-            )
+                **source_payload,
+            }
+            order_id = str(_pick(order_run, "id", default=""))
+            try:
+                processed = self.process_order(order_id, process_payload)
+            except Exception as exc:
+                processed = {
+                    "orderRun": self._persist_order_processing_exception(
+                        order_id,
+                        process_payload,
+                        exc,
+                        stage="exceptionEmailReprocess",
+                    ),
+                    "unresolvedLineCount": 0,
+                }
         graph_result = None
         latest_email = self.repository.get("emailMessages", str(_pick(email, "id", default="")))
         if latest_email:
@@ -8113,6 +8208,14 @@ class OrderProcessorApi:
             mailbox = self._mailbox_for_email_document(latest_email)
             if graph_message_id and mailbox:
                 action_plan = self._email_action_plan_from_ingest_result(ingest_result)
+                decision = _as_dict(_pick(ingest_result, "routingDecision", "routing_decision", default={}))
+                if order_run:
+                    action_plan = self._order_completion_action_plan(
+                        latest_email,
+                        decision,
+                        processed,
+                        failed=not processed,
+                    )
                 if action_plan:
                     try:
                         candidates = self._graph_access_token_candidates(mailbox, auth_mode="auto")
@@ -8217,33 +8320,42 @@ class OrderProcessorApi:
                 "orderRun": self.repository.get("orderRuns", order_run_id),
                 "graphReprocessSource": graph_reprocess_source,
             }
-        processed = self.process_order(
-            order_run_id,
-            {
-                "tenantId": tenant_id,
+        process_payload = {
+            "tenantId": tenant_id,
+            "emailMessageId": _pick(email, "id", default=""),
+            "customerId": customer_id or None,
+            "processorProfileId": processor_profile_id,
+            "mailbox": _pick(email, "mailbox", default=""),
+            "sender": _pick(email, "sender", default=""),
+            "subject": _pick(email, "subject", default=""),
+            "receivedAt": _pick(email, "receivedAt", "received_at", default=utc_now()),
+            "bodyText": _pick(email, "bodyText", "body_text", default=""),
+            "bodyHtml": _pick(email, "bodyHtml", "body_html", default=""),
+            "attachments": list(_as_list(_pick(graph_reprocess_source, "attachments", default=_pick(email, "attachments", default=[])))),
+            "sourceMetadata": {
+                "provider": "exceptionResolution",
+                "manualOverride": True,
                 "emailMessageId": _pick(email, "id", default=""),
-                "customerId": customer_id or None,
-                "processorProfileId": processor_profile_id,
-                "mailbox": _pick(email, "mailbox", default=""),
-                "sender": _pick(email, "sender", default=""),
-                "subject": _pick(email, "subject", default=""),
-                "receivedAt": _pick(email, "receivedAt", "received_at", default=utc_now()),
-                "bodyText": _pick(email, "bodyText", "body_text", default=""),
-                "bodyHtml": _pick(email, "bodyHtml", "body_html", default=""),
-                "attachments": list(_as_list(_pick(graph_reprocess_source, "attachments", default=_pick(email, "attachments", default=[])))),
-                "sourceMetadata": {
-                    "provider": "exceptionResolution",
-                    "manualOverride": True,
-                    "emailMessageId": _pick(email, "id", default=""),
-                    "graphReprocessSource": {
-                        key: value
-                        for key, value in graph_reprocess_source.items()
-                        if key not in {"attachments", "sourcePayload"}
-                    },
+                "graphReprocessSource": {
+                    key: value
+                    for key, value in graph_reprocess_source.items()
+                    if key not in {"attachments", "sourcePayload"}
                 },
-                **source_payload,
             },
-        )
+            **source_payload,
+        }
+        try:
+            processed = self.process_order(order_run_id, process_payload)
+        except Exception as exc:
+            processed = {
+                "orderRun": self._persist_order_processing_exception(
+                    order_run_id,
+                    process_payload,
+                    exc,
+                    stage="forceOrder",
+                ),
+                "unresolvedLineCount": 0,
+            }
         return {"status": "forcedOrder", "orderRun": self.repository.get("orderRuns", order_run_id), "processResult": processed}
 
     def _apply_customer_resolution(

@@ -13,7 +13,8 @@ import zipfile
 from typing import Any, Protocol
 import xml.etree.ElementTree as ET
 
-from .item_validation import validate_item
+from .data_model import GLOBAL_CUSTOMER_ID
+from .item_validation import normalize_item_token, normalize_upc, validate_item
 from .email_body_processing import extract_email_body_order
 from .email_body_processing import order_lines_from_extraction as email_body_order_lines_from_extraction
 from .google_document_ai import extract_order_from_google_document_ai_response
@@ -551,14 +552,47 @@ def validate_order_lines(order: OrderRun, items: list[ItemRecord], max_workers: 
             line.validation_errors.append({"code": "missingCustomer"})
         return order
 
+    scoped_items = [
+        item
+        for item in items
+        if item.tenant_id == order.tenant_id and item.customer_id in {order.customer_id, GLOBAL_CUSTOMER_ID}
+    ]
+    item_number_index: dict[str, list[ItemRecord]] = {}
+    upc_index: dict[str, list[ItemRecord]] = {}
+    for item in scoped_items:
+        for value in [
+            item.internal_item_number,
+            *item.alt_parts_combined,
+            *item.customer_item_numbers,
+            *item.aliases,
+        ]:
+            key = normalize_item_token(str(value or ""))
+            if key:
+                item_number_index.setdefault(key, []).append(item)
+        upc_key = normalize_upc(item.upc)
+        if upc_key:
+            upc_index.setdefault(upc_key, []).append(item)
+
+    def exact_candidate_items(line: OrderLine) -> list[ItemRecord]:
+        candidates: dict[str, ItemRecord] = {}
+        item_key = normalize_item_token(line.provided_item_number)
+        upc_key = normalize_upc(line.provided_upc)
+        for item in item_number_index.get(item_key, []) if item_key else []:
+            candidates[item.id] = item
+        for item in upc_index.get(upc_key, []) if upc_key else []:
+            candidates[item.id] = item
+        return list(candidates.values())
+
     def validate_line(line: OrderLine):
+        candidate_items = exact_candidate_items(line)
         return validate_item(
             tenant_id=order.tenant_id,
             customer_id=order.customer_id,
             provided_item_number=line.provided_item_number,
             provided_upc=line.provided_upc,
             description=line.description,
-            items=items,
+            items=candidate_items or scoped_items,
+            row_context=line.raw,
         )
 
     if len(order.lines) > 1:
