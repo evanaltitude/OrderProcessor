@@ -1116,29 +1116,58 @@ class OrderProcessorApi:
         self._upsert_monitor_record_for_email(email_doc)
 
         order_run = None
+        order_runs: list[dict[str, Any]] = []
         if decision.outcome == RoutingOutcome.KNOWN_ORDER:
-            order_run = OrderRun(
-                id=stable_id(email.tenant_id, email.id, decision.rule_id or "knownOrder"),
-                tenant_id=email.tenant_id,
-                email_message_id=email.id,
-                customer_id=decision.customer_id,
-                correlation_id=email.correlation_id,
-                processor_profile_id=decision.processor_profile_id,
-                status=ProcessingStatus.RECEIVED,
-                source_metadata={
-                    "emailMessageId": email.id,
-                    "mailbox": email.mailbox,
-                    "sender": email.sender,
-                    "subject": email.subject,
-                    "receivedAt": email.received_at,
-                    "observability": observability,
-                },
-            )
-            email.order_run_id = order_run.id
+            attachment_matches = self._attachment_order_matches_for_decision(email, decision)
+            if not attachment_matches:
+                attachment_matches = [{}]
+            for attachment_match in attachment_matches:
+                attachment_key = str(_pick(attachment_match, "key", default="") or "").strip()
+                order_id_parts = [email.tenant_id, email.id, decision.rule_id or "knownOrder"]
+                if attachment_key:
+                    order_id_parts.extend(["attachment", attachment_key])
+                order_run = OrderRun(
+                    id=stable_id(*order_id_parts),
+                    tenant_id=email.tenant_id,
+                    email_message_id=email.id,
+                    customer_id=decision.customer_id,
+                    correlation_id=email.correlation_id,
+                    processor_profile_id=decision.processor_profile_id,
+                    status=ProcessingStatus.RECEIVED,
+                    source_file_name=str(_pick(attachment_match, "name", default="") or ""),
+                    source_metadata={
+                        "emailMessageId": email.id,
+                        "mailbox": email.mailbox,
+                        "sender": email.sender,
+                        "subject": email.subject,
+                        "receivedAt": email.received_at,
+                        "observability": observability,
+                        **({"attachment": attachment_match} if attachment_match else {}),
+                    },
+                )
+                order_runs.append(self.repository.upsert("orderRuns", to_dict(order_run)))
+            if order_runs:
+                email.order_run_id = str(_pick(order_runs[0], "id", default=""))
+                email.source["orderRunIds"] = [str(_pick(item, "id", default="")) for item in order_runs]
+                if len(order_runs) > 1:
+                    email.source["attachmentOrderRuns"] = [
+                        {
+                            "orderRunId": str(_pick(item, "id", default="")),
+                            "attachment": dict(
+                                _pick(
+                                    _as_dict(_pick(item, "sourceMetadata", "source_metadata", default={})),
+                                    "attachment",
+                                    default={},
+                                )
+                                or {}
+                            ),
+                        }
+                        for item in order_runs
+                    ]
             email.updated_at = utc_now()
-            order_doc = self.repository.upsert("orderRuns", to_dict(order_run))
             email_doc = self.repository.upsert("emailMessages", to_dict(email))
-            self._upsert_monitor_record_for_email(email_doc, order=order_doc)
+            self._upsert_monitor_record_for_email(email_doc, order=order_runs[0] if order_runs else None)
+            order_run = _order_from_doc(order_runs[0]) if order_runs else None
 
         exception_task = None
         if decision.outcome in {
@@ -1184,9 +1213,106 @@ class OrderProcessorApi:
             "emailMessage": _api_value(email),
             "routingDecision": _api_value(decision),
             "orderRun": _api_value(order_run) if order_run else None,
+            "orderRuns": _api_value(order_runs),
             "exceptionTask": exception_task,
             "observability": observability,
         }
+
+    def _attachment_order_matches_for_decision(
+        self,
+        email: EmailMessage,
+        decision: RoutingDecision,
+    ) -> list[dict[str, Any]]:
+        if decision.outcome != RoutingOutcome.KNOWN_ORDER or not decision.processor_profile_id:
+            return []
+        profile_doc = self.repository.get("processorProfiles", decision.processor_profile_id)
+        if not profile_doc:
+            return []
+        processor_type = self._normalized_processor_type(_pick(profile_doc, "processorType", "processor_type", default=""))
+        if processor_type not in {
+            "csv",
+            "spreadsheet",
+            "xlsx",
+            "xls",
+            "xlt",
+            "legacyworkbook",
+            "pdf",
+            "googledocumentai",
+            "googledocumentaipdf",
+            "orderprocessgoogledocumentaipdf",
+        }:
+            return []
+        rule_doc = self.repository.get("routingRules", str(decision.rule_id or "")) if decision.rule_id else None
+        allowed_extensions = self._attachment_processor_extensions(processor_type, profile_doc, rule_doc)
+        allowed_content_types = {
+            str(value or "").strip().lower()
+            for value in _as_list(_pick(rule_doc or {}, "attachmentContentTypes", "attachment_content_types", default=[]))
+            if str(value or "").strip()
+        }
+        matches: list[dict[str, Any]] = []
+        for index, attachment in enumerate(email.attachments):
+            if attachment.is_inline:
+                continue
+            name = str(attachment.name or "")
+            extension = self._attachment_extension(name)
+            content_type = str(attachment.content_type or "").strip().lower()
+            extension_match = bool(extension and extension in allowed_extensions)
+            content_type_match = bool(content_type and content_type in allowed_content_types)
+            if not extension_match and not content_type_match:
+                continue
+            key = attachment.content_id or name or str(index)
+            matches.append(
+                {
+                    "index": index,
+                    "key": key,
+                    "name": name,
+                    "extension": extension,
+                    "contentType": attachment.content_type,
+                    "size": attachment.size,
+                    "contentId": attachment.content_id,
+                    "sourceUrl": attachment.source_url,
+                    "metadata": dict(attachment.metadata or {}),
+                }
+            )
+        return matches
+
+    @classmethod
+    def _attachment_processor_extensions(
+        cls,
+        processor_type: str,
+        profile_doc: dict[str, Any],
+        rule_doc: dict[str, Any] | None,
+    ) -> set[str]:
+        configured = {
+            str(value or "").strip().lower().lstrip(".")
+            for value in _as_list(_pick(rule_doc or {}, "attachmentExtensions", "attachment_extensions", default=[]))
+            if str(value or "").strip()
+        }
+        if configured:
+            return configured
+        settings = dict(_pick(profile_doc, "settings", default={}) or {})
+        supported = settings.get("supportedFileTypes") or settings.get("supported_file_types") or {}
+        configured = {
+            str(value or "").strip().lower().lstrip(".")
+            for value in _as_list(_pick(supported, "orderInputExtensions", "order_input_extensions", default=[]))
+            if str(value or "").strip()
+        }
+        if configured:
+            return configured
+        if processor_type in {"pdf", "googledocumentai", "googledocumentaipdf", "orderprocessgoogledocumentaipdf"}:
+            return {"pdf"}
+        if processor_type == "xlsx":
+            return {"xlsx", "xlsm", "xltx"}
+        if processor_type in {"xls", "xlt", "legacyworkbook"}:
+            return {"xls", "xlt"}
+        if processor_type == "csv":
+            return {"csv", "tsv", "txt"}
+        return {"csv", "tsv", "txt", "xlsx", "xlsm", "xls", "xlt", "xltx"}
+
+    @staticmethod
+    def _attachment_extension(name: str) -> str:
+        value = str(name or "").rsplit(".", 1)
+        return value[-1].strip().lower() if len(value) == 2 else ""
 
     def _identify_customer_for_matched_routing(
         self,
@@ -3109,13 +3235,23 @@ class OrderProcessorApi:
         }
         ingest_result = self.ingest_email(ingest_payload)
         processed = False
-        order_run = ingest_result.get("orderRun")
+        order_runs = [
+            dict(item)
+            for item in _as_list(_pick(ingest_result, "orderRuns", "order_runs", default=[]))
+            if isinstance(item, dict)
+        ]
+        if not order_runs and isinstance(ingest_result.get("orderRun"), dict):
+            order_runs = [dict(ingest_result["orderRun"])]
+        order_run = order_runs[0] if order_runs else None
         decision = _as_dict(_pick(ingest_result, "routingDecision", "routing_decision", default={}))
         stored_email = self.repository.get("emailMessages", email_id) or _as_dict(ingest_result.get("emailMessage"))
         email_action_result: dict[str, Any] = {"status": "skipped", "reason": "no lifecycle action"}
         order_start_action_result: dict[str, Any] | None = None
         order_completion_action_result: dict[str, Any] | None = None
         order_processing_result: dict[str, Any] | None = None
+        order_processing_results: list[dict[str, Any]] = []
+        processing_failed = False
+        failure_reason = ""
         active_graph_message_id = graph_message_id
 
         if order_run:
@@ -3137,12 +3273,27 @@ class OrderProcessorApi:
             stored_email = self.repository.get("emailMessages", email_id) or stored_email
             active_graph_message_id = self._graph_message_id_for_email(stored_email) or active_graph_message_id
 
-            if self._should_process_polled_order(order_run, source_payload, body_text):
+            for child_order_run in order_runs:
+                child_source_payload = self._source_payload_for_order_attachment(
+                    child_order_run,
+                    attachments,
+                    source_payload,
+                )
+                if not self._should_process_polled_order(child_order_run, child_source_payload, body_text):
+                    continue
+                child_source_metadata = {
+                    "provider": "microsoftGraph",
+                    "graphMessageId": active_graph_message_id,
+                    "mailboxAccountId": mailbox_id,
+                }
+                child_source_metadata.update(
+                    dict(_pick(child_source_payload, "sourceMetadata", "source_metadata", default={}) or {})
+                )
                 process_payload = {
                     "tenantId": tenant_id,
                     "emailMessageId": email_id,
-                    "customerId": order_run.get("customerId"),
-                    "processorProfileId": order_run.get("processorProfileId"),
+                    "customerId": child_order_run.get("customerId"),
+                    "processorProfileId": child_order_run.get("processorProfileId"),
                     "mailbox": mailbox_address,
                     "sender": sender,
                     "subject": ingest_payload["subject"],
@@ -3151,60 +3302,34 @@ class OrderProcessorApi:
                     "graphAccessToken": access_token,
                     "graphMailboxAddress": mailbox_address,
                     "graphMessageId": active_graph_message_id,
-                    "sourceMetadata": {
-                        "provider": "microsoftGraph",
-                        "graphMessageId": active_graph_message_id,
-                        "mailboxAccountId": mailbox_id,
-                    },
-                    **source_payload,
+                    "sourceMetadata": child_source_metadata,
+                    **{key: value for key, value in child_source_payload.items() if key not in {"sourceMetadata", "source_metadata"}},
                 }
                 try:
-                    order_processing_result = self.process_order(order_run["id"], process_payload)
+                    order_processing_result = self.process_order(child_order_run["id"], process_payload)
+                    order_processing_results.append(order_processing_result)
                     processed = True
                 except Exception as exc:
                     failed_order_doc = self._persist_order_processing_exception(
-                        str(order_run.get("id") or ""),
+                        str(child_order_run.get("id") or ""),
                         process_payload,
                         exc,
                         stage="mailboxOrderProcessing",
                     )
-                    order_processing_result = {"orderRun": failed_order_doc, "unresolvedLineCount": 0}
-                    stored_email = self.repository.get("emailMessages", email_id) or stored_email
-                    failure_plan = self._order_completion_action_plan(
-                        stored_email,
-                        decision,
-                        order_processing_result,
-                        failed=True,
-                    )
-                    order_completion_action_result = self._apply_graph_email_actions(
-                        access_token,
-                        mailbox_address,
-                        active_graph_message_id,
-                        ingest_result,
-                        [],
-                        action_plan=failure_plan,
-                    )
-                    self._update_email_after_graph_actions(email_id, ingest_result, order_completion_action_result)
-                    return {
-                        "status": "failed",
-                        "error": True,
-                        "reason": str(exc),
-                        "emailMessageId": email_id,
-                        "graphMessageId": active_graph_message_id,
-                        "orderRunId": order_run.get("id") if order_run else "",
-                        "processed": False,
-                        "orderProcessingResult": order_processing_result,
-                        "processingCategoryResult": processing_category_result,
-                        "orderStartActionResult": order_start_action_result,
-                        "emailActionResult": order_completion_action_result,
-                    }
+                    order_processing_results.append({"orderRun": failed_order_doc, "unresolvedLineCount": 0})
+                    order_processing_result = order_processing_results[-1]
+                    processing_failed = True
+                    failure_reason = failure_reason or str(exc)
 
             stored_email = self.repository.get("emailMessages", email_id) or stored_email
             active_graph_message_id = self._graph_message_id_for_email(stored_email) or active_graph_message_id
+            if order_processing_results:
+                order_processing_result = self._aggregate_order_processing_results(order_processing_results)
             completion_plan = self._order_completion_action_plan(
                 stored_email,
                 decision,
                 order_processing_result,
+                failed=processing_failed,
             )
             order_completion_action_result = self._apply_graph_email_actions(
                 access_token,
@@ -3245,16 +3370,81 @@ class OrderProcessorApi:
                 )
                 self._update_email_after_graph_actions(email_id, ingest_result, email_action_result)
         return {
-            "status": "ingested",
+            "status": "failed" if processing_failed else "ingested",
+            **({"error": True, "reason": failure_reason} if processing_failed else {}),
             "emailMessageId": email_id,
             "graphMessageId": active_graph_message_id,
             "orderRunId": order_run.get("id") if order_run else "",
+            "orderRunIds": [str(_pick(item, "id", default="")) for item in order_runs],
             "processed": processed,
+            "processedCount": len(order_processing_results),
             "processingCategoryResult": processing_category_result,
             "orderStartActionResult": order_start_action_result,
             "orderProcessingResult": order_processing_result,
+            "orderProcessingResults": order_processing_results,
             "orderCompletionActionResult": order_completion_action_result,
             "emailActionResult": email_action_result,
+        }
+
+    def _source_payload_for_order_attachment(
+        self,
+        order_run: dict[str, Any],
+        attachments: list[dict[str, Any]],
+        default_source_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        order_attachment = dict(
+            _pick(
+                _as_dict(_pick(order_run, "sourceMetadata", "source_metadata", default={})),
+                "attachment",
+                default={},
+            )
+            or {}
+        )
+        content_id = str(_pick(order_attachment, "contentId", "content_id", default="") or "")
+        name = str(_pick(order_attachment, "name", default="") or "")
+        index = _pick(order_attachment, "index", default=None)
+        for attachment in attachments:
+            if not isinstance(attachment, dict):
+                continue
+            if content_id and content_id != str(_pick(attachment, "contentId", "content_id", default="") or ""):
+                continue
+            if not content_id and name and name != str(_pick(attachment, "name", default="") or ""):
+                continue
+            if not content_id and not name and index is not None and index != _pick(attachment, "index", default=index):
+                continue
+            source_payload = dict(_pick(attachment, "_sourcePayload", default={}) or {})
+            if source_payload:
+                return source_payload
+        if order_attachment:
+            return {}
+        return dict(default_source_payload or {})
+
+    @staticmethod
+    def _aggregate_order_processing_results(results: list[dict[str, Any]]) -> dict[str, Any]:
+        if not results:
+            return {}
+        if len(results) == 1:
+            return results[0]
+        order_runs = [_as_dict(_pick(result, "orderRun", "order_run", default={})) for result in results]
+        primary = next((order for order in order_runs if _pick(order, "customerId", "customer_id", default="")), order_runs[0])
+        aggregate_order = dict(primary)
+        failed = any(str(_pick(order, "status", default="")) == ProcessingStatus.FAILED.value for order in order_runs)
+        unresolved_count = sum(int(_pick(result, "unresolvedLineCount", "unresolved_line_count", default=0) or 0) for result in results)
+        if failed:
+            aggregate_order["status"] = ProcessingStatus.FAILED.value
+        elif unresolved_count:
+            aggregate_order["status"] = ProcessingStatus.NEEDS_REVIEW.value
+        else:
+            aggregate_order["status"] = ProcessingStatus.COMPLETED.value
+        return {
+            "orderRun": aggregate_order,
+            "orderRuns": order_runs,
+            "unresolvedLineCount": unresolved_count,
+            "stageCategoryResults": [
+                item
+                for result in results
+                for item in _as_list(_pick(result, "stageCategoryResults", "stage_category_results", default=[]))
+            ],
         }
 
     def _graph_message_attachments(
@@ -3273,7 +3463,7 @@ class OrderProcessorApi:
         attachments: list[dict[str, Any]] = []
         source_payload: dict[str, Any] = {}
         max_bytes = int(os.environ.get("ORDER_PROCESSOR_MAILBOX_POLL_MAX_ATTACHMENT_BYTES", "10000000") or 10000000)
-        for item in response.get("value", []):
+        for index, item in enumerate(response.get("value", [])):
             if not isinstance(item, dict):
                 continue
             metadata = {
@@ -3281,27 +3471,40 @@ class OrderProcessorApi:
                 "graphODataType": str(item.get("@odata.type", "")),
                 "hasContentBytes": bool(item.get("contentBytes")),
             }
-            attachments.append(
-                {
-                    "name": str(item.get("name", "")),
-                    "contentType": str(item.get("contentType", "")),
-                    "size": int(item.get("size", 0) or 0),
-                    "contentId": str(item.get("id", "")),
-                    "isInline": bool(item.get("isInline", False)),
-                    "sourceUrl": url,
-                    "metadata": metadata,
-                }
-            )
+            attachment_doc = {
+                "name": str(item.get("name", "")),
+                "contentType": str(item.get("contentType", "")),
+                "size": int(item.get("size", 0) or 0),
+                "contentId": str(item.get("id", "")),
+                "index": index,
+                "isInline": bool(item.get("isInline", False)),
+                "sourceUrl": url,
+                "metadata": metadata,
+            }
             content_bytes = str(item.get("contentBytes", "") or "")
-            if source_payload or not content_bytes or bool(item.get("isInline", False)):
+            if not content_bytes or bool(item.get("isInline", False)):
+                attachments.append(attachment_doc)
                 continue
             if int(item.get("size", 0) or 0) > max_bytes:
+                attachments.append(attachment_doc)
                 continue
-            source_payload = {
+            attachment_source_payload = {
                 "sourceContentBase64": content_bytes,
                 "sourceFileName": str(item.get("name", "")),
                 "contentType": str(item.get("contentType", "")),
+                "sourceMetadata": {
+                    "attachment": {
+                        "contentId": str(item.get("id", "")),
+                        "name": str(item.get("name", "")),
+                        "contentType": str(item.get("contentType", "")),
+                        "size": int(item.get("size", 0) or 0),
+                    }
+                },
             }
+            attachment_doc["_sourcePayload"] = attachment_source_payload
+            attachments.append(attachment_doc)
+            if not source_payload:
+                source_payload = attachment_source_payload
         return attachments, source_payload
 
     def _graph_reprocess_source_for_email(self, email: dict[str, Any]) -> dict[str, Any]:
@@ -5953,12 +6156,23 @@ class OrderProcessorApi:
     ) -> dict[str, Any] | None:
         if not email_message_id and not order_run_id:
             return None
-        for task in self.repository.query_by_tenant("exceptionTasks", tenant_id):
+        open_tasks = [
+            task
+            for task in self.repository.query_by_tenant("exceptionTasks", tenant_id)
+            if _document_status(task) == ExceptionStatus.OPEN.value
+        ]
+        if order_run_id:
+            for task in open_tasks:
+                if _pick(task, "orderRunId", "order_run_id", default="") == order_run_id:
+                    return task
+        for task in open_tasks:
             if _document_status(task) != ExceptionStatus.OPEN.value:
                 continue
-            if email_message_id and _pick(task, "emailMessageId", "email_message_id", default="") == email_message_id:
-                return task
-            if order_run_id and _pick(task, "orderRunId", "order_run_id", default="") == order_run_id:
+            if (
+                email_message_id
+                and _pick(task, "emailMessageId", "email_message_id", default="") == email_message_id
+                and not _pick(task, "orderRunId", "order_run_id", default="")
+            ):
                 return task
         return None
 
@@ -5980,7 +6194,8 @@ class OrderProcessorApi:
         elif entry.get("pathway") == "webstoreOrder":
             section = "webstoreOrders"
         record_id = str(_pick(entry, "exceptionId", default="") or "") if section == "exceptions" else ""
-        for key in ("emailMessageId", "orderRunId", "exceptionId", "id"):
+        id_keys = ("orderRunId", "emailMessageId", "exceptionId", "id") if section in {"active", "processedOrders"} else ("emailMessageId", "orderRunId", "exceptionId", "id")
+        for key in id_keys:
             if record_id:
                 break
             value = str(_pick(entry, key, default="") or "").strip()
@@ -8199,18 +8414,33 @@ class OrderProcessorApi:
         }
         ingest_result = self.ingest_email(ingest_payload)
         email_message = _as_dict(_pick(ingest_result, "emailMessage", "email_message", default={}))
-        order_run = _as_dict(_pick(ingest_result, "orderRun", "order_run", default={}))
+        order_runs = [
+            dict(item)
+            for item in _as_list(_pick(ingest_result, "orderRuns", "order_runs", default=[]))
+            if isinstance(item, dict)
+        ]
+        if not order_runs:
+            order_run = _as_dict(_pick(ingest_result, "orderRun", "order_run", default={}))
+            if order_run:
+                order_runs = [order_run]
+        order_run = order_runs[0] if order_runs else {}
         graph_reprocess_source = self._graph_reprocess_source_for_email(email)
         processed = None
-        if order_run:
-            processor_profile_id = _pick(order_run, "processorProfileId", "processor_profile_id", default=None)
+        processed_results: list[dict[str, Any]] = []
+        graph_attachments = list(_as_list(_pick(graph_reprocess_source, "attachments", default=_pick(email, "attachments", default=[]))))
+        for replay_order_run in order_runs:
+            processor_profile_id = _pick(replay_order_run, "processorProfileId", "processor_profile_id", default=None)
             processor_profile = self.repository.get("processorProfiles", str(processor_profile_id)) if processor_profile_id else None
             processor_type = re.sub(
                 r"[^a-z0-9]",
                 "",
                 str(_pick(processor_profile or {}, "processorType", "processor_type", default="")).lower(),
             )
-            source_payload = dict(_pick(graph_reprocess_source, "sourcePayload", "source_payload", default={}) or {})
+            source_payload = self._source_payload_for_order_attachment(
+                replay_order_run,
+                graph_attachments,
+                dict(_pick(graph_reprocess_source, "sourcePayload", "source_payload", default={}) or {}),
+            )
             if processor_type in {"pdf", "googledocumentai", "googledocumentaipdf"} and not source_payload:
                 return {
                     "status": "failed",
@@ -8218,10 +8448,20 @@ class OrderProcessorApi:
                     "graphReprocessSource": graph_reprocess_source,
                     "ingestResult": ingest_result,
                 }
+            source_metadata = {
+                "provider": "exceptionResolution",
+                "emailMessageId": _pick(email, "id", default=""),
+                "graphReprocessSource": {
+                    key: value
+                    for key, value in graph_reprocess_source.items()
+                    if key not in {"attachments", "sourcePayload"}
+                },
+            }
+            source_metadata.update(dict(_pick(source_payload, "sourceMetadata", "source_metadata", default={}) or {}))
             process_payload = {
                 "tenantId": _pick(email_message, "tenantId", "tenant_id", default=_pick(email, "tenantId", "tenant_id", default="default")),
                 "emailMessageId": _pick(email_message, "id", default=_pick(email, "id", default="")),
-                "customerId": _pick(order_run, "customerId", "customer_id", default=_document_customer_id(email_message)),
+                "customerId": _pick(replay_order_run, "customerId", "customer_id", default=_document_customer_id(email_message)),
                 "processorProfileId": processor_profile_id,
                 "mailbox": _pick(email_message, "mailbox", default=_pick(email, "mailbox", default="")),
                 "sender": _pick(email_message, "sender", default=_pick(email, "sender", default="")),
@@ -8229,31 +8469,27 @@ class OrderProcessorApi:
                 "receivedAt": _pick(email_message, "receivedAt", "received_at", default=_pick(email, "receivedAt", "received_at", default=utc_now())),
                 "bodyText": _pick(email, "bodyText", "body_text", default=""),
                 "bodyHtml": _pick(email, "bodyHtml", "body_html", default=""),
-                "attachments": list(_as_list(_pick(graph_reprocess_source, "attachments", default=_pick(email, "attachments", default=[])))),
-                "sourceMetadata": {
-                    "provider": "exceptionResolution",
-                    "emailMessageId": _pick(email, "id", default=""),
-                    "graphReprocessSource": {
-                        key: value
-                        for key, value in graph_reprocess_source.items()
-                        if key not in {"attachments", "sourcePayload"}
-                    },
-                },
-                **source_payload,
+                "attachments": graph_attachments,
+                "sourceMetadata": source_metadata,
+                **{key: value for key, value in source_payload.items() if key not in {"sourceMetadata", "source_metadata"}},
             }
-            order_id = str(_pick(order_run, "id", default=""))
+            order_id = str(_pick(replay_order_run, "id", default=""))
             try:
-                processed = self.process_order(order_id, process_payload)
+                processed_results.append(self.process_order(order_id, process_payload))
             except Exception as exc:
-                processed = {
-                    "orderRun": self._persist_order_processing_exception(
-                        order_id,
-                        process_payload,
-                        exc,
-                        stage="exceptionEmailReprocess",
-                    ),
-                    "unresolvedLineCount": 0,
-                }
+                processed_results.append(
+                    {
+                        "orderRun": self._persist_order_processing_exception(
+                            order_id,
+                            process_payload,
+                            exc,
+                            stage="exceptionEmailReprocess",
+                        ),
+                        "unresolvedLineCount": 0,
+                    }
+                )
+        if processed_results:
+            processed = self._aggregate_order_processing_results(processed_results)
         graph_result = None
         latest_email = self.repository.get("emailMessages", str(_pick(email, "id", default="")))
         if latest_email:
@@ -8293,6 +8529,7 @@ class OrderProcessorApi:
             "status": "reprocessed",
             "ingestResult": ingest_result,
             "processResult": processed,
+            "processResults": processed_results,
             "graphReprocessSource": {
                 key: value
                 for key, value in graph_reprocess_source.items()

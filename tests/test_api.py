@@ -239,6 +239,123 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(stored_email["customerId"], "classic-pet-marysville")
         self.assertIn("orderCustomerIdentification", stored_email["routing"]["matchedSignals"])
 
+    def test_attachment_order_processor_ingest_creates_one_order_run_per_matching_file(self) -> None:
+        repo = InMemoryRepository()
+        api = OrderProcessorApi(repo)
+        mailbox = api.upsert_mailbox(
+            {
+                "tenantId": "altitude",
+                "mailboxAddress": "orders@example.com",
+                "displayName": "Orders",
+            }
+        )["mailboxAccount"]
+        api.upsert_processor_profile(
+            {
+                "tenantId": "altitude",
+                "customerId": "_global",
+                "id": "pdf-google-default",
+                "name": "Google Document AI PDF",
+                "processorType": "Google Document AI PDF",
+            }
+        )
+        api.upsert_routing_rule(
+            {
+                "tenantId": "altitude",
+                "customerId": "_global",
+                "id": "pdf-orders",
+                "name": "PDF orders",
+                "phase": "orderCandidate",
+                "outcome": "knownOrder",
+                "processorProfileId": "pdf-google-default",
+                "mailboxAccountIds": [mailbox["id"]],
+                "subjectRegex": ["PO"],
+                "attachmentExtensions": ["pdf"],
+                "requiredAttachment": True,
+            }
+        )
+
+        ingest = api.ingest_email(
+            {
+                "tenantId": "altitude",
+                "mailbox": "orders@example.com",
+                "mailboxAccountId": mailbox["id"],
+                "messageId": "multi-pdf-message-1",
+                "sender": "buyer@retailer.example",
+                "subject": "PO 9001",
+                "attachments": [
+                    {"name": "marysville.pdf", "contentType": "application/pdf", "contentId": "pdf-1"},
+                    {"name": "ann-arbor.pdf", "contentType": "application/pdf", "contentId": "pdf-2"},
+                    {"name": "terms.txt", "contentType": "text/plain", "contentId": "txt-1"},
+                    {"name": "signature.pdf", "contentType": "application/pdf", "contentId": "sig", "isInline": True},
+                ],
+            }
+        )
+
+        order_runs = ingest["orderRuns"]
+        stored_email = repo.get("emailMessages", ingest["emailMessage"]["id"])
+
+        self.assertEqual(len(order_runs), 2)
+        self.assertEqual([order["sourceFileName"] for order in order_runs], ["marysville.pdf", "ann-arbor.pdf"])
+        self.assertNotEqual(order_runs[0]["id"], order_runs[1]["id"])
+        self.assertEqual(ingest["orderRun"]["id"], order_runs[0]["id"])
+        self.assertEqual(stored_email["source"]["orderRunIds"], [order["id"] for order in order_runs])
+        self.assertEqual(
+            [item["attachment"]["name"] for item in stored_email["source"]["attachmentOrderRuns"]],
+            ["marysville.pdf", "ann-arbor.pdf"],
+        )
+
+    def test_email_body_order_processor_ingest_stays_single_order_even_with_attachments(self) -> None:
+        repo = InMemoryRepository()
+        api = OrderProcessorApi(repo)
+        mailbox = api.upsert_mailbox(
+            {
+                "tenantId": "altitude",
+                "mailboxAddress": "orders@example.com",
+                "displayName": "Orders",
+            }
+        )["mailboxAccount"]
+        api.upsert_processor_profile(
+            {
+                "tenantId": "altitude",
+                "customerId": "_global",
+                "id": "email-body-default",
+                "name": "Email Body",
+                "processorType": "emailBody",
+            }
+        )
+        api.upsert_routing_rule(
+            {
+                "tenantId": "altitude",
+                "customerId": "_global",
+                "id": "email-body-orders",
+                "name": "Email body orders",
+                "phase": "orderCandidate",
+                "outcome": "knownOrder",
+                "processorProfileId": "email-body-default",
+                "mailboxAccountIds": [mailbox["id"]],
+                "subjectRegex": ["PO"],
+            }
+        )
+
+        ingest = api.ingest_email(
+            {
+                "tenantId": "altitude",
+                "mailbox": "orders@example.com",
+                "mailboxAccountId": mailbox["id"],
+                "messageId": "email-body-message-1",
+                "sender": "buyer@retailer.example",
+                "subject": "PO 9001",
+                "bodyText": "Ship To CLASSIC PET II - MARYSVILLE",
+                "attachments": [
+                    {"name": "reference.pdf", "contentType": "application/pdf"},
+                    {"name": "notes.csv", "contentType": "text/csv"},
+                ],
+            }
+        )
+
+        self.assertEqual(len(ingest["orderRuns"]), 1)
+        self.assertEqual(ingest["orderRun"]["sourceFileName"], "")
+
     def test_known_order_identifies_customer_after_email_body_extraction(self) -> None:
         repo = InMemoryRepository()
         api = OrderProcessorApi(repo)
@@ -1064,6 +1181,148 @@ class ApiTests(unittest.TestCase):
             [item["category"] for item in result["orderProcessingResult"]["stageCategoryResults"]],
             ["Order Parsing Data - Do Not Move", "Order Validating Items - Do Not Move"],
         )
+
+    def test_graph_spreadsheet_processor_processes_each_matching_attachment_independently(self) -> None:
+        repo = InMemoryRepository()
+        api = OrderProcessorApi(repo)
+        mailbox = api.upsert_mailbox(
+            {
+                "tenantId": "altitude",
+                "mailboxAddress": "orders@example.com",
+            }
+        )["mailboxAccount"]
+        for customer in [
+            {
+                "id": "classic-pet-marysville",
+                "tenantId": "altitude",
+                "customerCode": "100025",
+                "name": "CLASSIC PET II - MARYSVILLE",
+                "address1": "3180 GRATIOT BLVD",
+                "city": "MARYSVILLE",
+                "state": "MI",
+                "postalCode": "48040",
+            },
+            {
+                "id": "classic-pet-ann-arbor",
+                "tenantId": "altitude",
+                "customerCode": "100026",
+                "name": "CLASSIC PET II - ANN ARBOR",
+                "address1": "200 S MAIN ST",
+                "city": "ANN ARBOR",
+                "state": "MI",
+                "postalCode": "48104",
+            },
+        ]:
+            repo.upsert("customers", customer)
+        api.upsert_processor_profile(
+            {
+                "tenantId": "altitude",
+                "customerId": "_global",
+                "id": "spreadsheet-default",
+                "name": "Spreadsheet",
+                "processorType": "spreadsheet",
+            }
+        )
+        api.upsert_routing_rule(
+            {
+                "tenantId": "altitude",
+                "customerId": "_global",
+                "id": "spreadsheet-orders",
+                "name": "Spreadsheet orders",
+                "phase": "orderCandidate",
+                "outcome": "knownOrder",
+                "processorProfileId": "spreadsheet-default",
+                "mailboxAccountIds": [mailbox["id"]],
+                "subjectRegex": ["PO"],
+                "attachmentExtensions": ["csv"],
+                "requiredAttachment": True,
+            }
+        )
+        marysville_body = base64.b64encode(
+            "\n".join(
+                [
+                    "Ship To,CLASSIC PET II - MARYSVILLE",
+                    "Address,3180 GRATIOT BLVD",
+                    "City,MARYSVILLE,State,MI,Zip,48040",
+                    "",
+                    "Supplier Code,Barcode,Product,Qty Ordered",
+                    "188010145,860003377529,Treats,2",
+                ]
+            ).encode("utf-8")
+        ).decode("ascii")
+        ann_arbor_body = base64.b64encode(
+            "\n".join(
+                [
+                    "Ship To,CLASSIC PET II - ANN ARBOR",
+                    "Address,200 S MAIN ST",
+                    "City,ANN ARBOR,State,MI,Zip,48104",
+                    "",
+                    "Supplier Code,Barcode,Product,Qty Ordered",
+                    "188010146,860003377530,Kibble,5",
+                ]
+            ).encode("utf-8")
+        ).decode("ascii")
+
+        def graph_get_response(_token: str, url: str) -> dict[str, object]:
+            if url.endswith("/attachments"):
+                return {
+                    "value": [
+                        {
+                            "id": "attachment-1",
+                            "name": "marysville.csv",
+                            "contentType": "text/csv",
+                            "size": 150,
+                            "isInline": False,
+                            "contentBytes": marysville_body,
+                        },
+                        {
+                            "id": "attachment-2",
+                            "name": "ann-arbor.csv",
+                            "contentType": "text/csv",
+                            "size": 150,
+                            "isInline": False,
+                            "contentBytes": ann_arbor_body,
+                        },
+                        {
+                            "id": "attachment-3",
+                            "name": "packing-slip.pdf",
+                            "contentType": "application/pdf",
+                            "size": 50,
+                            "isInline": False,
+                            "contentBytes": base64.b64encode(b"%PDF").decode("ascii"),
+                        },
+                    ]
+                }
+            return {"value": []}
+
+        with patch("order_processor.api.graph_get", side_effect=graph_get_response), patch(
+            "order_processor.api.graph_patch",
+            return_value={},
+        ):
+            result = api._ingest_graph_message(
+                "access-token",
+                mailbox,
+                {
+                    "id": "graph-message-2",
+                    "internetMessageId": "<graph-message-2@example.com>",
+                    "subject": "PO 456",
+                    "from": {"emailAddress": {"address": "buyer@example.com"}},
+                    "receivedDateTime": "2026-06-24T12:00:00Z",
+                    "body": {"contentType": "text", "content": "Orders attached."},
+                    "categories": [],
+                    "hasAttachments": True,
+                    "isRead": False,
+                },
+            )
+
+        orders = sorted(repo.query_by_tenant("orderRuns", "altitude"), key=lambda item: item["sourceFileName"])
+        self.assertTrue(result["processed"])
+        self.assertEqual(result["processedCount"], 2)
+        self.assertEqual([order["sourceFileName"] for order in orders], ["ann-arbor.csv", "marysville.csv"])
+        self.assertEqual([order["customerId"] for order in orders], ["classic-pet-ann-arbor", "classic-pet-marysville"])
+        self.assertEqual([order["lines"][0]["quantity"] for order in orders], [5.0, 2.0])
+        self.assertEqual(set(result["orderRunIds"]), {order["id"] for order in orders})
+        self.assertEqual(len(result["orderProcessingResults"]), 2)
 
     def test_graph_order_processor_exception_persists_failed_order(self) -> None:
         repo = InMemoryRepository()
