@@ -13,7 +13,7 @@ Use this checklist for every distributor/customer package before moving from sha
 
 - Create or select the Microsoft auth connection.
 - Store secrets only in Key Vault.
-- Confirm required mailbox scopes: `Mail.Read` and, if folder moves or categories are needed, `Mail.ReadWrite`.
+- Confirm required mailbox scopes: `Mail.Read`, and if folder moves or message category writes are needed, `Mail.ReadWrite`; mailbox master-category color management also requires `MailboxSettings.ReadWrite`.
 - Add the distributor monitored mailbox config and mark production actions disabled until cutover.
 - Run live Graph mailbox validation before go-live.
 

@@ -593,7 +593,7 @@ class ConsoleBackendTests(unittest.TestCase):
                 "access_token": "access-token",
                 "refresh_token": "refresh-token",
                 "expires_in": 3600,
-                "scope": "openid profile offline_access User.Read Mail.ReadWrite.Shared Mail.Send.Shared",
+                "scope": "openid profile offline_access User.Read Mail.ReadWrite.Shared Mail.Send.Shared MailboxSettings.ReadWrite",
             },
         ), patch(
             "order_processor.api.test_shared_mailbox_access",

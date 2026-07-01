@@ -54,7 +54,7 @@ param microsoftGraphAuthClientSecretName string = 'microsoft-graph-oauth-client-
 param microsoftGraphAuthTenantId string = subscription().tenantId
 
 @description('Space-delimited delegated Microsoft Graph OAuth scopes requested for shared mailbox automation.')
-param microsoftGraphAuthScopes string = 'openid profile offline_access User.Read Mail.ReadWrite.Shared Mail.Send.Shared'
+param microsoftGraphAuthScopes string = 'openid profile offline_access User.Read Mail.ReadWrite.Shared Mail.Send.Shared MailboxSettings.ReadWrite'
 
 @description('Deploy the Azure OpenAI account. Set false when the subscription is not yet enabled for OpenAI S0 quota/features.')
 param deployAzureOpenAI bool = true

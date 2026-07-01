@@ -1386,10 +1386,17 @@ function exceptionCategoryOptions(task = {}) {
     task.csrName,
     ...(state.dashboard?.csrDirectory || []).map((csr) => csr.name || csr.folder || "")
   ]);
-  const options = [{ value: "Processing", label: "Processing" }];
+  const options = [
+    { value: "Processing", label: "Processing" },
+    { value: "Order Processing - Do Not Move", label: "Order Processing - Do Not Move" },
+    { value: "Order Parsing Data - Do Not Move", label: "Order Parsing Data - Do Not Move" },
+    { value: "Order Customer ID - Do Not Move", label: "Order Customer ID - Do Not Move" },
+    { value: "Order Validating Items - Do Not Move", label: "Order Validating Items - Do Not Move" },
+    { value: "Processing Exception", label: "Processing Exception" }
+  ];
   csrValues.forEach((csr) => {
-    ["Process", "Action", "Review", "Validate"].forEach((suffix) => {
-      options.push({ value: `${csr} ${suffix}`, label: `${csr} ${suffix}` });
+    ["Action", "Review", "Validate"].forEach((suffix) => {
+      options.push({ value: `${csr} - ${suffix}`, label: `${csr} - ${suffix}` });
     });
   });
   return options.map((option, index) => ({ ...option, selected: index === 0 }));

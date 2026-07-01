@@ -209,6 +209,23 @@ paths:
             application/json:
               schema:
                 type: object
+  /mailboxes/categories/sync:
+    post:
+      operationId: mailboxesCategoriesSync
+      summary: Sync managed Outlook categories for active tenant mailboxes.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Mailbox category sync result.
+          content:
+            application/json:
+              schema:
+                type: object
   /console/session:
     post:
       operationId: consoleSession

@@ -56,6 +56,7 @@ $routes = @(
     @{ Name = "mailboxes_test_connection"; EntryPoint = "mailboxes_test_connection"; Route = "mailboxes/{id}/test-connection" },
     @{ Name = "mailboxes_poll"; EntryPoint = "mailboxes_poll"; Route = "mailboxes/poll" },
     @{ Name = "mailboxes_subscriptions_sync"; EntryPoint = "mailboxes_subscriptions_sync"; Route = "mailboxes/subscriptions/sync" },
+    @{ Name = "mailboxes_categories_sync"; EntryPoint = "mailboxes_categories_sync"; Route = "mailboxes/categories/sync" },
     @{ Name = "graph_notifications"; EntryPoint = "graph_notifications"; Route = "graph/notifications" },
     @{ Name = "orders_timeline"; EntryPoint = "orders_timeline"; Route = "orders/{orderRunId}/timeline" },
     @{ Name = "console_session"; EntryPoint = "console_session"; Route = "console/session" },

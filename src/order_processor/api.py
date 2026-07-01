@@ -127,10 +127,27 @@ BOOTSTRAP_CONSOLE_ADMIN_EMAIL = "connect@focuseautomate.com"
 SYSTEM_TENANT_ID = "__system__"
 PROCESSING_CATEGORY = "Processing"
 ORDER_PROCESSING_CATEGORY = "Order Processing - Do Not Move"
+ORDER_PARSING_DATA_CATEGORY = "Order Parsing Data - Do Not Move"
+ORDER_CUSTOMER_ID_CATEGORY = "Order Customer ID - Do Not Move"
+ORDER_VALIDATING_ITEMS_CATEGORY = "Order Validating Items - Do Not Move"
 PROCESSING_EXCEPTION_CATEGORY = "Processing Exception"
+ORDER_INTERMEDIATE_CATEGORIES = [
+    ORDER_PROCESSING_CATEGORY,
+    ORDER_PARSING_DATA_CATEGORY,
+    ORDER_CUSTOMER_ID_CATEGORY,
+    ORDER_VALIDATING_ITEMS_CATEGORY,
+]
+FIXED_OUTLOOK_CATEGORIES = [
+    PROCESSING_CATEGORY,
+    *ORDER_INTERMEDIATE_CATEGORIES,
+    PROCESSING_EXCEPTION_CATEGORY,
+]
 OUTLOOK_CATEGORY_COLORS = {
     PROCESSING_CATEGORY: "preset9",
     ORDER_PROCESSING_CATEGORY: "preset9",
+    ORDER_PARSING_DATA_CATEGORY: "preset9",
+    ORDER_CUSTOMER_ID_CATEGORY: "preset9",
+    ORDER_VALIDATING_ITEMS_CATEGORY: "preset9",
     PROCESSING_EXCEPTION_CATEGORY: "preset0",
     "csrAction": "preset3",
     "csrReview": "preset7",
@@ -2950,6 +2967,76 @@ class OrderProcessorApi:
             )
         return result
 
+    def _apply_order_stage_category(
+        self,
+        order: OrderRun,
+        payload: dict[str, Any],
+        category: str,
+        stage: str,
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = {"status": "skipped", "stage": stage, "category": category}
+        access_token = str(_pick(payload, "graphAccessToken", "graph_access_token", default="") or "")
+        mailbox_address = str(
+            _pick(payload, "graphMailboxAddress", "graph_mailbox_address", "mailbox", default="")
+            or ""
+        ).strip().lower()
+        source_metadata = _as_dict(_pick(payload, "sourceMetadata", "source_metadata", default={}))
+        graph_message_id = str(
+            _pick(payload, "graphMessageId", "graph_message_id", default="")
+            or _pick(source_metadata, "graphMessageId", "graph_message_id", default="")
+            or ""
+        )
+        email_message_id = str(
+            _pick(payload, "emailMessageId", "email_message_id", default=order.email_message_id)
+            or order.email_message_id
+            or ""
+        )
+        if not access_token or not mailbox_address or not graph_message_id:
+            result["reason"] = "missing Microsoft Graph stage context"
+            return result
+
+        encoded_mailbox = parse.quote(mailbox_address, safe="")
+        encoded_message = parse.quote(graph_message_id, safe="")
+        message_url = f"https://graph.microsoft.com/v1.0/users/{encoded_mailbox}/messages/{encoded_message}"
+        categories = [category]
+        try:
+            graph_patch(access_token, message_url, {"categories": categories})
+            result.update({"status": "applied", "categories": categories, "graphMessageId": graph_message_id})
+        except MicrosoftGraphError as exc:
+            result.update(
+                {
+                    "status": "failed",
+                    "reason": str(exc),
+                    "statusCode": exc.status_code,
+                    "details": exc.details,
+                    "graphMessageId": graph_message_id,
+                }
+            )
+
+        if email_message_id and result["status"] == "applied":
+            email = self.repository.get("emailMessages", email_message_id)
+            if email is not None:
+                now = utc_now()
+                source = dict(_pick(email, "source", default={}) or {})
+                processing = dict(source.get("processing") or {})
+                processing.update(
+                    {
+                        "stage": stage,
+                        "status": ProcessingStatus.PROCESSING.value,
+                        "category": category,
+                        "updatedAt": now,
+                    }
+                )
+                source["processing"] = processing
+                email["categories"] = categories
+                email["status"] = ProcessingStatus.PROCESSING.value
+                email["source"] = source
+                email["updatedAt"] = now
+                stored_email = self.repository.upsert("emailMessages", email)
+                self._upsert_monitor_record_for_email(stored_email, order=to_dict(order))
+
+        return result
+
     def _ingest_graph_message(
         self,
         access_token: str,
@@ -3050,6 +3137,9 @@ class OrderProcessorApi:
                     "subject": ingest_payload["subject"],
                     "receivedAt": ingest_payload["receivedAt"],
                     "bodyText": body_text,
+                    "graphAccessToken": access_token,
+                    "graphMailboxAddress": mailbox_address,
+                    "graphMessageId": active_graph_message_id,
                     "sourceMetadata": {
                         "provider": "microsoftGraph",
                         "graphMessageId": active_graph_message_id,
@@ -3143,6 +3233,7 @@ class OrderProcessorApi:
             "processed": processed,
             "processingCategoryResult": processing_category_result,
             "orderStartActionResult": order_start_action_result,
+            "orderProcessingResult": order_processing_result,
             "orderCompletionActionResult": order_completion_action_result,
             "emailActionResult": email_action_result,
         }
@@ -3650,6 +3741,16 @@ class OrderProcessorApi:
             order_run_id=order.id,
         )
         processor_profile = self._resolve_processor_profile(order, payload)
+        stage_category_results: list[dict[str, Any]] = []
+        stage_category_results.append(
+            self._apply_order_stage_category(
+                order,
+                payload,
+                ORDER_PARSING_DATA_CATEGORY,
+                "orderParsingData",
+            )
+        )
+        order.source_metadata["stageCategoryResults"] = stage_category_results
         if self._is_webhook_processor(processor_profile, payload):
             order_doc = self._process_webhook_order(order, payload, processor_profile, observability)
             self._record_order_processor_cost_event(order_doc, payload, processor_profile, observability)
@@ -3657,15 +3758,26 @@ class OrderProcessorApi:
             return {
                 "orderRun": order_doc,
                 "unresolvedLineCount": 0,
+                "stageCategoryResults": stage_category_results,
                 "webhookHandoff": webhook_handoff,
                 "observability": observability,
             }
 
         payload = self._payload_with_google_document_ai_extraction(order, payload, processor_profile, observability)
         order = process_order_payload(order, payload, processor_profile)
+        order.source_metadata["stageCategoryResults"] = stage_category_results
 
         customer_identification_result = None
         if not order.customer_id and order.status != ProcessingStatus.FAILED:
+            stage_category_results.append(
+                self._apply_order_stage_category(
+                    order,
+                    payload,
+                    ORDER_CUSTOMER_ID_CATEGORY,
+                    "orderCustomerIdentification",
+                )
+            )
+            order.source_metadata["stageCategoryResults"] = stage_category_results
             customer_identification_result = self._identify_customer_for_order(order, payload, observability)
             if customer_identification_result is not None:
                 order.source_metadata["customerIdentification"] = _api_value(customer_identification_result)
@@ -3696,7 +3808,17 @@ class OrderProcessorApi:
 
         items = [_item_from_doc(doc) for doc in self.repository.query_by_customer("items", order.tenant_id, GLOBAL_CUSTOMER_ID)]
         if items and order.lines:
+            stage_category_results.append(
+                self._apply_order_stage_category(
+                    order,
+                    payload,
+                    ORDER_VALIDATING_ITEMS_CATEGORY,
+                    "orderValidatingItems",
+                )
+            )
+            order.source_metadata["stageCategoryResults"] = stage_category_results
             order = validate_order_lines(order, items)
+            order.source_metadata["stageCategoryResults"] = stage_category_results
 
         unresolved = [
             line
@@ -3729,6 +3851,7 @@ class OrderProcessorApi:
         if order.status != ProcessingStatus.FAILED:
             order.status = ProcessingStatus.NEEDS_REVIEW if unresolved else ProcessingStatus.COMPLETED
         order.updated_at = utc_now()
+        order.source_metadata["stageCategoryResults"] = stage_category_results
         order.output_artifacts = []
         output_profiles = self._resolve_output_profiles(order, payload, processor_profile)
         try:
@@ -3777,7 +3900,12 @@ class OrderProcessorApi:
             order_run_id=order.id,
         )
         self._record_order_processor_cost_event(order_doc, payload, processor_profile, observability)
-        return {"orderRun": _api_value(order), "unresolvedLineCount": len(unresolved), "observability": observability}
+        return {
+            "orderRun": _api_value(order),
+            "unresolvedLineCount": len(unresolved),
+            "stageCategoryResults": stage_category_results,
+            "observability": observability,
+        }
 
     def normalize_spreadsheet(self, payload: dict[str, Any]) -> dict[str, Any]:
         settings = dict(_pick(payload, "processorSettings", "processor_settings", "settings", default={}) or {})
@@ -4823,11 +4951,31 @@ class OrderProcessorApi:
             "results": results,
         }
 
+    def sync_mailbox_categories(self, payload: dict[str, Any]) -> dict[str, Any]:
+        tenant_id = str(_pick(payload, "tenantId", "tenant_id", default="default") or "default")
+        csr_directory = self._refresh_tenant_csr_directory(tenant_id)
+        sync_result = self._sync_mailbox_categories_after_customer_import(
+            tenant_id,
+            csr_directory,
+            {**payload, "syncMailboxCategories": _pick(payload, "syncMailboxCategories", "sync_mailbox_categories", default=True)},
+        )
+        self._audit(
+            tenant_id,
+            "mailbox.categories.synced",
+            str(_pick(payload, "correlationId", "correlation_id", default=stable_id(tenant_id, "mailbox-categories", utc_now()))),
+            tenant_id,
+            {
+                "mailboxCategorySync": sync_result,
+                "csrCount": len(csr_directory),
+            },
+            actor=self._actor_from_payload(payload),
+        )
+        return {"csrDirectory": csr_directory, "mailboxCategorySync": sync_result}
+
     def _desired_outlook_categories(self, csr_directory: list[dict[str, Any]]) -> dict[str, str]:
         categories: dict[str, str] = {
-            PROCESSING_CATEGORY: OUTLOOK_CATEGORY_COLORS[PROCESSING_CATEGORY],
-            ORDER_PROCESSING_CATEGORY: OUTLOOK_CATEGORY_COLORS[ORDER_PROCESSING_CATEGORY],
-            PROCESSING_EXCEPTION_CATEGORY: OUTLOOK_CATEGORY_COLORS[PROCESSING_EXCEPTION_CATEGORY],
+            category: OUTLOOK_CATEGORY_COLORS[category]
+            for category in FIXED_OUTLOOK_CATEGORIES
         }
         for csr in csr_directory:
             csr_name = str(_pick(csr, "name", "folder", "email", default="") or "").strip()
@@ -4866,14 +5014,10 @@ class OrderProcessorApi:
         csr_categories = sorted(
             category
             for category in desired_categories
-            if category not in {PROCESSING_CATEGORY, ORDER_PROCESSING_CATEGORY, PROCESSING_EXCEPTION_CATEGORY}
+            if category not in set(FIXED_OUTLOOK_CATEGORIES)
         )
         settings["managedMailboxCategories"] = {
-            "fixedCategories": [
-                PROCESSING_CATEGORY,
-                ORDER_PROCESSING_CATEGORY,
-                PROCESSING_EXCEPTION_CATEGORY,
-            ],
+            "fixedCategories": list(FIXED_OUTLOOK_CATEGORIES),
             "csrCategories": csr_categories,
             "csrCount": len(csr_directory),
             "updatedAt": utc_now(),
@@ -4913,6 +5057,7 @@ class OrderProcessorApi:
 
         last_error: MicrosoftGraphError | None = None
         for candidate in candidates:
+            auth_method = str(candidate.get("authMethod") or candidate.get("connectionType") or "").strip()
             try:
                 sync_result = self._sync_mailbox_master_categories_with_token(
                     candidate["accessToken"],
@@ -4921,10 +5066,29 @@ class OrderProcessorApi:
                     previous_managed_csr_categories,
                 )
                 result.update(sync_result)
-                result["authMethod"] = candidate["authMethod"]
+                result["authMethod"] = auth_method
                 return result
             except MicrosoftGraphError as exc:
                 last_error = exc
+                if exc.status_code in {401, 403} and auth_method.lower().startswith("delegated"):
+                    try:
+                        sync_result = self._sync_mailbox_master_categories_with_token(
+                            candidate["accessToken"],
+                            mailbox_address,
+                            desired_categories,
+                            previous_managed_csr_categories,
+                            target_signed_in_user=True,
+                        )
+                        result.update(sync_result)
+                        result["authMethod"] = auth_method
+                        result["fallbackReason"] = (
+                            "mailbox master categories were denied; synced signed-in user master categories instead"
+                        )
+                        return result
+                    except MicrosoftGraphError as fallback_exc:
+                        last_error = fallback_exc
+                        if fallback_exc.status_code not in {401, 403}:
+                            break
                 if exc.status_code not in {401, 403}:
                     break
         result.update(
@@ -4943,9 +5107,14 @@ class OrderProcessorApi:
         mailbox_address: str,
         desired_categories: dict[str, str],
         previous_managed_csr_categories: set[str],
+        *,
+        target_signed_in_user: bool = False,
     ) -> dict[str, Any]:
-        encoded_mailbox = parse.quote(mailbox_address, safe="")
-        base_url = f"https://graph.microsoft.com/v1.0/users/{encoded_mailbox}/outlook/masterCategories"
+        if target_signed_in_user:
+            base_url = "https://graph.microsoft.com/v1.0/me/outlook/masterCategories"
+        else:
+            encoded_mailbox = parse.quote(mailbox_address, safe="")
+            base_url = f"https://graph.microsoft.com/v1.0/users/{encoded_mailbox}/outlook/masterCategories"
         existing_response = graph_get(access_token, base_url)
         existing_by_name = {
             str(_pick(item, "displayName", "display_name", default="")): dict(item)
@@ -4991,6 +5160,7 @@ class OrderProcessorApi:
         status = "partial" if errors and (created or updated or deleted) else "failed" if errors else "applied" if created or updated or deleted else "skipped"
         return {
             "status": status,
+            "categoryTarget": "signedInUser" if target_signed_in_user else "mailbox",
             "created": created,
             "updated": updated,
             "deleted": deleted,
@@ -8828,6 +8998,10 @@ def poll_mailboxes(payload: dict[str, Any]) -> dict[str, Any]:
 
 def sync_mailbox_subscriptions(payload: dict[str, Any]) -> dict[str, Any]:
     return default_api.sync_mailbox_subscriptions(payload)
+
+
+def sync_mailbox_categories(payload: dict[str, Any]) -> dict[str, Any]:
+    return default_api.sync_mailbox_categories(payload)
 
 
 def renew_mailbox_subscriptions(payload: dict[str, Any]) -> dict[str, Any]:

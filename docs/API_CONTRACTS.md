@@ -475,7 +475,7 @@ The console is hosted as an Azure Web App and should be protected by App Service
 
 Only `connect@focuseautomate.com` is bootstrapped as the initial `platformAdmin`. Other Microsoft users must be created in `consoleUsers`. Tenant-level roles such as `tenantAdmin` can manage the distributor tenant without assigning the user to every downstream customer; downstream customer-specific access can still be represented through `customerUserAssignments`.
 
-Mailbox automation uses a separate delegated Microsoft Graph OAuth flow started from the customer detail page. The authorized user must already have access to the shared mailbox in Microsoft 365. The app requests `offline_access`, `User.Read`, `Mail.ReadWrite.Shared`, and `Mail.Send.Shared`; refresh/access tokens are stored in Key Vault and Cosmos stores only secret names plus consent/test metadata. The console callback path is `/auth/microsoft/callback`.
+Mailbox automation uses a separate delegated Microsoft Graph OAuth flow started from the customer detail page. The authorized user must already have access to the shared mailbox in Microsoft 365. The app requests `offline_access`, `User.Read`, `Mail.ReadWrite.Shared`, `Mail.Send.Shared`, and `MailboxSettings.ReadWrite`; refresh/access tokens are stored in Key Vault and Cosmos stores only secret names plus consent/test metadata. The console callback path is `/auth/microsoft/callback`.
 
 Console user permissions:
 

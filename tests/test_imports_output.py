@@ -427,6 +427,9 @@ class ImportsOutputTests(unittest.TestCase):
         self.assertEqual(result["mailboxCategorySync"]["mailboxCount"], 1)
         self.assertEqual(result["mailboxCategorySync"]["results"][0]["mailboxAccountId"], mailbox["id"])
         self.assertIn("Order Processing - Do Not Move", created_names)
+        self.assertIn("Order Parsing Data - Do Not Move", created_names)
+        self.assertIn("Order Customer ID - Do Not Move", created_names)
+        self.assertIn("Order Validating Items - Do Not Move", created_names)
         self.assertIn("Processing Exception", created_names)
         self.assertIn("Jane - Review", created_names)
         self.assertIn("Jane - Validate", created_names)
@@ -435,6 +438,136 @@ class ImportsOutputTests(unittest.TestCase):
         self.assertIn("old-review", delete_calls[0])
         self.assertIn("Jane - Action", stored_state["csrCategories"])
         self.assertNotIn("Old CSR - Review", stored_state["csrCategories"])
+
+    def test_sync_mailbox_categories_uses_current_csr_directory(self) -> None:
+        repo = InMemoryRepository()
+        api = OrderProcessorApi(repo, source_archive=InMemorySourceRowArchive())
+        api.upsert_mailbox(
+            {
+                "tenantId": "altitude",
+                "mailboxAddress": "orders@example.com",
+                "connectionId": "m365-orders",
+            }
+        )
+        repo.upsert(
+            "microsoftAuthConnections",
+            {
+                "id": "m365-orders",
+                "tenantId": "altitude",
+                "customerId": "_global",
+                "provider": "microsoft365",
+                "displayName": "Orders",
+                "status": "active",
+                "keyVaultSecretNames": {"refreshToken": "refresh-secret"},
+                "metadata": {},
+            },
+        )
+        api.secret_store.set_secret("refresh-secret", "refresh-token")
+        api.upsert_customer_config(
+            {
+                "tenantId": "altitude",
+                "id": "pilot-customer",
+                "customerCode": "PILOT",
+                "name": "Pilot",
+                "csrName": "Jane",
+            }
+        )
+        post_calls: list[dict[str, object]] = []
+
+        def graph_post_response(_token: str, _url: str, payload: dict[str, object]) -> dict[str, object]:
+            post_calls.append(payload)
+            return {"id": str(payload["displayName"]).lower().replace(" ", "-")}
+
+        with patch.dict(os.environ, {"ORDER_PROCESSOR_MICROSOFT_AUTH_CLIENT_SECRET": "client-secret"}, clear=False), patch(
+            "order_processor.api.client_credentials_access_token",
+            side_effect=MicrosoftGraphError("application token unavailable"),
+        ), patch("order_processor.api.refresh_access_token", return_value={"access_token": "access-token"}), patch(
+            "order_processor.api.graph_get",
+            return_value={"value": []},
+        ), patch("order_processor.api.graph_post", side_effect=graph_post_response):
+            result = api.sync_mailbox_categories({"tenantId": "altitude"})
+
+        created_names = {str(payload["displayName"]) for payload in post_calls}
+        self.assertEqual(result["mailboxCategorySync"]["status"], "applied")
+        self.assertIn("Order Customer ID - Do Not Move", created_names)
+        self.assertIn("Order Validating Items - Do Not Move", created_names)
+        self.assertIn("Jane - Action", created_names)
+        self.assertEqual(repo.get("tenants", "altitude")["settings"]["managedMailboxCategories"]["csrCount"], 1)
+
+    def test_sync_mailbox_categories_falls_back_to_signed_in_user_categories_for_shared_mailbox(self) -> None:
+        repo = InMemoryRepository()
+        api = OrderProcessorApi(repo, source_archive=InMemorySourceRowArchive())
+        api.upsert_mailbox(
+            {
+                "tenantId": "altitude",
+                "mailboxAddress": "orders@example.com",
+                "connectionId": "m365-orders",
+            }
+        )
+        repo.upsert(
+            "microsoftAuthConnections",
+            {
+                "id": "m365-orders",
+                "tenantId": "altitude",
+                "customerId": "_global",
+                "provider": "microsoft365",
+                "displayName": "Orders",
+                "status": "active",
+                "keyVaultSecretNames": {"refreshToken": "refresh-secret"},
+                "metadata": {},
+            },
+        )
+        api.secret_store.set_secret("refresh-secret", "refresh-token")
+        api.upsert_customer_config(
+            {
+                "tenantId": "altitude",
+                "id": "pilot-customer",
+                "customerCode": "PILOT",
+                "name": "Pilot",
+                "csrName": "Jane",
+            }
+        )
+        get_urls: list[str] = []
+        post_urls: list[str] = []
+
+        def graph_get_response(token: str, url: str) -> dict[str, object]:
+            get_urls.append(url)
+            if token == "app-token":
+                raise MicrosoftGraphError(
+                    "Microsoft Graph request failed.",
+                    status_code=403,
+                    details='{"error":{"code":"ErrorAccessDenied"}}',
+                )
+            if "/users/orders%40example.com/outlook/masterCategories" in url:
+                raise MicrosoftGraphError(
+                    "Microsoft Graph request failed.",
+                    status_code=403,
+                    details='{"error":{"code":"ErrorAccessDenied"}}',
+                )
+            self.assertIn("/me/outlook/masterCategories", url)
+            return {"value": []}
+
+        def graph_post_response(_token: str, url: str, payload: dict[str, object]) -> dict[str, object]:
+            post_urls.append(url)
+            return {"id": str(payload["displayName"]).lower().replace(" ", "-")}
+
+        with patch.dict(os.environ, {"ORDER_PROCESSOR_MICROSOFT_AUTH_CLIENT_SECRET": "client-secret"}, clear=False), patch(
+            "order_processor.api.client_credentials_access_token",
+            return_value={"access_token": "app-token"},
+        ), patch("order_processor.api.refresh_access_token", return_value={"access_token": "access-token"}), patch(
+            "order_processor.api.graph_get",
+            side_effect=graph_get_response,
+        ), patch("order_processor.api.graph_post", side_effect=graph_post_response):
+            result = api.sync_mailbox_categories({"tenantId": "altitude"})
+
+        sync_result = result["mailboxCategorySync"]["results"][0]
+        self.assertEqual(result["mailboxCategorySync"]["status"], "applied")
+        self.assertEqual(sync_result["categoryTarget"], "signedInUser")
+        self.assertEqual(sync_result["authMethod"], "delegated")
+        self.assertIn("mailbox master categories were denied", sync_result["fallbackReason"])
+        self.assertIn("/users/orders%40example.com/outlook/masterCategories", get_urls[0])
+        self.assertIn("/users/orders%40example.com/outlook/masterCategories", get_urls[1])
+        self.assertTrue(all("/me/outlook/masterCategories" in url for url in post_urls))
 
     def test_import_customers_rotates_vector_store_after_customer_update(self) -> None:
         repo = InMemoryRepository()

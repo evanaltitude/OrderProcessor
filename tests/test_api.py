@@ -964,12 +964,18 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(result["orderCompletionActionResult"]["status"], "applied")
         self.assertEqual(patch_calls[0][1], {"categories": ["Processing"]})
         self.assertEqual(patch_calls[1][1], {"categories": ["Order Processing - Do Not Move"]})
-        self.assertEqual(patch_calls[2][1], {"categories": ["Jane - Review"]})
+        self.assertEqual(patch_calls[2][1], {"categories": ["Order Parsing Data - Do Not Move"]})
+        self.assertEqual(patch_calls[3][1], {"categories": ["Order Validating Items - Do Not Move"]})
+        self.assertEqual(patch_calls[4][1], {"categories": ["Jane - Review"]})
         self.assertEqual(move_calls[0][1], {"destinationId": "folder-in-process"})
         self.assertTrue(move_calls[1][0].endswith("/messages/moved-in-process/move"))
         self.assertEqual(move_calls[1][1], {"destinationId": "folder-processed"})
         self.assertEqual(stored_email["categories"], ["Jane - Review"])
         self.assertEqual(stored_email["source"]["graphMessageId"], "moved-processed")
+        self.assertEqual(
+            [item["category"] for item in result["orderProcessingResult"]["stageCategoryResults"]],
+            ["Order Parsing Data - Do Not Move", "Order Validating Items - Do Not Move"],
+        )
 
     def test_graph_email_actions_can_be_explicitly_disabled(self) -> None:
         repo = InMemoryRepository()

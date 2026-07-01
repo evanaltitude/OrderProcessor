@@ -398,6 +398,10 @@ if func is not None:
     def mailboxes_subscriptions_sync(req: func.HttpRequest) -> func.HttpResponse:
         return _handle(req, lambda: order_api.sync_mailbox_subscriptions(_payload_with_headers(req)))
 
+    @app.route(route="mailboxes/categories/sync", methods=["POST"])
+    def mailboxes_categories_sync(req: func.HttpRequest) -> func.HttpResponse:
+        return _handle(req, lambda: order_api.sync_mailbox_categories(_payload_with_headers(req)))
+
     @app.route(route="graph/notifications", methods=["POST"])
     def graph_notifications(req: func.HttpRequest) -> func.HttpResponse:
         params = dict(getattr(req, "params", {}) or {})
