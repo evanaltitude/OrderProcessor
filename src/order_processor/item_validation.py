@@ -12,9 +12,11 @@ DEFAULT_CONFIDENCE_THRESHOLD = 0.9
 DEFAULT_POSSIBLE_MATCH_THRESHOLD = 0.55
 DEFAULT_CANDIDATE_LIMIT = 5
 DEFAULT_AMBIGUITY_DELTA = 0.02
+MIN_UNEQUAL_LENGTH_IDENTIFIER_MATCH = 9
 
 
 ITEM_NUMBER_FIELDS = [
+    "varItemNumber",
     "providedItemNumber",
     "provided_item_number",
     "itemNumber",
@@ -31,8 +33,9 @@ ITEM_NUMBER_FIELDS = [
     "product_code",
     "Column 1",
 ]
-UPC_FIELDS = ["providedUpc", "provided_upc", "upc", "barcode", "barCode", "gtin", "Column 2"]
+UPC_FIELDS = ["varItemUPC", "providedUpc", "provided_upc", "upc", "barcode", "barCode", "gtin", "Column 2"]
 DESCRIPTION_FIELDS = [
+    "varItemDescription",
     "description",
     "itemDescription",
     "item_description",
@@ -54,6 +57,13 @@ def normalize_upc(value: str) -> str:
 
 def normalize_description(value: str) -> str:
     return re.sub(r"\s+", " ", (value or "").strip()).lower()
+
+
+def unequal_length_identifier_match(left: str, right: str, minimum_length: int = MIN_UNEQUAL_LENGTH_IDENTIFIER_MATCH) -> bool:
+    if not left or not right or len(left) == len(right):
+        return False
+    shorter, longer = (left, right) if len(left) < len(right) else (right, left)
+    return len(shorter) >= minimum_length and longer.endswith(shorter)
 
 
 def _description_score(a: str, b: str) -> float:
@@ -97,15 +107,31 @@ def score_item_candidate(
     scores: list[tuple[float, str, str]] = []
     if item_number and item_number in searchable_numbers:
         scores.append((1.0, "itemNumberExact", "provided item number matched an item number or alias"))
+    elif item_number and any(unequal_length_identifier_match(item_number, candidate) for candidate in searchable_numbers):
+        scores.append(
+            (
+                0.995,
+                "itemNumberLeadingZeroTolerant",
+                "provided item number matched by right-aligned identifier with at least 9 characters",
+            )
+        )
 
     if upc and item_upc and upc == item_upc:
         scores.append((0.98, "upcExact", "provided UPC matched the canonical item UPC"))
+    elif upc and item_upc and unequal_length_identifier_match(upc, item_upc):
+        scores.append(
+            (
+                0.975,
+                "upcLeadingZeroTolerant",
+                "provided UPC matched by right-aligned identifier with at least 9 digits",
+            )
+        )
 
     if item_number and searchable_numbers:
         fuzzy_scores = [
             SequenceMatcher(None, item_number, candidate).ratio()
             for candidate in searchable_numbers
-            if candidate
+            if candidate and (len(item_number) == len(candidate) or min(len(item_number), len(candidate)) >= MIN_UNEQUAL_LENGTH_IDENTIFIER_MATCH)
         ]
         best_fuzzy = max(fuzzy_scores, default=0.0)
         if best_fuzzy >= 0.9:

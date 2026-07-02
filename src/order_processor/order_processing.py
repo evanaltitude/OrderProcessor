@@ -14,7 +14,7 @@ from typing import Any, Protocol
 import xml.etree.ElementTree as ET
 
 from .data_model import GLOBAL_CUSTOMER_ID
-from .item_validation import normalize_item_token, normalize_upc, validate_item
+from .item_validation import normalize_item_token, normalize_upc, unequal_length_identifier_match, validate_item
 from .email_body_processing import extract_email_body_order
 from .email_body_processing import order_lines_from_extraction as email_body_order_lines_from_extraction
 from .google_document_ai import extract_order_from_google_document_ai_response
@@ -581,6 +581,25 @@ def validate_order_lines(order: OrderRun, items: list[ItemRecord], max_workers: 
             candidates[item.id] = item
         for item in upc_index.get(upc_key, []) if upc_key else []:
             candidates[item.id] = item
+        if item_key or upc_key:
+            for item in scoped_items:
+                if item.id in candidates:
+                    continue
+                searchable_numbers = [
+                    normalize_item_token(str(value or ""))
+                    for value in [
+                        item.internal_item_number,
+                        *item.alt_parts_combined,
+                        *item.customer_item_numbers,
+                        *item.aliases,
+                    ]
+                ]
+                if item_key and any(unequal_length_identifier_match(item_key, value) for value in searchable_numbers):
+                    candidates[item.id] = item
+                    continue
+                item_upc = normalize_upc(item.upc)
+                if upc_key and unequal_length_identifier_match(upc_key, item_upc):
+                    candidates[item.id] = item
         return list(candidates.values())
 
     def validate_line(line: OrderLine):

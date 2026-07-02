@@ -82,6 +82,34 @@ class ItemValidationServiceTests(unittest.TestCase):
         self.assertEqual(len(result["result"]["candidates"]), 1)
         self.assertEqual(result["result"]["matchedInternalItemNumber"], "10001")
 
+    def test_validate_item_endpoint_accepts_legacy_power_automate_field_names(self) -> None:
+        api, repo = self._api_with_item()
+        repo.upsert(
+            "items",
+            {
+                "id": "item-2",
+                "tenantId": "altitude",
+                "customerId": "pilot-customer",
+                "internalItemNumber": "00123456789",
+                "description": "Cat Food 10 lb",
+                "upc": "012345678905",
+            },
+        )
+
+        result = api.validate_item(
+            {
+                "tenantId": "altitude",
+                "customerId": "pilot-customer",
+                "varItemNumber": "123456789",
+                "varItemUPC": "",
+                "varItemDescription": "",
+            }
+        )
+
+        self.assertEqual(result["result"]["status"], "matched")
+        self.assertEqual(result["result"]["matchedInternalItemNumber"], "00123456789")
+        self.assertEqual(result["result"]["matchMethod"], "itemNumberLeadingZeroTolerant")
+
     def test_validate_item_endpoint_creates_exception_and_marks_line_unresolved(self) -> None:
         api, repo = self._api_with_item()
         repo.upsert(

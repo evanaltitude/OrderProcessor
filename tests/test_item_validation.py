@@ -90,6 +90,71 @@ class ItemValidationTests(unittest.TestCase):
         self.assertEqual(result.status, MatchStatus.MATCHED)
         self.assertEqual(result.matched_internal_item_number, "100510100")
 
+    def test_matches_item_number_with_missing_leading_zero_when_nine_characters_align(self) -> None:
+        result = validate_item(
+            tenant_id="altitude",
+            customer_id="pilot-customer",
+            provided_item_number="123456789",
+            provided_upc="",
+            description="",
+            items=[
+                ItemRecord(
+                    id="item-1",
+                    tenant_id="altitude",
+                    customer_id="pilot-customer",
+                    internal_item_number="00123456789",
+                    description="Dog Food 25 lb",
+                )
+            ],
+        )
+
+        self.assertEqual(result.status, MatchStatus.MATCHED)
+        self.assertEqual(result.matched_internal_item_number, "00123456789")
+        self.assertEqual(result.match_method, "itemNumberLeadingZeroTolerant")
+
+    def test_matches_upc_with_extra_leading_zero_when_nine_digits_align(self) -> None:
+        result = validate_item(
+            tenant_id="altitude",
+            customer_id="pilot-customer",
+            provided_item_number="",
+            provided_upc="12345678905",
+            description="",
+            items=[
+                ItemRecord(
+                    id="item-1",
+                    tenant_id="altitude",
+                    customer_id="pilot-customer",
+                    internal_item_number="10001",
+                    description="Dog Food 25 lb",
+                    upc="012345678905",
+                )
+            ],
+        )
+
+        self.assertEqual(result.status, MatchStatus.MATCHED)
+        self.assertEqual(result.matched_internal_item_number, "10001")
+        self.assertEqual(result.match_method, "upcLeadingZeroTolerant")
+
+    def test_unequal_length_identifier_match_requires_at_least_nine_aligned_characters(self) -> None:
+        result = validate_item(
+            tenant_id="altitude",
+            customer_id="pilot-customer",
+            provided_item_number="12345678",
+            provided_upc="",
+            description="",
+            items=[
+                ItemRecord(
+                    id="item-1",
+                    tenant_id="altitude",
+                    customer_id="pilot-customer",
+                    internal_item_number="012345678",
+                    description="Dog Food 25 lb",
+                )
+            ],
+        )
+
+        self.assertEqual(result.status, MatchStatus.UNRESOLVED)
+
     def test_uses_row_context_when_explicit_fields_are_missing(self) -> None:
         result = validate_item(
             tenant_id="altitude",
