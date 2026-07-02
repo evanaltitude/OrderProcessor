@@ -9,6 +9,7 @@ import os
 import re
 from string import Formatter
 from typing import Any, Callable, Protocol
+from urllib import parse
 from uuid import uuid4
 import zipfile
 from xml.sax.saxutils import escape
@@ -74,6 +75,9 @@ class InMemoryOutputArtifactStore:
         self.objects[blob_url] = artifact.content
         return _artifact_reference(artifact_id, artifact, blob_url, checksum)
 
+    def read_artifact_content(self, artifact_url: str) -> bytes | None:
+        return self.objects.get(artifact_url)
+
 
 class AzureBlobOutputArtifactStore:
     def __init__(
@@ -124,6 +128,20 @@ class AzureBlobOutputArtifactStore:
             content_settings=ContentSettings(content_type=artifact.content_type),
         )
         return _artifact_reference(artifact_id, artifact, blob_client.url, checksum)
+
+    def read_artifact_content(self, artifact_url: str) -> bytes | None:
+        parsed = parse.urlparse(str(artifact_url or ""))
+        if parsed.scheme not in {"http", "https"}:
+            return None
+        path = parsed.path.strip("/")
+        if not path:
+            return None
+        parts = path.split("/", 1)
+        if len(parts) != 2:
+            return None
+        container_name, blob_name = parts
+        blob_client = self.blob_service_client.get_blob_client(container=container_name, blob=blob_name)
+        return blob_client.download_blob().readall()
 
 
 def output_artifact_store_from_environment() -> OutputArtifactStore:

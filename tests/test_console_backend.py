@@ -367,6 +367,10 @@ class ConsoleBackendTests(unittest.TestCase):
             "emailMessageId": "email-active",
             "customerId": "pilot-customer",
             "status": "processing",
+            "outputArtifacts": [
+                {"id": "json-artifact", "type": "universalOrderJson", "fileName": "order.json"},
+                {"id": "csv-artifact", "type": "lineCsv", "fileName": "order-lines.csv"},
+            ],
             "sourceMetadata": {
                 "stageCategoryResults": [
                     {"stage": "orderParsingData", "category": "Order Parsing Data - Do Not Move"},
@@ -379,6 +383,9 @@ class ConsoleBackendTests(unittest.TestCase):
 
         self.assertEqual(entry["displayStatus"], "Order Customer ID - Do Not Move")
         self.assertEqual(entry["actionTaken"], "Order Customer ID - Do Not Move")
+        self.assertEqual(entry["outputArtifactId"], "csv-artifact")
+        self.assertEqual(entry["outputArtifactFileName"], "order-lines.csv")
+        self.assertEqual(entry["outputArtifactType"], "lineCsv")
 
     def test_console_dashboard_lists_distributor_customers_and_read_only_import_lists(self) -> None:
         api, repo, _ = self._api()
@@ -1275,6 +1282,40 @@ class ConsoleBackendTests(unittest.TestCase):
 
         self.assertEqual(download["artifact"]["id"], text_artifact["id"])
         self.assertEqual(download["content"], "1|10001|2.0\n")
+
+    def test_console_output_artifact_download_uses_store_reader(self) -> None:
+        api, repo, store = self._api()
+        repo.upsert(
+            "orderRuns",
+            {
+                "id": "order-run-blob",
+                "tenantId": "altitude",
+                "customerId": "pilot-customer",
+                "status": "completed",
+                "outputArtifacts": [
+                    {
+                        "id": "csv-artifact",
+                        "type": "lineCsv",
+                        "fileName": "order-lines.csv",
+                        "contentType": "text/csv",
+                        "blobUrl": "https://storage.test/order-artifacts/tenant/customer/order-lines.csv",
+                    }
+                ],
+            },
+        )
+        store.read_artifact_content = lambda _url: b"item,qty\n10001,2\n"  # type: ignore[method-assign]
+
+        download = api.console_output_artifact(
+            {
+                "tenantId": "altitude",
+                "email": "connect@focuseautomate.com",
+                "orderRunId": "order-run-blob",
+                "artifactId": "csv-artifact",
+            }
+        )
+
+        self.assertEqual(download["artifact"]["id"], "csv-artifact")
+        self.assertEqual(download["content"], "item,qty\n10001,2\n")
 
     def test_exception_resolution_updates_customer_item_and_reprocess_state(self) -> None:
         api, repo, _ = self._api()

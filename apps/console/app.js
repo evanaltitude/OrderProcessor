@@ -1006,6 +1006,17 @@ function monitorOrderCell(entry = {}) {
   `;
 }
 
+function monitorOutputLink(entry = {}) {
+  const artifactId = entry.outputArtifactId || "";
+  if (!entry.orderRunId || !artifactId) return entry.artifactCount ? '<span class="muted">No file link</span>' : "";
+  const fileName = entry.outputArtifactFileName || "Order output";
+  const type = entry.outputArtifactType ? `<div class="muted">${escapeHtml(entry.outputArtifactType)}</div>` : "";
+  return `
+    <button class="table-link-button" data-action="download" data-run="${escapeHtml(entry.orderRunId)}" data-artifact="${escapeHtml(artifactId)}" title="${escapeHtml(fileName)}" type="button">Download</button>
+    ${type}
+  `;
+}
+
 function monitorActionCell(entry = {}) {
   const action = entry.actionTaken || "";
   const movedText = entry.movedTo ? `Moved to ${entry.movedTo}` : "";
@@ -1060,6 +1071,7 @@ function processedOrderRow(entry = {}) {
       <td class="wrap-cell">${escapeHtml(entry.csr || entry.csrEmail || "")}</td>
       <td class="wrap-cell">${monitorOrderCell(entry)}</td>
       <td class="wrap-cell">${monitorActionCell(entry)}</td>
+      <td>${monitorOutputLink(entry)}</td>
       <td>${monitorEmailLink(entry)}</td>
     </tr>
   `;
@@ -1195,9 +1207,10 @@ function renderProcessedMonitorSection(section, entries, rowRenderer, emptyMessa
   state.monitorPages[section] = page;
   const start = page * MONITOR_PROCESSED_PAGE_SIZE;
   const pageEntries = filtered.slice(start, start + MONITOR_PROCESSED_PAGE_SIZE);
+  const colspan = section === "processedOrders" ? 10 : 9;
   el(`${section}Body`).innerHTML = pageEntries.length
     ? pageEntries.map(rowRenderer).join("")
-    : emptyTableRow(9, emptyMessage);
+    : emptyTableRow(colspan, emptyMessage);
   el(`${section}Pager`).innerHTML = pagerHtml(section, filtered.length, page, pageCount);
 }
 
@@ -1446,6 +1459,39 @@ function renderArtifacts() {
       <button data-action="download" data-run="${escapeHtml(artifact.orderRunId)}" data-artifact="${escapeHtml(artifact.id)}" type="button">Open</button>
     </article>
   `).join("");
+}
+
+function artifactBytesFromDownload(result = {}) {
+  if (result.contentBase64) {
+    const raw = window.atob(result.contentBase64);
+    const bytes = new Uint8Array(raw.length);
+    for (let index = 0; index < raw.length; index += 1) bytes[index] = raw.charCodeAt(index);
+    return bytes;
+  }
+  if (result.content !== undefined && result.content !== null) return result.content;
+  return null;
+}
+
+function downloadArtifactResult(result = {}) {
+  if (result.error) {
+    showDetails(result);
+    return;
+  }
+  const artifact = result.artifact || {};
+  const content = artifactBytesFromDownload(result);
+  if (content === null) {
+    showDetails(result);
+    return;
+  }
+  const blob = new Blob([content], { type: artifact.contentType || "application/octet-stream" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = artifact.fileName || "order-output";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function customerLabel(distributor) {
@@ -2490,7 +2536,7 @@ document.addEventListener("click", async (event) => {
     showDetails(await post(`/console/orders/${target.dataset.run}/timeline`, { source: "console" }));
   }
   if (target.dataset.action === "download") {
-    showDetails(await post("/console/artifacts/download", {
+    downloadArtifactResult(await post("/console/artifacts/download", {
       orderRunId: target.dataset.run,
       artifactId: target.dataset.artifact
     }));

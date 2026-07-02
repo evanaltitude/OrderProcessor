@@ -249,6 +249,9 @@ CONSOLE_MONITOR_RECORD_FIELDS = [
     "orderNumber",
     "lineCount",
     "artifactCount",
+    "outputArtifactId",
+    "outputArtifactFileName",
+    "outputArtifactType",
     "type",
     "exception",
     "prompt",
@@ -6754,7 +6757,42 @@ class OrderProcessorApi:
                 ),
             }
         )
+        preferred_artifact = self._preferred_output_artifact(order)
+        if preferred_artifact:
+            entry.update(
+                {
+                    "outputArtifactId": str(_pick(preferred_artifact, "id", default="")),
+                    "outputArtifactFileName": str(
+                        _pick(preferred_artifact, "fileName", "file_name", default="Order output")
+                    ),
+                    "outputArtifactType": str(_pick(preferred_artifact, "type", default="")),
+                }
+            )
         return entry
+
+    @staticmethod
+    def _preferred_output_artifact(order: dict[str, Any]) -> dict[str, Any] | None:
+        artifacts = [
+            artifact
+            for artifact in _as_list(_pick(order, "outputArtifacts", "output_artifacts", default=[]))
+            if isinstance(artifact, dict)
+        ]
+        if not artifacts:
+            return None
+        type_rank = {
+            "lineCsv": 0,
+            "lineXlsx": 1,
+            "text": 2,
+            "apiPayload": 3,
+            "universalOrderJson": 4,
+        }
+        return min(
+            artifacts,
+            key=lambda artifact: (
+                type_rank.get(str(_pick(artifact, "type", default="")), 99),
+                str(_pick(artifact, "generatedAt", "generated_at", default="")),
+            ),
+        )
 
     def _monitor_entry_from_exception(
         self,
@@ -7446,8 +7484,16 @@ class OrderProcessorApi:
         response = {"session": session, "artifact": artifact}
         object_store = getattr(self.output_artifact_store, "objects", None)
         artifact_url = _pick(artifact, "blobUrl", "blob_url", default="")
-        if isinstance(object_store, dict) and artifact_url in object_store:
-            content = object_store[artifact_url]
+        content = None
+        try:
+            if isinstance(object_store, dict) and artifact_url in object_store:
+                content = object_store[artifact_url]
+            else:
+                reader = getattr(self.output_artifact_store, "read_artifact_content", None)
+                content = reader(artifact_url) if callable(reader) and artifact_url else None
+        except Exception as exc:  # pragma: no cover - deployed artifact storage boundary.
+            response["contentReadError"] = str(exc)
+        if content is not None:
             content_type = str(_pick(artifact, "contentType", "content_type", default=""))
             if content_type.startswith("text/") or content_type == "application/json":
                 response["content"] = content.decode("utf-8")
