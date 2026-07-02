@@ -135,7 +135,74 @@ class OutputGenerationServiceTests(unittest.TestCase):
         self.assertEqual(api_payload["method"], "POST")
         self.assertEqual(api_payload["url"], "https://customer.example/orders")
         self.assertEqual(api_payload["body"]["orderRunId"], "order-run-profile-output")
-        self.assertEqual(api_artifact["metadata"]["deliveryStatus"], "pendingExternalDelivery")
+        self.assertEqual(api_artifact["metadata"]["deliveryStatus"], "skipped")
+        self.assertEqual(api_artifact["delivery"]["reason"], "productionDeliveryDisabled")
+
+    def test_api_destination_posts_generated_csv_when_production_delivery_is_enabled(self) -> None:
+        api, _, _ = self._api()
+        api.repository.upsert(
+            "outputProfiles",
+            {
+                "id": "pilot-api-csv",
+                "tenantId": "altitude",
+                "customerId": "pilot-customer",
+                "name": "Pilot API CSV",
+                "outputType": "csv",
+                "destination": {
+                    "adapter": "api",
+                    "url": "https://customer.example/orders?sig=secret",
+                    "productionDeliveryEnabled": True,
+                },
+                "settings": {
+                    "fields": ["po_number", "line_number", "matched_internal_item_number", "quantity"],
+                },
+            },
+        )
+
+        class Response:
+            status = 202
+            headers = {"Content-Type": "application/json"}
+
+            def __enter__(self) -> "Response":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def read(self, _limit: int = -1) -> bytes:
+                return b'{"accepted":true}'
+
+        captured = {}
+
+        def fake_urlopen(request, timeout=0):
+            captured["request"] = request
+            captured["timeout"] = timeout
+            return Response()
+
+        with patch("order_processor.api.urlrequest.urlopen", side_effect=fake_urlopen) as urlopen:
+            result = api.process_order(
+                "order-run-api-delivery",
+                {
+                    "tenantId": "altitude",
+                    "customerId": "pilot-customer",
+                    "processorType": "csv",
+                    "poNumber": "PO-400",
+                    "sourceContent": "item_number,quantity,description\nPILOT123,5,Dog Food 25 lb\n",
+                },
+            )
+
+        urlopen.assert_called_once()
+        request = captured["request"]
+        self.assertEqual(request.full_url, "https://customer.example/orders?sig=secret")
+        self.assertEqual(request.get_method(), "POST")
+        self.assertEqual(request.get_header("Content-type"), "text/csv")
+        self.assertIn(b"po_number,line_number,matched_internal_item_number,quantity", request.data)
+        self.assertIn(b"PO-400,1,10001,5.0", request.data)
+        csv_artifact = next(artifact for artifact in result["orderRun"]["outputArtifacts"] if artifact["type"] == "lineCsv")
+        self.assertEqual(csv_artifact["delivery"]["status"], "delivered")
+        self.assertEqual(csv_artifact["delivery"]["statusCode"], 202)
+        self.assertEqual(csv_artifact["delivery"]["url"], "https://customer.example/orders")
+        self.assertEqual(csv_artifact["metadata"]["deliveryStatus"], "delivered")
 
     def test_requested_xlsx_output_generates_stored_workbook_reference(self) -> None:
         api, _, store = self._api()

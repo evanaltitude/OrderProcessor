@@ -876,6 +876,14 @@ function loadOutputProfile(profileId) {
   form.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
+function maybeEnableApiProductionDelivery(form) {
+  const adapter = value(form, "destinationAdapter");
+  const url = value(form, "destinationUrl");
+  if (adapter === "api" && url && !checked(form, "productionDeliveryEnabled")) {
+    setChecked(form, "productionDeliveryEnabled", true);
+  }
+}
+
 function latestDate(values) {
   return values
     .map((value) => value?.lastImportedAt || value?.updatedAt || value?.createdAt || "")
@@ -2300,6 +2308,13 @@ function wireForms() {
     if (!showActionResult(result)) return;
     clearOutputProfileForm();
     await refresh();
+  });
+
+  el("outputProfileForm").elements.destinationAdapter.addEventListener("change", (event) => {
+    maybeEnableApiProductionDelivery(event.currentTarget.form);
+  });
+  el("outputProfileForm").elements.destinationUrl.addEventListener("input", (event) => {
+    maybeEnableApiProductionDelivery(event.currentTarget.form);
   });
 
   el("userForm").addEventListener("submit", async (event) => {

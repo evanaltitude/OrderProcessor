@@ -104,6 +104,7 @@ from .observability import (
 )
 from .order_processing import process_order_payload, validate_order_lines
 from .output_generation import (
+    OutputArtifactContent,
     OutputArtifactStore,
     generate_order_output_artifacts,
     output_artifact_store_from_environment,
@@ -4224,6 +4225,11 @@ class OrderProcessorApi:
                 order,
                 output_profiles,
                 self.output_artifact_store,
+                delivery_callback=lambda artifact, reference: self._deliver_output_artifact(
+                    order,
+                    artifact,
+                    reference,
+                ),
             )
         except Exception as exc:  # pragma: no cover - defensive deployed storage boundary.
             order.errors.append({"code": "outputGenerationFailed", "message": str(exc)})
@@ -4271,6 +4277,219 @@ class OrderProcessorApi:
             "stageCategoryResults": stage_category_results,
             "observability": observability,
         }
+
+    def _deliver_output_artifact(
+        self,
+        order: OrderRun,
+        artifact: OutputArtifactContent,
+        reference: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        destination = dict(artifact.destination or {})
+        adapter = self._normalized_processor_type(_pick(destination, "adapter", "type", "kind", default=""))
+        is_api_payload = artifact.artifact_type == "apiPayload"
+        if adapter not in {"api", "http", "webhook", "powerautomate", "powerautomatewebhook"} and not is_api_payload:
+            return None
+
+        payload = self._api_payload_artifact_body(artifact) if is_api_payload else {}
+        url = str(
+            _pick(
+                destination,
+                "url",
+                "endpoint",
+                "apiUrl",
+                "api_url",
+                "apiEndpoint",
+                "api_endpoint",
+                default="",
+            )
+            or payload.get("url")
+            or ""
+        ).strip()
+        delivery_enabled = _bool_flag(
+            _pick(
+                destination,
+                "productionDeliveryEnabled",
+                "production_delivery_enabled",
+                "deliveryEnabled",
+                "delivery_enabled",
+                default=False,
+            ),
+            default=False,
+        )
+        if not delivery_enabled:
+            return {
+                "adapter": adapter or "api",
+                "status": "skipped",
+                "reason": "productionDeliveryDisabled",
+                "url": self._redacted_delivery_url(url),
+                "artifactId": reference.get("id"),
+                "checkedAt": utc_now(),
+            }
+        if not url:
+            raise ValueError(f"API output delivery for {artifact.file_name} requires a destination URL.")
+
+        method = str(
+            _pick(destination, "method", "httpMethod", "http_method", default="")
+            or payload.get("method")
+            or "POST"
+        ).upper()
+        headers = self._output_delivery_headers(payload.get("headers"), destination.get("headers"))
+        if is_api_payload:
+            body = payload.get("body")
+            request_body = json.dumps(body, separators=(",", ":"), default=str).encode("utf-8")
+            content_type = str(
+                _pick(destination, "contentType", "content_type", default="")
+                or self._header_value(headers, "Content-Type")
+                or "application/json"
+            )
+        else:
+            request_body = artifact.content
+            content_type = str(
+                _pick(destination, "contentType", "content_type", default="")
+                or self._header_value(headers, "Content-Type")
+                or artifact.content_type
+                or "application/octet-stream"
+            )
+
+        self._set_header_default(headers, "Content-Type", content_type)
+        self._set_header_default(headers, "X-Order-Processor-Artifact-Type", artifact.artifact_type)
+        self._set_header_default(headers, "X-Order-Processor-File-Name", artifact.file_name)
+        self._set_header_default(headers, "X-Order-Processor-Order-Run-Id", order.id)
+        self._set_header_default(headers, "X-Order-Processor-Customer-Id", order.customer_id or "")
+        self._add_output_delivery_auth(headers, destination)
+
+        try:
+            timeout_seconds = int(
+                _pick(destination, "timeoutSeconds", "timeout_seconds", "timeout", default=30) or 30
+            )
+        except (TypeError, ValueError):
+            timeout_seconds = 30
+        timeout_seconds = max(5, min(timeout_seconds, 120))
+
+        started = utc_now()
+        try:
+            request = urlrequest.Request(
+                url,
+                data=request_body,
+                headers=headers,
+                method=method,
+            )
+            with urlrequest.urlopen(request, timeout=timeout_seconds) as response:
+                response_body = response.read(65536)
+                status_code = int(getattr(response, "status", 200) or 200)
+                response_content_type = str(response.headers.get("Content-Type", ""))
+        except urlerror.HTTPError as exc:
+            response_body = exc.read(65536)
+            status_code = int(exc.code or 500)
+            response_content_type = str(exc.headers.get("Content-Type", ""))
+            preview = self._delivery_response_preview(response_body, response_content_type)
+            raise RuntimeError(
+                f"API output delivery for {artifact.file_name} failed with HTTP {status_code}: {preview}"
+            ) from exc
+        except (urlerror.URLError, TimeoutError, OSError) as exc:
+            raise RuntimeError(f"API output delivery for {artifact.file_name} failed: {exc}") from exc
+
+        if not 200 <= status_code < 300:
+            preview = self._delivery_response_preview(response_body, response_content_type)
+            raise RuntimeError(
+                f"API output delivery for {artifact.file_name} failed with HTTP {status_code}: {preview}"
+            )
+
+        return {
+            "adapter": adapter or "api",
+            "status": "delivered",
+            "statusCode": status_code,
+            "url": self._redacted_delivery_url(url),
+            "method": method,
+            "artifactId": reference.get("id"),
+            "fileName": artifact.file_name,
+            "contentType": content_type,
+            "sizeBytes": len(request_body),
+            "headerNames": sorted(headers),
+            "requestedAt": started,
+            "completedAt": utc_now(),
+            "response": {
+                "contentType": response_content_type,
+                "bodyPreview": self._delivery_response_preview(response_body, response_content_type),
+            },
+        }
+
+    @staticmethod
+    def _api_payload_artifact_body(artifact: OutputArtifactContent) -> dict[str, Any]:
+        try:
+            decoded = json.loads(artifact.content.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"API payload artifact {artifact.file_name} is not valid JSON.") from exc
+        return decoded if isinstance(decoded, dict) else {}
+
+    @staticmethod
+    def _output_delivery_headers(*values: Any) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        for value in values:
+            if isinstance(value, str) and value.strip().startswith("{"):
+                try:
+                    value = json.loads(value)
+                except json.JSONDecodeError:
+                    value = {}
+            if isinstance(value, dict):
+                headers.update({str(key): str(item) for key, item in value.items() if item is not None})
+            elif isinstance(value, list):
+                for item in value:
+                    if not isinstance(item, dict):
+                        continue
+                    name = str(_pick(item, "name", "key", default="")).strip()
+                    if name:
+                        headers[name] = str(_pick(item, "value", default=""))
+        return headers
+
+    @staticmethod
+    def _header_value(headers: dict[str, str], name: str) -> str:
+        for key, value in headers.items():
+            if key.lower() == name.lower():
+                return value
+        return ""
+
+    @classmethod
+    def _set_header_default(cls, headers: dict[str, str], name: str, value: str) -> None:
+        if value and not cls._header_value(headers, name):
+            headers[name] = value
+
+    @classmethod
+    def _add_output_delivery_auth(cls, headers: dict[str, str], destination: dict[str, Any]) -> None:
+        bearer_token = str(
+            _pick(destination, "bearerToken", "bearer_token", "accessToken", "access_token", default="") or ""
+        ).strip()
+        if bearer_token and not cls._header_value(headers, "Authorization"):
+            headers["Authorization"] = f"Bearer {bearer_token}"
+        api_key = str(_pick(destination, "apiKey", "api_key", "subscriptionKey", "subscription_key", default="") or "")
+        api_key_header = str(
+            _pick(
+                destination,
+                "apiKeyHeaderName",
+                "api_key_header_name",
+                "apiKeyHeader",
+                "api_key_header",
+                default="",
+            )
+            or ""
+        ).strip()
+        if api_key and api_key_header and not cls._header_value(headers, api_key_header):
+            headers[api_key_header] = api_key
+
+    @staticmethod
+    def _redacted_delivery_url(url: str) -> str:
+        if not url:
+            return ""
+        parsed = parse.urlsplit(url)
+        return parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+
+    @staticmethod
+    def _delivery_response_preview(response_body: bytes, content_type: str) -> str:
+        if not response_body:
+            return ""
+        if content_type and not any(token in content_type.lower() for token in ["json", "text", "xml", "html"]):
+            return f"{len(response_body)} bytes"
+        return response_body.decode("utf-8", errors="replace")[:1000]
 
     def normalize_spreadsheet(self, payload: dict[str, Any]) -> dict[str, Any]:
         settings = dict(_pick(payload, "processorSettings", "processor_settings", "settings", default={}) or {})

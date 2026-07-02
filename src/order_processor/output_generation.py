@@ -8,7 +8,7 @@ import json
 import os
 import re
 from string import Formatter
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 from uuid import uuid4
 import zipfile
 from xml.sax.saxutils import escape
@@ -52,6 +52,9 @@ class OutputArtifactStore(Protocol):
         artifact: OutputArtifactContent,
     ) -> dict[str, Any]:
         """Persist an output artifact and return the orderRun reference document."""
+
+
+OutputArtifactDeliveryCallback = Callable[[OutputArtifactContent, dict[str, Any]], dict[str, Any] | None]
 
 
 class InMemoryOutputArtifactStore:
@@ -138,24 +141,34 @@ def generate_order_output_artifacts(
     order: OrderRun,
     output_profiles: list[OutputProfile],
     artifact_store: OutputArtifactStore,
+    delivery_callback: OutputArtifactDeliveryCallback | None = None,
 ) -> list[dict[str, Any]]:
     artifacts = [_universal_order_artifact(order)]
     if output_profiles:
         for profile in output_profiles:
             artifacts.extend(_artifacts_for_profile(order, profile))
-    else:
+    if not any(artifact.artifact_type == "lineCsv" for artifact in artifacts):
         artifacts.append(_line_csv_artifact(order, None))
 
     stored: list[dict[str, Any]] = []
     for artifact in artifacts:
-        stored.append(
-            artifact_store.store_artifact(
-                tenant_id=order.tenant_id,
-                customer_id=order.customer_id or "_unassigned",
-                order_run_id=order.id,
-                artifact=artifact,
-            )
+        reference = artifact_store.store_artifact(
+            tenant_id=order.tenant_id,
+            customer_id=order.customer_id or "_unassigned",
+            order_run_id=order.id,
+            artifact=artifact,
         )
+        if delivery_callback is not None:
+            delivery = delivery_callback(artifact, reference)
+            if delivery:
+                reference["delivery"] = delivery
+                metadata = dict(reference.get("metadata") or {})
+                if delivery.get("status"):
+                    metadata["deliveryStatus"] = delivery["status"]
+                if delivery.get("statusCode") is not None:
+                    metadata["deliveryStatusCode"] = delivery["statusCode"]
+                reference["metadata"] = metadata
+        stored.append(reference)
     return stored
 
 
