@@ -526,6 +526,10 @@ function statusPill(status) {
   return `<span class="pill ${tone}">${escapeHtml(status || "")}</span>`;
 }
 
+function monitorStatus(entry = {}) {
+  return entry.displayStatus || entry.status || "";
+}
+
 function formatDateOnly(value) {
   if (!value) return "";
   const date = new Date(value);
@@ -1002,7 +1006,7 @@ function monitorActionCell(entry = {}) {
 }
 
 function activeRunId(entry = {}) {
-  return entry.emailMessageId || entry.orderRunId || entry.id || "";
+  return entry.orderRunId || entry.emailMessageId || entry.id || "";
 }
 
 function activeRunControls(entry = {}) {
@@ -1024,7 +1028,7 @@ function activeMonitorRow(entry = {}) {
     <tr>
       <td>${escapeHtml(entry.receivedAt || entry.updatedAt || "")}</td>
       <td>${escapeHtml(pathLabel(entry.pathway))}</td>
-      <td>${statusPill(entry.status)}</td>
+      <td>${statusPill(monitorStatus(entry))}</td>
       <td class="wrap-cell">${escapeHtml(entry.sender || "")}</td>
       <td class="wrap-cell">${escapeHtml(entry.recipient || "")}</td>
       <td class="wrap-cell">${escapeHtml(entry.subject || "")}</td>

@@ -229,6 +229,7 @@ CONSOLE_MONITOR_RECORD_FIELDS = [
     "exceptionId",
     "pathway",
     "status",
+    "displayStatus",
     "sender",
     "recipient",
     "subject",
@@ -6089,6 +6090,41 @@ class OrderProcessorApi:
             return "humanReview"
         return outcome or "email"
 
+    @staticmethod
+    def _latest_order_stage_category(order: dict[str, Any]) -> str:
+        source_metadata = _as_dict(_pick(order, "sourceMetadata", "source_metadata", default={}))
+        stages = [
+            item
+            for item in _as_list(_pick(source_metadata, "stageCategoryResults", "stage_category_results", default=[]))
+            if isinstance(item, dict)
+        ]
+        for item in reversed(stages):
+            category = str(_pick(item, "category", default="") or "").strip()
+            if category:
+                return category
+        return ""
+
+    @staticmethod
+    def _order_monitor_display_status(order: dict[str, Any]) -> str:
+        status = _document_status(order)
+        if status in OrderProcessorApi._active_processing_statuses():
+            return OrderProcessorApi._latest_order_stage_category(order) or ORDER_PROCESSING_CATEGORY
+        return status
+
+    @staticmethod
+    def _order_monitor_action(order: dict[str, Any]) -> str:
+        status = _document_status(order)
+        if status in OrderProcessorApi._active_processing_statuses():
+            return OrderProcessorApi._latest_order_stage_category(order) or ORDER_PROCESSING_CATEGORY
+        return ""
+
+    def _delete_stale_monitor_record_ids(self, tenant_id: str, *record_ids: str) -> None:
+        for record_id in {str(value or "").strip() for value in record_ids if str(value or "").strip()}:
+            record = self.repository.get("monitorRecords", record_id)
+            if not record or str(_pick(record, "tenantId", "tenant_id", default="")) != tenant_id:
+                continue
+            self.repository.delete("monitorRecords", record_id)
+
     def _upsert_monitor_record_for_email(
         self,
         email: dict[str, Any],
@@ -6118,6 +6154,12 @@ class OrderProcessorApi:
             else self._monitor_entry_from_order(order, customer_by_id, email) if order else self._monitor_entry_from_email(email, customer_by_id, None)
         )
         record = self._monitor_record_from_entry(entry, tenant_id)
+        order_id = str(_pick(order or {}, "id", default="") or "")
+        exception_id = str(_pick(exception or {}, "id", default="") or "")
+        if (order_id or exception_id) and record["id"] != email_id:
+            self._delete_stale_monitor_record_ids(tenant_id, email_id)
+        if exception_id and order_id and record["id"] != order_id:
+            self._delete_stale_monitor_record_ids(tenant_id, order_id)
         return self.repository.upsert("monitorRecords", record)
 
     def _upsert_monitor_record_for_order(self, order: dict[str, Any]) -> dict[str, Any] | None:
@@ -6236,8 +6278,32 @@ class OrderProcessorApi:
             "webstoreOrders": [],
             "nonOrderEmails": [],
         }
+        email_ids_with_order_records = {
+            str(_pick(record, "emailMessageId", "email_message_id", default="") or "")
+            for record in records
+            if _pick(record, "orderRunId", "order_run_id", default="")
+        }
+        preferred_order_record_keys = {
+            (
+                str(_pick(record, "section", default="nonOrderEmails")),
+                str(_pick(record, "emailMessageId", "email_message_id", default="") or ""),
+                str(_pick(record, "orderRunId", "order_run_id", default="") or ""),
+            )
+            for record in records
+            if str(_pick(record, "orderRunId", "order_run_id", default="") or "")
+            and str(_pick(record, "id", default="") or "")
+            == str(_pick(record, "orderRunId", "order_run_id", default="") or "")
+        }
         for record in records:
             section = str(_pick(record, "section", default="nonOrderEmails"))
+            email_id = str(_pick(record, "emailMessageId", "email_message_id", default="") or "")
+            order_id = str(_pick(record, "orderRunId", "order_run_id", default="") or "")
+            if section == "active" and email_id and not order_id and email_id in email_ids_with_order_records:
+                continue
+            if order_id:
+                key = (section, email_id, order_id)
+                if key in preferred_order_record_keys and str(_pick(record, "id", default="") or "") != order_id:
+                    continue
             sections.setdefault(section, []).append(record)
         return {key: self._sort_recent(value) for key, value in sections.items()}
 
@@ -6343,8 +6409,12 @@ class OrderProcessorApi:
             order_id = str(_pick(order or {}, "id", default=""))
             if email_id in exception_email_ids or order_id in exception_order_ids:
                 continue
+            if order:
+                if _document_status(order) in active_statuses:
+                    active.append(self._monitor_entry_from_order(order, customer_by_id, email))
+                continue
             if _document_status(email) in active_statuses:
-                active.append(self._monitor_entry_from_email(email, customer_by_id, order))
+                active.append(self._monitor_entry_from_email(email, customer_by_id, None))
 
         for order in order_runs:
             email_id = str(_pick(order, "emailMessageId", "email_message_id", default=""))
@@ -6447,6 +6517,7 @@ class OrderProcessorApi:
                 "orderRunId": str(_pick(order, "id", default="")),
                 "pathway": "orderProcessing",
                 "status": _document_status(order),
+                "displayStatus": self._order_monitor_display_status(order),
                 "updatedAt": str(_pick(order, "updatedAt", "updated_at", "createdAt", "created_at", default="")),
                 "customerId": str(_document_customer_id(order) or entry.get("customerId", "")),
                 "customerCode": str(_pick(customer or {}, "customerCode", "customer_code", default=entry.get("customerCode", ""))),
@@ -6457,7 +6528,11 @@ class OrderProcessorApi:
                 "orderNumber": str(_pick(order, "orderNumber", "order_number", default="")),
                 "lineCount": len(_as_list(_pick(order, "lines", default=[]))),
                 "artifactCount": len(_as_list(_pick(order, "outputArtifacts", "output_artifacts", default=[]))),
-                "actionTaken": self._monitor_action_summary(email or {}, order, _as_dict(_pick(_as_dict(_pick(email or {}, "source", default={})), "graphEmailActions", default={}))),
+                "actionTaken": self._order_monitor_action(order) or self._monitor_action_summary(
+                    email or {},
+                    order,
+                    _as_dict(_pick(_as_dict(_pick(email or {}, "source", default={})), "graphEmailActions", default={})),
+                ),
             }
         )
         return entry

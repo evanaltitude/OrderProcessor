@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import unittest
 import zipfile
 from io import BytesIO
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from order_processor.api import OrderProcessorApi
+from order_processor import output_generation
 from order_processor.output_generation import InMemoryOutputArtifactStore
 from order_processor.storage import InMemoryRepository
 
@@ -31,6 +34,15 @@ class OutputGenerationServiceTests(unittest.TestCase):
             },
         )
         return api, repo, store
+
+    def test_output_artifact_store_backend_accepts_artifact_env_name(self) -> None:
+        with patch.dict(os.environ, {"ORDER_PROCESSOR_OUTPUT_ARTIFACT_BACKEND": "blob"}, clear=False), patch(
+            "order_processor.output_generation.AzureBlobOutputArtifactStore"
+        ) as blob_store:
+            store = output_generation.output_artifact_store_from_environment()
+
+        self.assertIs(store, blob_store.return_value)
+        blob_store.assert_called_once_with()
 
     def test_process_order_stores_default_universal_json_and_line_csv_artifacts(self) -> None:
         api, repo, store = self._api()

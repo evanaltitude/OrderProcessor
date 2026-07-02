@@ -438,6 +438,14 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
           value: 'blob'
         }
         {
+          name: 'ORDER_PROCESSOR_OUTPUT_ARTIFACT_BACKEND'
+          value: 'blob'
+        }
+        {
+          name: 'ORDER_PROCESSOR_OUTPUT_ARCHIVE_BACKEND'
+          value: 'blob'
+        }
+        {
           name: 'COSMOS_DATABASE_NAME'
           value: cosmosDatabase.name
         }

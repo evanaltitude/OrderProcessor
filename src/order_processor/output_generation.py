@@ -124,7 +124,11 @@ class AzureBlobOutputArtifactStore:
 
 
 def output_artifact_store_from_environment() -> OutputArtifactStore:
-    backend = os.environ.get("ORDER_PROCESSOR_OUTPUT_ARCHIVE_BACKEND", "memory").strip().lower()
+    backend = (
+        os.environ.get("ORDER_PROCESSOR_OUTPUT_ARTIFACT_BACKEND", "")
+        or os.environ.get("ORDER_PROCESSOR_OUTPUT_ARCHIVE_BACKEND", "")
+        or "memory"
+    ).strip().lower()
     if backend == "blob":
         return AzureBlobOutputArtifactStore()
     return InMemoryOutputArtifactStore()

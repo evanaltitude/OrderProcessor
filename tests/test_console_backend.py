@@ -278,6 +278,108 @@ class ConsoleBackendTests(unittest.TestCase):
         self.assertEqual(dashboard["monitor"]["active"], [])
         self.assertEqual(dashboard["monitor"]["nonOrderEmails"][0]["emailMessageId"], "email-active")
 
+    def test_console_monitor_hides_stale_parent_email_when_order_record_exists(self) -> None:
+        api, repo, _ = self._api()
+        headers = {"x-ms-client-principal": _easy_auth_header("connect@focuseautomate.com")}
+        api._monitor_backfill_checked_tenants.add("altitude")
+        api.upsert_customer_config(
+            {
+                "tenantId": "altitude",
+                "id": "pilot-customer",
+                "customerCode": "PILOT",
+                "name": "Pilot",
+                "csrFolder": "Jane",
+            }
+        )
+        repo.upsert(
+            "monitorRecords",
+            {
+                "id": "email-active",
+                "tenantId": "altitude",
+                "section": "active",
+                "emailMessageId": "email-active",
+                "pathway": "orderCandidate",
+                "status": "routed",
+                "subject": "PO 123",
+                "updatedAt": "2026-06-24T12:00:00Z",
+                "actionTaken": "knownOrder",
+            },
+        )
+        repo.upsert(
+            "monitorRecords",
+            {
+                "id": "email-active-duplicate",
+                "tenantId": "altitude",
+                "section": "processedOrders",
+                "emailMessageId": "email-active",
+                "orderRunId": "order-run-1",
+                "pathway": "orderProcessing",
+                "status": "completed",
+                "subject": "PO 123",
+                "updatedAt": "2026-06-24T12:05:00Z",
+            },
+        )
+        repo.upsert(
+            "monitorRecords",
+            {
+                "id": "order-run-1",
+                "tenantId": "altitude",
+                "section": "processedOrders",
+                "emailMessageId": "email-active",
+                "orderRunId": "order-run-1",
+                "pathway": "orderProcessing",
+                "status": "completed",
+                "subject": "PO 123",
+                "updatedAt": "2026-06-24T12:06:00Z",
+            },
+        )
+
+        dashboard = api.console_dashboard({"tenantId": "altitude", "headers": headers, "view": "monitor"})
+
+        self.assertEqual(dashboard["monitor"]["active"], [])
+        self.assertEqual([row["id"] for row in dashboard["monitor"]["processedOrders"]], ["order-run-1"])
+
+    def test_order_monitor_entry_uses_current_stage_as_display_status(self) -> None:
+        api, repo, _ = self._api()
+        api.upsert_customer_config(
+            {
+                "tenantId": "altitude",
+                "id": "pilot-customer",
+                "customerCode": "PILOT",
+                "name": "Pilot",
+            }
+        )
+        email = {
+            "id": "email-active",
+            "tenantId": "altitude",
+            "mailbox": "orders@example.com",
+            "messageId": "message-active",
+            "sender": "store@example.com",
+            "subject": "PO 123",
+            "receivedAt": "2026-06-24T12:00:00Z",
+            "status": "processing",
+            "customerId": "pilot-customer",
+            "source": {},
+        }
+        order = {
+            "id": "order-run-1",
+            "tenantId": "altitude",
+            "emailMessageId": "email-active",
+            "customerId": "pilot-customer",
+            "status": "processing",
+            "sourceMetadata": {
+                "stageCategoryResults": [
+                    {"stage": "orderParsingData", "category": "Order Parsing Data - Do Not Move"},
+                    {"stage": "orderCustomerIdentification", "category": "Order Customer ID - Do Not Move"},
+                ]
+            },
+        }
+
+        entry = api._monitor_entry_from_order(order, {"pilot-customer": repo.get("customers", "pilot-customer")}, email)
+
+        self.assertEqual(entry["displayStatus"], "Order Customer ID - Do Not Move")
+        self.assertEqual(entry["actionTaken"], "Order Customer ID - Do Not Move")
+
     def test_console_dashboard_lists_distributor_customers_and_read_only_import_lists(self) -> None:
         api, repo, _ = self._api()
         admin_headers = {"x-ms-client-principal": _easy_auth_header("connect@focuseautomate.com")}

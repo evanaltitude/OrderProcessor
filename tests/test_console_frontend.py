@@ -56,6 +56,8 @@ class ConsoleFrontendTests(unittest.TestCase):
         self.assertIn("/console/orders/", app)
         self.assertIn('data-action="clear-active-run"', app)
         self.assertIn("Clear this active email", app)
+        self.assertIn("function monitorStatus", app)
+        self.assertIn("entry.orderRunId || entry.emailMessageId", app)
         self.assertIn("<th>Controls</th>", index)
         self.assertIn('data-view="costs"', index)
         self.assertIn("AI Costs", index)
