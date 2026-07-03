@@ -1094,14 +1094,14 @@ function completedEmailRow(entry = {}) {
 }
 
 function monitorEntryDate(entry = {}) {
-  const value = entry.receivedAt || entry.updatedAt || entry.createdAt || "";
+  const value = entry.updatedAt || entry.createdAt || entry.receivedAt || "";
   const parsed = Date.parse(value);
   if (Number.isNaN(parsed)) return "";
   return localDateInputValue(new Date(parsed));
 }
 
 function monitorEntryTimestamp(entry = {}) {
-  const parsed = Date.parse(entry.receivedAt || entry.updatedAt || entry.createdAt || "");
+  const parsed = Date.parse(entry.updatedAt || entry.createdAt || entry.receivedAt || "");
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 

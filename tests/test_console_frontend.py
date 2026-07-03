@@ -73,6 +73,7 @@ class ConsoleFrontendTests(unittest.TestCase):
         self.assertIn("exception-overview-grid", app)
         self.assertIn("Processed Email Filters", index)
         self.assertIn("monitorFilterForm", index)
+        self.assertIn("entry.updatedAt || entry.createdAt || entry.receivedAt", app)
         self.assertIn("<th>Output</th>", index)
         self.assertIn("monitorOutputLink", app)
         self.assertIn("downloadArtifactResult", app)
