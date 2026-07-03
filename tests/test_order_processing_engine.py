@@ -154,6 +154,31 @@ class OrderProcessingEngineTests(unittest.TestCase):
         self.assertIn("buyer@classicpet.example", customer_search)
         self.assertEqual(order.lines[0].description, "Treats")
 
+    def test_email_body_processor_reads_flattened_fieldstack_rows(self) -> None:
+        source = (
+            "From: FieldStack Automation <orders@FieldStack.com> Purchase Order: 480913369 "
+            "Vendor: Frontier Distributing Order Date: 03/05/2025 Ship To: HollywoodFeed "
+            "480 MCCANDLESS 9190 Covenant Ave Pittsburgh, PA 15237 Account: "
+            "Qty UoM UPC Description Ext Weight(lbs) Price Ext Price "
+            "1 EA 064992205409 ORIJEN CAT TUNDRA 4#/ (6499220540) 4.09 $29.45 $29.45 "
+            "2 EA 072635010082 TUCKER'S SALMON & PUMPKIN 6#/ (7263501008) 0.00 $24.22 $48.44 "
+            "113 Total 119.77 $1121.51"
+        )
+        order = EmailBodyOrderProcessor().parse(
+            _order(),
+            {"subject": "Hollywood Feed PO#480913369", "bodyText": source},
+        )
+
+        self.assertEqual(order.status, ProcessingStatus.PROCESSING)
+        self.assertEqual(order.po_number, "480913369")
+        self.assertEqual(len(order.lines), 2)
+        self.assertEqual(order.lines[0].quantity, 1.0)
+        self.assertEqual(order.lines[0].provided_upc, "064992205409")
+        self.assertEqual(order.lines[0].provided_item_number, "6499220540")
+        self.assertIn("ORIJEN CAT TUNDRA", order.lines[0].description)
+        self.assertEqual(order.lines[1].quantity, 2.0)
+        self.assertEqual(order.lines[1].provided_upc, "072635010082")
+
     def test_customer_override_delegates_to_configured_email_body_pattern(self) -> None:
         source = (ROOT / "samples/phase-2/customer-specific/market-place-pet-supplies.eml").read_text()
         context = OrderProcessorContext(

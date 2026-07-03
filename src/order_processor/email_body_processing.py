@@ -5,6 +5,7 @@ import csv
 from dataclasses import dataclass
 from email import message_from_string
 from email.message import Message
+import html
 from html.parser import HTMLParser
 import io
 import os
@@ -343,6 +344,11 @@ def _deterministic_lines(
     if lines:
         return lines
 
+    rows = _rows_from_flattened_order_table(text)
+    lines = _canonical_lines_from_rows(rows, warnings)
+    if lines:
+        return lines
+
     return _lines_from_simple_text(text, warnings)
 
 
@@ -401,6 +407,63 @@ def _rows_from_delimited_block(block: list[str], delimiter: str) -> list[dict[st
     reader = csv.reader(io.StringIO("\n".join(block)), delimiter=delimiter)
     matrix = [[cell.strip() for cell in row] for row in reader]
     return _matrix_to_rows(matrix)
+
+
+def _rows_from_flattened_order_table(text: str) -> list[dict[str, Any]]:
+    clean = _clean_text(html.unescape(text or ""))
+    if not clean:
+        return []
+    header = re.search(
+        r"\bQty\s+UoM\s+UPC\s+Description\b",
+        clean,
+        re.IGNORECASE,
+    )
+    if not header:
+        return []
+
+    table_text = clean[header.end() :]
+    row_start = re.compile(
+        r"(?<!\S)(?P<quantity>\d+(?:\.\d+)?)\s+"
+        r"(?P<unit>EA|EACH|CS|CASE|CA|PK|PACK|BX|BOX|BG|BAG|CT|COUNT|LB|LBS)\s+"
+        r"(?P<providedUpc>\d{8,14})\s+",
+        re.IGNORECASE,
+    )
+    starts = list(row_start.finditer(table_text))
+    rows: list[dict[str, Any]] = []
+    for index, match in enumerate(starts, start=1):
+        start = match.end()
+        end = starts[index].start() if index < len(starts) else len(table_text)
+        detail = table_text[start:end].strip()
+        if not detail:
+            continue
+        detail = re.split(r"\s+\d+(?:\.\d+)?\s+Total\b", detail, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+        description = detail
+        unit_price = ""
+        trailing_amounts = re.search(
+            r"(?P<description>.*?)\s+(?P<weight>\d+(?:\.\d+)?)\s+"
+            r"\$?(?P<unitPrice>\d+(?:\.\d+)?)\s+\$?(?P<extendedPrice>\d+(?:\.\d+)?)\s*$",
+            detail,
+        )
+        if trailing_amounts:
+            description = trailing_amounts.group("description").strip()
+            unit_price = trailing_amounts.group("unitPrice")
+        parenthetical_identifier = ""
+        identifier_match = re.search(r"\((?P<identifier>\d{8,14})\)", description)
+        if identifier_match:
+            parenthetical_identifier = identifier_match.group("identifier")
+        rows.append(
+            {
+                "quantity": match.group("quantity"),
+                "unit": match.group("unit").upper(),
+                "providedUpc": match.group("providedUpc"),
+                "providedItemNumber": parenthetical_identifier,
+                "description": description,
+                "unitPrice": unit_price,
+                "_sourceRowIndex": index,
+                "_sourceText": table_text[match.start() : end].strip(),
+            }
+        )
+    return rows
 
 
 def _matrix_to_rows(matrix: list[list[str]]) -> list[dict[str, Any]]:
