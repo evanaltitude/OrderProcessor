@@ -246,6 +246,93 @@ class OutputGenerationServiceTests(unittest.TestCase):
         self.assertEqual(result["orderRun"]["outputArtifacts"], [])
         urlopen.assert_not_called()
 
+    def test_missing_customer_skips_item_validation_and_output_delivery(self) -> None:
+        api, repo, store = self._api()
+        repo.upsert(
+            "items",
+            {
+                "id": "global-item-1",
+                "tenantId": "altitude",
+                "customerId": "_global",
+                "internalItemNumber": "10001",
+                "description": "Dog Food 25 lb",
+                "customerItemNumbers": ["PILOT123"],
+            },
+        )
+        api.repository.upsert(
+            "outputProfiles",
+            {
+                "id": "pilot-api-csv",
+                "tenantId": "altitude",
+                "customerId": "_global",
+                "name": "Pilot API CSV",
+                "outputType": "csv",
+                "destination": {
+                    "adapter": "api",
+                    "url": "https://customer.example/orders",
+                    "productionDeliveryEnabled": True,
+                },
+            },
+        )
+        api._create_exception(
+            tenant_id="altitude",
+            task_type="itemValidation",
+            prompt="Resolve item match.",
+            order_run_id="order-run-missing-customer",
+            line_number=1,
+            context={"line": {"lineNumber": 1}},
+        )
+
+        with patch("order_processor.api.urlrequest.urlopen") as urlopen:
+            result = api.process_order(
+                "order-run-missing-customer",
+                {
+                    "tenantId": "altitude",
+                    "processorType": "csv",
+                    "sourceContent": "item_number,quantity,description\nPILOT123,5,Dog Food 25 lb\n",
+                },
+            )
+
+        self.assertEqual(result["orderRun"]["status"], "needsReview")
+        self.assertIsNone(result["orderRun"]["customerId"])
+        self.assertEqual(result["orderRun"]["outputArtifacts"], [])
+        self.assertEqual(result["unresolvedLineCount"], 0)
+        self.assertEqual(store.objects, {})
+        urlopen.assert_not_called()
+        exceptions = repo.query_by_tenant("exceptionTasks", "altitude")
+        self.assertEqual(
+            [(task["type"], task["status"]) for task in exceptions],
+            [("itemValidation", "resolved"), ("customerIdentification", "open")],
+        )
+        self.assertEqual(result["orderRun"]["lines"][0]["validationErrors"], [])
+
+    def test_successful_reprocess_resolves_stale_parser_failure_exception(self) -> None:
+        api, repo, _ = self._api()
+        api._create_exception(
+            tenant_id="altitude",
+            task_type="parserFailure",
+            prompt="Review order parser failure.",
+            order_run_id="order-run-reparsed",
+            context={"errors": [{"code": "processorFailed"}]},
+        )
+
+        result = api.process_order(
+            "order-run-reparsed",
+            {
+                "tenantId": "altitude",
+                "processorType": "csv",
+                "sourceContent": "item_number,quantity,description\nPILOT123,5,Dog Food 25 lb\n",
+            },
+        )
+
+        parser_tasks = [
+            task
+            for task in repo.query_by_tenant("exceptionTasks", "altitude")
+            if task["type"] == "parserFailure"
+        ]
+        self.assertEqual(result["orderRun"]["status"], "needsReview")
+        self.assertEqual(parser_tasks[0]["status"], "resolved")
+
     def test_requested_xlsx_output_generates_stored_workbook_reference(self) -> None:
         api, _, store = self._api()
 

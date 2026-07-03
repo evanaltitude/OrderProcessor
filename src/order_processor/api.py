@@ -4131,6 +4131,14 @@ class OrderProcessorApi:
         order = process_order_payload(order, payload, processor_profile)
         order.source_metadata["stageCategoryResults"] = stage_category_results
         self._persist_order_processing_checkpoint(order)
+        if order.status != ProcessingStatus.FAILED and order.lines:
+            self._resolve_open_order_exceptions(
+                order.tenant_id,
+                order.id,
+                {"parserFailure"},
+                reason="order parsed successfully on reprocess",
+                correlation_id=order.correlation_id,
+            )
 
         customer_identification_result = None
         if not order.customer_id and order.status != ProcessingStatus.FAILED:
@@ -4174,7 +4182,24 @@ class OrderProcessorApi:
         self._persist_order_processing_checkpoint(order)
 
         items = [_item_from_doc(doc) for doc in self.repository.query_by_customer("items", order.tenant_id, GLOBAL_CUSTOMER_ID)]
-        if items and order.lines:
+        missing_customer_for_order = bool(order.lines and not order.customer_id and order.status != ProcessingStatus.FAILED)
+        if missing_customer_for_order and not any(str(_pick(error, "code", default="")) == "missingCustomer" for error in order.errors):
+            order.errors.append(
+                {
+                    "code": "missingCustomer",
+                    "message": "Customer identification is required before item validation or output delivery.",
+                }
+            )
+        if missing_customer_for_order:
+            self._resolve_open_order_exceptions(
+                order.tenant_id,
+                order.id,
+                {"itemValidation"},
+                reason="customer unresolved; item validation deferred",
+                correlation_id=order.correlation_id,
+            )
+
+        if items and order.lines and order.customer_id:
             stage_category_results.append(
                 self._apply_order_stage_category(
                     order,
@@ -4192,7 +4217,7 @@ class OrderProcessorApi:
         unresolved = [
             line
             for line in order.lines
-            if line.validation_status in {MatchStatus.UNRESOLVED, MatchStatus.POSSIBLE_MATCH}
+            if order.customer_id and line.validation_status in {MatchStatus.UNRESOLVED, MatchStatus.POSSIBLE_MATCH}
         ]
         for line in unresolved:
             self._create_exception(
@@ -4218,12 +4243,12 @@ class OrderProcessorApi:
             )
 
         if order.status != ProcessingStatus.FAILED:
-            order.status = ProcessingStatus.NEEDS_REVIEW if unresolved else ProcessingStatus.COMPLETED
+            order.status = ProcessingStatus.NEEDS_REVIEW if missing_customer_for_order or unresolved else ProcessingStatus.COMPLETED
         order.updated_at = utc_now()
         order.source_metadata["stageCategoryResults"] = stage_category_results
         order.output_artifacts = []
         output_profiles = self._resolve_output_profiles(order, payload, processor_profile)
-        if order.status != ProcessingStatus.FAILED and order.lines:
+        if order.status != ProcessingStatus.FAILED and order.lines and order.customer_id:
             try:
                 order.output_artifacts = generate_order_output_artifacts(
                     order,
@@ -8978,8 +9003,13 @@ class OrderProcessorApi:
                             list(_as_list(_pick(latest_email, "categories", default=[]))),
                         )
                         self._update_email_after_graph_actions(str(_pick(latest_email, "id", default="")), ingest_result, graph_result)
+        result_status = "reprocessed"
+        if str(_pick(task, "type", default="") or "") == "customerIdentification":
+            processed_order = _as_dict(_pick(processed or {}, "orderRun", "order_run", default={}))
+            if processed_order and not _pick(processed_order, "customerId", "customer_id", default=None):
+                result_status = "updated"
         return {
-            "status": "reprocessed",
+            "status": result_status,
             "ingestResult": ingest_result,
             "processResult": processed,
             "processResults": processed_results,
@@ -9891,6 +9921,50 @@ class OrderProcessorApi:
             email_message_id=email_message_id,
         )
         return stored
+
+    def _resolve_open_order_exceptions(
+        self,
+        tenant_id: str,
+        order_run_id: str,
+        task_types: set[str],
+        *,
+        reason: str,
+        correlation_id: str | None = None,
+    ) -> None:
+        now = utc_now()
+        for task in self.repository.query_by_tenant("exceptionTasks", tenant_id):
+            if str(_pick(task, "orderRunId", "order_run_id", default="") or "") != order_run_id:
+                continue
+            task_type = str(_pick(task, "type", default="") or "")
+            if task_type not in task_types or _document_status(task) != ExceptionStatus.OPEN.value:
+                continue
+            task["status"] = ExceptionStatus.RESOLVED.value
+            task["resolution"] = {
+                **dict(_pick(task, "resolution", default={}) or {}),
+                "reason": reason,
+                "resolvedBy": "system",
+            }
+            task["resolvedAt"] = now
+            task["resolved_at"] = now
+            task["updatedAt"] = now
+            stored = self.repository.upsert("exceptionTasks", task)
+            self.repository.delete("monitorRecords", str(_pick(stored, "id", default="")))
+            self._audit(
+                tenant_id,
+                "exception.resolved",
+                correlation_id or stable_id(tenant_id, order_run_id, task_type, reason),
+                str(_pick(stored, "id", default="")),
+                {
+                    "exceptionTaskId": _pick(stored, "id", default=""),
+                    "type": task_type,
+                    "orderRunId": order_run_id,
+                    "reason": reason,
+                    "automatic": True,
+                },
+                customer_id=self._exception_customer_id(stored),
+                order_run_id=order_run_id,
+                email_message_id=_pick(stored, "emailMessageId", "email_message_id", default=None),
+            )
 
     def _audit(
         self,
