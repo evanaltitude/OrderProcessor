@@ -195,14 +195,56 @@ class OutputGenerationServiceTests(unittest.TestCase):
         request = captured["request"]
         self.assertEqual(request.full_url, "https://customer.example/orders?sig=secret")
         self.assertEqual(request.get_method(), "POST")
-        self.assertEqual(request.get_header("Content-type"), "text/csv")
-        self.assertIn(b"po_number,line_number,matched_internal_item_number,quantity", request.data)
-        self.assertIn(b"PO-400,1,10001,5.0", request.data)
+        self.assertEqual(request.get_header("Content-type"), "application/json")
+        payload = json.loads(request.data.decode("utf-8"))
+        self.assertEqual(payload["subject"], "")
+        self.assertEqual(payload["orderRunId"], "order-run-api-delivery")
+        self.assertEqual(payload["poNumber"], "PO-400")
+        self.assertEqual(payload["processorType"], "csv")
+        self.assertEqual(payload["artifactType"], "lineCsv")
+        self.assertEqual(payload["contentType"], "text/csv")
+        self.assertEqual(payload["contentEncoding"], "utf-8")
+        self.assertIn("po_number,line_number,matched_internal_item_number,quantity", payload["content"])
+        self.assertIn("PO-400,1,10001,5.0", payload["content"])
         csv_artifact = next(artifact for artifact in result["orderRun"]["outputArtifacts"] if artifact["type"] == "lineCsv")
         self.assertEqual(csv_artifact["delivery"]["status"], "delivered")
         self.assertEqual(csv_artifact["delivery"]["statusCode"], 202)
         self.assertEqual(csv_artifact["delivery"]["url"], "https://customer.example/orders")
         self.assertEqual(csv_artifact["metadata"]["deliveryStatus"], "delivered")
+
+    def test_failed_parser_does_not_generate_or_deliver_empty_output(self) -> None:
+        api, _, _ = self._api()
+        api.repository.upsert(
+            "outputProfiles",
+            {
+                "id": "pilot-api-csv",
+                "tenantId": "altitude",
+                "customerId": "pilot-customer",
+                "name": "Pilot API CSV",
+                "outputType": "csv",
+                "destination": {
+                    "adapter": "api",
+                    "url": "https://customer.example/orders",
+                    "productionDeliveryEnabled": True,
+                },
+            },
+        )
+
+        with patch("order_processor.api.urlrequest.urlopen") as urlopen:
+            result = api.process_order(
+                "order-run-failed-parser",
+                {
+                    "tenantId": "altitude",
+                    "customerId": "pilot-customer",
+                    "processorType": "xlsx",
+                    "sourceContent": b"not an xlsx workbook",
+                    "sourceFileName": "bad.xlsx",
+                },
+            )
+
+        self.assertEqual(result["orderRun"]["status"], "failed")
+        self.assertEqual(result["orderRun"]["outputArtifacts"], [])
+        urlopen.assert_not_called()
 
     def test_requested_xlsx_output_generates_stored_workbook_reference(self) -> None:
         api, _, store = self._api()

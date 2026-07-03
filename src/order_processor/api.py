@@ -1307,7 +1307,7 @@ class OrderProcessorApi:
         if processor_type in {"pdf", "googledocumentai", "googledocumentaipdf", "orderprocessgoogledocumentaipdf"}:
             return {"pdf"}
         if processor_type == "xlsx":
-            return {"xlsx", "xlsm", "xltx"}
+            return {"csv", "tsv", "txt", "xlsx", "xlsm", "xls", "xlt", "xltx"}
         if processor_type in {"xls", "xlt", "legacyworkbook"}:
             return {"xls", "xlt"}
         if processor_type == "csv":
@@ -4223,29 +4223,30 @@ class OrderProcessorApi:
         order.source_metadata["stageCategoryResults"] = stage_category_results
         order.output_artifacts = []
         output_profiles = self._resolve_output_profiles(order, payload, processor_profile)
-        try:
-            order.output_artifacts = generate_order_output_artifacts(
-                order,
-                output_profiles,
-                self.output_artifact_store,
-                delivery_callback=lambda artifact, reference: self._deliver_output_artifact(
+        if order.status != ProcessingStatus.FAILED and order.lines:
+            try:
+                order.output_artifacts = generate_order_output_artifacts(
                     order,
-                    artifact,
-                    reference,
-                ),
-            )
-        except Exception as exc:  # pragma: no cover - defensive deployed storage boundary.
-            order.errors.append({"code": "outputGenerationFailed", "message": str(exc)})
-            order.status = ProcessingStatus.FAILED
-            self._create_exception(
-                tenant_id=order.tenant_id,
-                task_type="outputGeneration",
-                prompt="Review output generation failure.",
-                order_run_id=order.id,
-                customer_id=order.customer_id,
-                correlation_id=order.correlation_id,
-                context={"error": str(exc), "outputProfiles": [to_dict(profile) for profile in output_profiles]},
-            )
+                    output_profiles,
+                    self.output_artifact_store,
+                    delivery_callback=lambda artifact, reference: self._deliver_output_artifact(
+                        order,
+                        artifact,
+                        reference,
+                    ),
+                )
+            except Exception as exc:  # pragma: no cover - defensive deployed storage boundary.
+                order.errors.append({"code": "outputGenerationFailed", "message": str(exc)})
+                order.status = ProcessingStatus.FAILED
+                self._create_exception(
+                    tenant_id=order.tenant_id,
+                    task_type="outputGeneration",
+                    prompt="Review output generation failure.",
+                    order_run_id=order.id,
+                    customer_id=order.customer_id,
+                    correlation_id=order.correlation_id,
+                    context={"error": str(exc), "outputProfiles": [to_dict(profile) for profile in output_profiles]},
+                )
         order.processing_completed_at = utc_now()
         order_doc = self.repository.upsert("orderRuns", to_dict(order))
         self._upsert_monitor_record_for_order(order_doc)
@@ -4346,13 +4347,10 @@ class OrderProcessorApi:
                 or "application/json"
             )
         else:
-            request_body = artifact.content
-            content_type = str(
-                _pick(destination, "contentType", "content_type", default="")
-                or self._header_value(headers, "Content-Type")
-                or artifact.content_type
-                or "application/octet-stream"
-            )
+            body = self._output_file_delivery_payload(order, artifact, reference)
+            request_body = json.dumps(body, separators=(",", ":"), default=str).encode("utf-8")
+            content_type = "application/json"
+            headers["Content-Type"] = content_type
 
         self._set_header_default(headers, "Content-Type", content_type)
         self._set_header_default(headers, "X-Order-Processor-Artifact-Type", artifact.artifact_type)
@@ -4416,6 +4414,110 @@ class OrderProcessorApi:
                 "bodyPreview": self._delivery_response_preview(response_body, response_content_type),
             },
         }
+
+    def _output_file_delivery_payload(
+        self,
+        order: OrderRun,
+        artifact: OutputArtifactContent,
+        reference: dict[str, Any],
+    ) -> dict[str, Any]:
+        email = self.repository.get("emailMessages", order.email_message_id) if order.email_message_id else None
+        email = email or {}
+        source_metadata = _as_dict(order.source_metadata)
+        attachment = _as_dict(_pick(source_metadata, "attachment", default={}))
+        content, content_encoding = self._artifact_content_for_delivery(artifact)
+        recipients = _pick(email, "toRecipients", "to_recipients", "recipient", "to", default=[])
+        if isinstance(recipients, str):
+            recipient_values = [recipients] if recipients.strip() else []
+        else:
+            recipient_values = [str(value) for value in _as_list(recipients) if str(value or "").strip()]
+        received_at = _pick(
+            email,
+            "receivedAt",
+            "received_at",
+            default=_pick(source_metadata, "receivedAt", "received_at", default=""),
+        )
+        subject = _pick(email, "subject", default=_pick(source_metadata, "subject", default=""))
+        sender = _pick(email, "sender", "from", default=_pick(source_metadata, "sender", "from", default=""))
+        source_file_name = (
+            order.source_file_name
+            or _pick(source_metadata, "sourceFileName", "source_file_name", default="")
+            or _pick(attachment, "name", "fileName", "file_name", default="")
+        )
+        source_content_type = (
+            _pick(source_metadata, "contentType", "content_type", default="")
+            or _pick(attachment, "contentType", "content_type", default="")
+        )
+        status = order.status.value if isinstance(order.status, ProcessingStatus) else str(order.status or "")
+        return {
+            "tenantId": order.tenant_id,
+            "customerId": order.customer_id or "",
+            "orderRunId": order.id,
+            "orderId": order.id,
+            "emailMessageId": order.email_message_id or "",
+            "emailId": order.email_message_id or "",
+            "messageId": _pick(email, "messageId", "message_id", default=order.email_message_id or ""),
+            "graphMessageId": _pick(source_metadata, "graphMessageId", "graph_message_id", default=""),
+            "subject": subject,
+            "sender": sender,
+            "recipient": ";".join(recipient_values),
+            "recipients": recipient_values,
+            "receivedAt": received_at,
+            "processingStartedAt": order.processing_started_at,
+            "processingCompletedAt": order.processing_completed_at,
+            "processedAt": order.processing_completed_at or order.updated_at,
+            "processorType": order.processor_type,
+            "processorProfileId": order.processor_profile_id or "",
+            "sourceType": order.source_type,
+            "sourceFileName": source_file_name,
+            "sourceContentType": source_content_type,
+            "purchaseOrder": order.po_number,
+            "poNumber": order.po_number,
+            "orderNumber": order.order_number,
+            "status": status,
+            "lineCount": len(order.lines),
+            "artifactId": reference.get("id", ""),
+            "artifactType": artifact.artifact_type,
+            "artifactFileName": artifact.file_name,
+            "fileName": artifact.file_name,
+            "contentType": artifact.content_type,
+            "contentEncoding": content_encoding,
+            "contentLength": len(artifact.content),
+            "content": content,
+            "metadata": {
+                "artifact": {
+                    "id": reference.get("id", ""),
+                    "blobUrl": reference.get("blobUrl", ""),
+                    "checksum": reference.get("checksum", ""),
+                    "sizeBytes": reference.get("sizeBytes", len(artifact.content)),
+                    "generatedAt": reference.get("generatedAt", ""),
+                    "outputProfileId": artifact.output_profile_id or "",
+                    "outputProfileName": artifact.output_profile_name,
+                    "metadata": reference.get("metadata", artifact.metadata),
+                },
+                "order": {
+                    "correlationId": order.correlation_id,
+                    "createdAt": order.created_at,
+                    "updatedAt": order.updated_at,
+                },
+            },
+        }
+
+    @staticmethod
+    def _artifact_content_for_delivery(artifact: OutputArtifactContent) -> tuple[str, str]:
+        content_type = str(artifact.content_type or "").lower()
+        text_like = (
+            content_type.startswith("text/")
+            or "json" in content_type
+            or "csv" in content_type
+            or "xml" in content_type
+        )
+        if text_like:
+            try:
+                return artifact.content.decode("utf-8"), "utf-8"
+            except UnicodeDecodeError:
+                pass
+        return base64.b64encode(artifact.content).decode("ascii"), "base64"
 
     @staticmethod
     def _api_payload_artifact_body(artifact: OutputArtifactContent) -> dict[str, Any]:

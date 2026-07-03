@@ -1324,6 +1324,11 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(set(result["orderRunIds"]), {order["id"] for order in orders})
         self.assertEqual(len(result["orderProcessingResults"]), 2)
 
+    def test_xlsx_processor_default_attachment_extensions_cover_spreadsheets(self) -> None:
+        extensions = OrderProcessorApi._attachment_processor_extensions("xlsx", {}, None)
+
+        self.assertTrue({"csv", "xlsx", "xls", "xlt"}.issubset(extensions))
+
     def test_graph_order_processor_exception_persists_failed_order(self) -> None:
         repo = InMemoryRepository()
         api = OrderProcessorApi(repo)

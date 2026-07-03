@@ -157,6 +157,9 @@ class XlsxOrderProcessor:
         settings = _settings(context)
         rows = _rows_from_payload(payload) if isinstance(payload, dict) else None
         if rows is None:
+            actual_type = _spreadsheet_file_type_from_payload(payload, settings)
+            if actual_type not in {"xlsx", "xlsm", "xltx"}:
+                return SpreadsheetOrderProcessor().parse(order, payload, context)
             source = _source_bytes(payload, settings)
             rows = parse_xlsx_rows(source, settings)
         _apply_rows_to_order(order, rows, settings, "xlsx")
@@ -790,6 +793,50 @@ def _rows_from_payload(payload: dict[str, Any]) -> list[dict[str, Any]] | None:
     if isinstance(rows, list):
         return [dict(row) for row in rows if isinstance(row, dict)]
     return None
+
+
+def _spreadsheet_file_type_from_payload(payload: dict[str, Any] | bytes | str, settings: dict[str, Any]) -> str:
+    file_name = str(settings.get("sourceFileName") or "")
+    content_type = ""
+    if isinstance(payload, dict):
+        attachment = _selected_spreadsheet_attachment(payload)
+        file_name = str(
+            _pick(payload, "sourceFileName", "source_file_name", "fileName", "file_name", default=None)
+            or _pick(attachment, "name", "fileName", "file_name", default="")
+            or file_name
+        )
+        content_type = str(
+            _pick(payload, "contentType", "content_type", default=None)
+            or _pick(attachment, "contentType", "content_type", default="")
+            or ""
+        )
+    extension = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
+    if extension in {"csv", "tsv", "txt", "xlsx", "xlsm", "xltx", "xls", "xlt"}:
+        return extension
+    lowered_content_type = content_type.lower()
+    if "csv" in lowered_content_type:
+        return "csv"
+    if "tab-separated" in lowered_content_type:
+        return "tsv"
+    if "spreadsheetml" in lowered_content_type or "xlsx" in lowered_content_type:
+        return "xlsx"
+    if "excel" in lowered_content_type:
+        return "xls"
+    return "xlsx"
+
+
+def _selected_spreadsheet_attachment(payload: dict[str, Any]) -> dict[str, Any]:
+    attachments = _as_list(_pick(payload, "attachments", default=[]))
+    for attachment in attachments:
+        if not isinstance(attachment, dict):
+            continue
+        name = str(_pick(attachment, "name", "fileName", "file_name", default="")).lower()
+        content_type = str(_pick(attachment, "contentType", "content_type", default="")).lower()
+        if any(name.endswith(f".{ext}") for ext in ("csv", "tsv", "txt", "xlsx", "xlsm", "xls", "xlt", "xltx")):
+            return attachment
+        if "spreadsheet" in content_type or "csv" in content_type or "excel" in content_type:
+            return attachment
+    return attachments[0] if attachments and isinstance(attachments[0], dict) else {}
 
 
 def _source_text(payload: dict[str, Any] | bytes | str, settings: dict[str, Any]) -> str:

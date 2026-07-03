@@ -60,6 +60,22 @@ class OrderProcessingEngineTests(unittest.TestCase):
         self.assertEqual(order.lines[0].provided_upc, "860003377529")
         self.assertEqual(order.lines[0].quantity, 1.0)
 
+    def test_xlsx_processor_accepts_legacy_xlt_attachment(self) -> None:
+        source = (ROOT / "samples/phase-2/xls-xlt/legacy-template.xlt").read_bytes()
+        order = XlsxOrderProcessor().parse(
+            _order(),
+            {
+                "sourceContent": source,
+                "sourceFileName": "legacy-template.xlt",
+                "contentType": "application/vnd.ms-excel",
+            },
+        )
+
+        self.assertEqual(order.status, ProcessingStatus.PROCESSING)
+        self.assertEqual(order.source_type, "spreadsheet")
+        self.assertEqual(order.lines[0].provided_item_number, "188010145")
+        self.assertEqual(order.lines[0].provided_upc, "860003377529")
+
     def test_legacy_xls_xlt_processor_reads_html_backed_workbook_exports(self) -> None:
         source = (ROOT / "samples/phase-2/xls-xlt/legacy-order.xls").read_bytes()
         order = LegacyWorkbookOrderProcessor().parse(_order(), {"sourceContent": source})
