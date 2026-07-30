@@ -1219,18 +1219,28 @@ function exceptionOrderCell(entry = {}) {
   return orderLabel ? escapeHtml(orderLabel) : "";
 }
 
+function exceptionDetailItem(label, value) {
+  const displayValue = value || "None";
+  return `<div><dt>${escapeHtml(label)}</dt><dd>${displayValue}</dd></div>`;
+}
+
 function exceptionOverviewTable(task = {}) {
+  const subject = escapeHtml(task.subject || "No subject");
+  const sender = escapeHtml(task.sender || "Unknown sender");
   return `
     <div class="exception-overview">
+      <div class="exception-overview-primary">
+        <span>Subject</span>
+        <strong>${subject}</strong>
+      </div>
       <dl class="exception-overview-grid">
-        <div><dt>Received</dt><dd>${escapeHtml(task.receivedAt || task.updatedAt || "")}</dd></div>
-        <div><dt>Sender</dt><dd>${escapeHtml(task.sender || "")}</dd></div>
-        <div><dt>Subject</dt><dd>${escapeHtml(task.subject || "")}</dd></div>
-        <div><dt>Customer</dt><dd>${escapeHtml(monitorCustomer(task) || "Unassigned")}</dd></div>
-        <div><dt>CSR</dt><dd>${escapeHtml(task.csr || task.csrEmail || "")}</dd></div>
-        <div><dt>Order</dt><dd>${exceptionOrderCell(task)}</dd></div>
-        <div><dt>Action</dt><dd>${monitorActionCell(task)}</dd></div>
-        <div><dt>Email</dt><dd>${monitorEmailLink(task)}</dd></div>
+        ${exceptionDetailItem("Received", escapeHtml(task.receivedAt || task.updatedAt || ""))}
+        ${exceptionDetailItem("Sender", sender)}
+        ${exceptionDetailItem("Customer", escapeHtml(monitorCustomer(task) || "Unassigned"))}
+        ${exceptionDetailItem("CSR", escapeHtml(task.csr || task.csrEmail || ""))}
+        ${exceptionDetailItem("Order", exceptionOrderCell(task))}
+        ${exceptionDetailItem("Action", monitorActionCell(task))}
+        ${exceptionDetailItem("Email", monitorEmailLink(task))}
       </dl>
     </div>
   `;
@@ -1257,12 +1267,14 @@ function exceptionCard(task) {
   return `
     <article class="task exception-card">
       <header class="exception-card-header">
-        <div>
-          <strong>${escapeHtml(task.type || "Exception")}</strong>
+        <div class="exception-card-title">
+          <div class="exception-type-row">
+            <strong>${escapeHtml(task.type || "Exception")}</strong>
+            ${statusPill(task.status)}
+          </div>
           <p>${escapeHtml(task.exception || task.prompt || task.id)}</p>
         </div>
         <div class="exception-card-status">
-          ${statusPill(task.status)}
           <span class="pill">${escapeHtml(identifier)}</span>
         </div>
       </header>
@@ -1366,11 +1378,17 @@ function exceptionResolutionControls(task) {
   const groupedControls = `
     <div class="exception-actions">
       <section class="exception-action-zone">
-        <h3>Preprocess and Keep Open</h3>
-        <div class="exception-preprocess-grid">${preprocessing || '<p class="muted">No preprocessing actions are available for this exception.</p>'}</div>
+        <div class="exception-action-heading">
+          <h3>Prepare</h3>
+          <p>Update the record without closing the exception.</p>
+        </div>
+        <div class="exception-preprocess-grid">${preprocessing || '<p class="muted exception-empty-action">No preparation actions are available.</p>'}</div>
       </section>
       <section class="exception-action-zone terminal">
-        <h3>Reactivate or Complete</h3>
+        <div class="exception-action-heading">
+          <h3>Finish</h3>
+          <p>Reprocess, move, or mark this handled.</p>
+        </div>
         <div class="exception-terminal-grid">${terminal}</div>
         <div class="row-actions">${inspectControls}</div>
       </section>
@@ -1383,7 +1401,10 @@ function exceptionResolutionControls(task) {
     return `
       <div class="exception-actions">
       <section class="exception-action-zone">
+      <div class="exception-action-heading">
       <h3>Resolve Line</h3>
+      <p>Attach the correct ERP item to the line.</p>
+      </div>
       <form class="exception-resolution-form" data-exception-id="${id}" data-exception-type="${type}" data-resolution-action="item">
         <label>ERP item
           <input name="matchedInternalItemNumber" value="${escapeHtml(task.context?.line?.matchedInternalItemNumber || "")}" placeholder="10001" required>
@@ -1392,7 +1413,10 @@ function exceptionResolutionControls(task) {
       </form>
       </section>
       <section class="exception-action-zone terminal">
-      <h3>Reactivate or Complete</h3>
+      <div class="exception-action-heading">
+      <h3>Finish</h3>
+      <p>Reprocess or mark this handled.</p>
+      </div>
       <div class="exception-terminal-grid">${orderReprocessControls}${disregardControls}</div>
       <div class="row-actions">${inspectControls}</div>
       </section>

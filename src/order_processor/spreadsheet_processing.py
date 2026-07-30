@@ -163,7 +163,18 @@ ROLE_ALIASES: dict[str, list[str]] = {
         "product code",
         "sku",
     ],
-    "upc": ["upc", "upc #", "barcode", "bar code", "gtin", "ean", "product barcode"],
+    "upc": [
+        "upc",
+        "upc #",
+        "upc code",
+        "product upc",
+        "product upc code",
+        "barcode",
+        "bar code",
+        "gtin",
+        "ean",
+        "product barcode",
+    ],
     "quantity": [
         "qty ordered",
         "qty",
@@ -988,6 +999,10 @@ def _purchase_order_plan(
         value = _po_from_text(text)
         if value:
             return {"value": value, "source": source_name, "confidence": 0.85}
+    metadata_rows = _metadata_text(normalization, before_row=data_start)
+    value = _po_from_text(metadata_rows)
+    if value:
+        return {"value": value, "source": "spreadsheetMetadata", "confidence": 0.75}
     if "purchaseOrder" in columns:
         values = [
             _clean_identifier(_column_value(rows[row_index - 1], columns, "purchaseOrder"))
@@ -997,10 +1012,6 @@ def _purchase_order_plan(
         repeated = _dominant_value(values)
         if repeated:
             return {"value": repeated, "source": "spreadsheetColumn", "confidence": 0.95}
-    metadata_rows = _metadata_text(normalization, before_row=data_start)
-    value = _po_from_text(metadata_rows)
-    if value:
-        return {"value": value, "source": "spreadsheetMetadata", "confidence": 0.75}
     return {"value": "", "source": "", "confidence": 0.0}
 
 
@@ -1377,7 +1388,7 @@ def _po_from_text(text: str) -> str:
     if not text:
         return ""
     patterns = [
-        r"\b(?:purchase\s+order|po|p\.o\.|order)\s*(?:number|no\.?|#)?\s*[:\-]?\s*([A-Z0-9][A-Z0-9_.-]{2,})",
+        r"\b(?:purchase\s+order|po|p\.o\.|order)\s*(?:number|no\.?|#)?\s*(?:[:|\-]\s*)?([A-Z0-9][A-Z0-9_.-]{2,})",
         r"\bPO([A-Z0-9][A-Z0-9_.-]{2,})\b",
     ]
     for pattern in patterns:

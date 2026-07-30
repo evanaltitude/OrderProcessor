@@ -433,6 +433,7 @@ def _artifact_reference(
 
 def _line_output_row(order: OrderRun, line: Any) -> dict[str, Any]:
     status = line.validation_status.value if isinstance(line.validation_status, MatchStatus) else line.validation_status
+    export_item_number = _line_export_item_number(line)
     return {
         "po_number": order.po_number,
         "poNumber": order.po_number,
@@ -450,13 +451,24 @@ def _line_output_row(order: OrderRun, line: Any) -> dict[str, Any]:
         "provided_upc": line.provided_upc,
         "providedUpc": line.provided_upc,
         "description": line.description,
-        "matched_internal_item_number": line.matched_internal_item_number or "",
-        "matchedInternalItemNumber": line.matched_internal_item_number or "",
+        "matched_internal_item_number": export_item_number,
+        "matchedInternalItemNumber": export_item_number,
         "validation_status": status,
         "validationStatus": status,
         "validation_confidence": line.validation_confidence,
         "validationConfidence": line.validation_confidence,
     }
+
+
+def _line_export_item_number(line: Any) -> str:
+    matched = str(getattr(line, "matched_internal_item_number", "") or "").strip()
+    if matched:
+        return matched
+    provided_item_number = str(getattr(line, "provided_item_number", "") or "").strip()
+    provided_upc = str(getattr(line, "provided_upc", "") or "").strip()
+    if provided_item_number and provided_upc:
+        return f"{provided_item_number} - {provided_upc}"
+    return provided_item_number or provided_upc
 
 
 def _file_name(order: OrderRun, settings: dict[str, Any], default_name: str) -> str:

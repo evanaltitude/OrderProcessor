@@ -149,8 +149,9 @@ class ConsoleBackendTests(unittest.TestCase):
         self.assertEqual([customer["id"] for customer in dashboard["customers"]], ["pilot-customer"])
         self.assertEqual([mailbox["customerId"] for mailbox in dashboard["mailboxes"]], ["_global"])
         self.assertEqual([run["id"] for run in dashboard["activeRuns"]], ["pilot-run"])
-        self.assertEqual(dashboard["summary"]["openExceptionCount"], 1)
+        self.assertEqual(dashboard["summary"]["openExceptionCount"], 0)
         self.assertEqual(dashboard["summary"]["unresolvedLineCount"], 1)
+        self.assertEqual(dashboard["exceptionQueue"], [])
         self.assertEqual({customer["id"] for customer in tenant_dashboard["customers"]}, {"pilot-customer", "other-customer"})
         self.assertIn("distributorCustomers", tenant_dashboard)
         self.assertEqual(tenant_dashboard["tenant"]["tenantId"], "altitude")
@@ -227,6 +228,47 @@ class ConsoleBackendTests(unittest.TestCase):
         self.assertEqual(len(monitor["webstoreOrders"]), 1)
         self.assertEqual(monitor["webstoreOrders"][0]["movedTo"], "Jane")
         self.assertEqual(monitor["webstoreOrders"][0]["emailUrl"], "https://outlook.office.com/mail/id/1")
+
+    def test_console_monitor_hides_item_validation_exceptions(self) -> None:
+        api, repo, _ = self._api()
+        headers = {"x-ms-client-principal": _easy_auth_header("connect@focuseautomate.com")}
+        api.upsert_customer_config(
+            {
+                "tenantId": "altitude",
+                "id": "pilot-customer",
+                "customerCode": "PILOT",
+                "name": "Pilot",
+            }
+        )
+        repo.upsert(
+            "orderRuns",
+            to_dict(
+                OrderRun(
+                    id="pilot-run",
+                    tenant_id="altitude",
+                    email_message_id="",
+                    customer_id="pilot-customer",
+                    status=ProcessingStatus.NEEDS_REVIEW,
+                    lines=[OrderLine(line_number=1, validation_status=MatchStatus.UNRESOLVED)],
+                )
+            ),
+        )
+        task = api._create_exception(
+            tenant_id="altitude",
+            task_type="itemValidation",
+            prompt="Resolve item number",
+            order_run_id="pilot-run",
+            line_number=1,
+            customer_id="pilot-customer",
+        )
+
+        dashboard = api.console_dashboard({"tenantId": "altitude", "headers": headers, "view": "monitor"})
+        monitor = dashboard["monitor"]
+
+        self.assertEqual(repo.get("monitorRecords", task["id"]), None)
+        self.assertEqual(monitor["exceptions"], [])
+        self.assertEqual(dashboard["summary"]["openExceptionCount"], 0)
+        self.assertEqual([entry["orderRunId"] for entry in monitor["processedOrders"]], ["pilot-run"])
 
     def test_console_can_clear_stuck_active_processing_email(self) -> None:
         api, repo, _ = self._api()
@@ -1720,6 +1762,82 @@ class ConsoleBackendTests(unittest.TestCase):
         self.assertEqual(category_result["resolutionResult"]["status"], "updated")
         self.assertEqual(stored_email["categories"], ["Jane Action"])
         self.assertEqual(patch_calls[0][1], {"categories": ["Jane Action"]})
+
+        stored_email["categories"] = ["Order Validating Items - Do Not Move", "Jane Action"]
+        repo.upsert("emailMessages", stored_email)
+        replace_task = api._create_exception(
+            tenant_id="altitude",
+            task_type="routing",
+            prompt="Replace category",
+            email_message_id="email-1",
+            dedupe_key="category-replace",
+        )
+        patch_calls.clear()
+        with patch.object(
+            api,
+            "_graph_access_token_candidates",
+            return_value=[{"accessToken": "access-token", "authMethod": "test"}],
+        ), patch(
+            "order_processor.api.graph_patch",
+            side_effect=lambda token, url, payload: patch_calls.append((url, payload)) or {},
+        ):
+            replace_result = api.resolve_exception(
+                replace_task["id"],
+                {
+                    "resolution": {
+                        "action": "manualCategory",
+                        "category": "Jane Validate",
+                        "replaceCategories": True,
+                    }
+                },
+            )
+
+        stored_email = repo.get("emailMessages", "email-1")
+        self.assertEqual(replace_result["resolutionResult"]["status"], "updated")
+        self.assertEqual(stored_email["categories"], ["Jane Validate"])
+        self.assertEqual(patch_calls[0][1], {"categories": ["Jane Validate"]})
+
+        complete_task = api._create_exception(
+            tenant_id="altitude",
+            task_type="routing",
+            prompt="Complete category",
+            email_message_id="email-1",
+            dedupe_key="category-complete",
+        )
+        patch_calls.clear()
+        with patch.object(
+            api,
+            "_graph_access_token_candidates",
+            return_value=[{"accessToken": "access-token", "authMethod": "test"}],
+        ), patch(
+            "order_processor.api.graph_patch",
+            side_effect=lambda token, url, payload: patch_calls.append((url, payload)) or {},
+        ):
+            complete_result = api.resolve_exception(
+                complete_task["id"],
+                {
+                    "resolution": {
+                        "action": "manualCategory",
+                        "category": "Jane Validate",
+                        "replaceCategories": True,
+                        "completeException": True,
+                    }
+                },
+            )
+
+        stored_complete_task = repo.get("exceptionTasks", complete_task["id"])
+        self.assertEqual(complete_result["resolutionResult"]["status"], "resolved")
+        self.assertEqual(stored_complete_task["status"], "resolved")
+        self.assertEqual(repo.get("monitorRecords", complete_task["id"]), None)
+
+    def test_graph_auth_mode_uses_mailbox_subscription_setting(self) -> None:
+        api, _, _ = self._api()
+
+        self.assertEqual(
+            api._graph_auth_mode_for_mailbox({"settings": {"graphSubscription": {"authMethod": "delegated"}}}),
+            "delegated",
+        )
+        self.assertEqual(api._graph_auth_mode_for_mailbox({"settings": {}}), "auto")
 
     def test_exception_move_email_completes_task_and_tracks_manual_action(self) -> None:
         api, repo, _ = self._api()

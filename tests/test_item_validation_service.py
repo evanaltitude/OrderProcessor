@@ -7,7 +7,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from order_processor.api import OrderProcessorApi
-from order_processor.models import OrderLine, OrderRun, to_dict
+from order_processor.models import ItemRecord, MatchStatus, OrderLine, OrderRun, to_dict
+from order_processor.order_processing import validate_order_lines
 from order_processor.storage import InMemoryRepository
 
 
@@ -73,7 +74,7 @@ class ItemValidationServiceTests(unittest.TestCase):
             {
                 "tenantId": "altitude",
                 "customerId": "pilot-customer",
-                "rowContext": {"Vendor Item": "PILOT-123"},
+                "rowContext": {"Vendor Sku": "PILOT-123"},
                 "candidateLimit": 1,
             }
         )
@@ -81,6 +82,86 @@ class ItemValidationServiceTests(unittest.TestCase):
         self.assertEqual(result["result"]["status"], "matched")
         self.assertEqual(len(result["result"]["candidates"]), 1)
         self.assertEqual(result["result"]["matchedInternalItemNumber"], "10001")
+
+    def test_validate_item_endpoint_uses_product_upc_row_context(self) -> None:
+        api, _ = self._api_with_item()
+
+        result = api.validate_item(
+            {
+                "tenantId": "altitude",
+                "customerId": "pilot-customer",
+                "rowContext": {"Product UPC": "012345678905"},
+                "candidateLimit": 1,
+            }
+        )
+
+        self.assertEqual(result["result"]["status"], "matched")
+        self.assertEqual(result["result"]["matchedInternalItemNumber"], "10001")
+        self.assertEqual(result["result"]["matchMethod"], "upcExact")
+
+    def test_validate_order_lines_keeps_unknown_identifier_unresolved(self) -> None:
+        order = OrderRun(
+            id="order-run-identifier-miss",
+            tenant_id="altitude",
+            email_message_id="email-identifier-miss",
+            customer_id="pilot-customer",
+            lines=[
+                OrderLine(
+                    line_number=1,
+                    provided_item_number="UNKNOWN",
+                    description="Dog Food 25 lb",
+                    quantity=1,
+                )
+            ],
+        )
+        items = [
+            ItemRecord(
+                id="item-1",
+                tenant_id="altitude",
+                customer_id="pilot-customer",
+                internal_item_number="10001",
+                description="Dog Food 25 lb",
+                upc="012345678905",
+            )
+        ]
+
+        result = validate_order_lines(order, items, max_workers=1)
+
+        self.assertEqual(result.lines[0].validation_status, MatchStatus.UNRESOLVED)
+        self.assertIsNone(result.lines[0].matched_internal_item_number)
+        self.assertEqual(result.lines[0].validation_candidates, [])
+
+    def test_validate_order_lines_uses_raw_product_upc_for_exact_candidates(self) -> None:
+        order = OrderRun(
+            id="order-run-product-upc",
+            tenant_id="altitude",
+            email_message_id="email-product-upc",
+            customer_id="pilot-customer",
+            lines=[
+                OrderLine(
+                    line_number=1,
+                    description="Different customer description",
+                    quantity=1,
+                    raw={"Product UPC": "012345678905"},
+                )
+            ],
+        )
+        items = [
+            ItemRecord(
+                id="item-1",
+                tenant_id="altitude",
+                customer_id="pilot-customer",
+                internal_item_number="10001",
+                description="Dog Food 25 lb",
+                upc="012345678905",
+            )
+        ]
+
+        result = validate_order_lines(order, items, max_workers=1)
+
+        self.assertEqual(result.lines[0].validation_status, MatchStatus.MATCHED)
+        self.assertEqual(result.lines[0].matched_internal_item_number, "10001")
+        self.assertEqual(result.lines[0].validation_method, "upcExact")
 
     def test_validate_item_endpoint_accepts_legacy_power_automate_field_names(self) -> None:
         api, repo = self._api_with_item()
@@ -110,7 +191,7 @@ class ItemValidationServiceTests(unittest.TestCase):
         self.assertEqual(result["result"]["matchedInternalItemNumber"], "00123456789")
         self.assertEqual(result["result"]["matchMethod"], "itemNumberLeadingZeroTolerant")
 
-    def test_validate_item_endpoint_creates_exception_and_marks_line_unresolved(self) -> None:
+    def test_validate_item_endpoint_marks_line_unresolved_without_exception_task(self) -> None:
         api, repo = self._api_with_item()
         repo.upsert(
             "orderRuns",
@@ -137,14 +218,14 @@ class ItemValidationServiceTests(unittest.TestCase):
         )
 
         self.assertEqual(result["result"]["status"], "unresolved")
-        self.assertEqual(result["exceptionTask"]["type"], "itemValidation")
-        self.assertEqual(result["exceptionTask"]["lineNumber"], 1)
+        self.assertIsNone(result["exceptionTask"])
         self.assertEqual(result["updatedOrderLine"]["validationStatus"], "unresolved")
         stored_order = repo.get("orderRuns", "order-run-2")
         self.assertEqual(stored_order["status"], "needsReview")
         self.assertEqual(stored_order["lines"][0]["validationErrors"][0]["code"], "unresolvedItem")
+        self.assertEqual(repo.query_by_tenant("exceptionTasks", "altitude"), [])
 
-    def test_validate_item_endpoint_creates_task_for_possible_match(self) -> None:
+    def test_validate_item_endpoint_returns_possible_match_without_exception_task(self) -> None:
         api, _ = self._api_with_item()
 
         result = api.validate_item(
@@ -157,9 +238,9 @@ class ItemValidationServiceTests(unittest.TestCase):
         )
 
         self.assertEqual(result["result"]["status"], "possibleMatch")
-        self.assertEqual(result["exceptionTask"]["type"], "itemValidation")
+        self.assertIsNone(result["exceptionTask"])
         self.assertEqual(
-            result["exceptionTask"]["context"]["result"]["unresolvedReason"],
+            result["result"]["unresolvedReason"],
             "best candidate below confidence threshold",
         )
 

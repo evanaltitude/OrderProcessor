@@ -69,6 +69,27 @@ class OutputGenerationServiceTests(unittest.TestCase):
         stored_order = repo.get("orderRuns", "order-run-default-output")
         self.assertEqual(stored_order["outputArtifacts"][0]["checksum"], artifacts[0]["checksum"])
 
+    def test_unvalidated_lines_export_provided_item_and_upc_without_exception_task(self) -> None:
+        api, repo, store = self._api()
+
+        result = api.process_order(
+            "order-run-unvalidated-output",
+            {
+                "tenantId": "altitude",
+                "customerId": "pilot-customer",
+                "processorType": "csv",
+                "poNumber": "PO-101",
+                "sourceContent": "item_number,upc,quantity,description\n12345678,999999999,2,Unknown Item\n",
+            },
+        )
+
+        self.assertEqual(result["orderRun"]["status"], "needsReview")
+        self.assertEqual(result["unresolvedLineCount"], 1)
+        self.assertEqual(repo.query_by_tenant("exceptionTasks", "altitude"), [])
+        csv_artifact = next(artifact for artifact in result["orderRun"]["outputArtifacts"] if artifact["type"] == "lineCsv")
+        csv_body = store.objects[csv_artifact["blobUrl"]].decode("utf-8")
+        self.assertIn("12345678 - 999999999", csv_body)
+
     def test_customer_output_profiles_generate_csv_text_and_api_payload_artifacts(self) -> None:
         api, _, store = self._api()
         for profile in [

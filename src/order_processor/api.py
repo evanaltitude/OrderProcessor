@@ -925,6 +925,10 @@ def _document_status(document: dict[str, Any]) -> str:
     return str(_pick(document, "status", default="") or "")
 
 
+def _is_item_validation_exception(document: dict[str, Any]) -> bool:
+    return str(_pick(document, "type", default="") or "") == "itemValidation"
+
+
 def _bounded_worker_count(
     count: int,
     *,
@@ -2693,6 +2697,19 @@ class OrderProcessorApi:
         return None
 
     @staticmethod
+    def _graph_auth_mode_for_mailbox(mailbox: dict[str, Any] | None) -> str:
+        settings = dict(_pick(mailbox or {}, "settings", default={}) or {})
+        subscription = dict(settings.get("graphSubscription") or {})
+        return str(
+            _pick(
+                subscription,
+                "authMethod",
+                default=os.environ.get("ORDER_PROCESSOR_GRAPH_SUBSCRIPTION_AUTH_MODE", "auto"),
+            )
+            or "auto"
+        ).lower()
+
+    @staticmethod
     def _graph_message_id_for_email(email: dict[str, Any]) -> str:
         source = _as_dict(_pick(email, "source", default={}))
         graph_actions = _as_dict(_pick(source, "graphEmailActions", "graph_email_actions", default={}))
@@ -2709,6 +2726,7 @@ class OrderProcessorApi:
         *,
         subject: str = "",
         categories: list[Any] | None = None,
+        replace_categories: bool = False,
         move_folder: str = "",
     ) -> dict[str, Any]:
         tenant_id = str(_pick(email, "tenantId", "tenant_id", default=""))
@@ -2729,13 +2747,7 @@ class OrderProcessorApi:
             result.update({"status": "failed", "reason": "missing Microsoft Graph mailbox or message context"})
             return result
 
-        auth_mode = str(
-            _pick(
-                dict(_pick(mailbox, "settings", default={}) or {}).get("graphSubscription", {}) or {},
-                "authMethod",
-                default=os.environ.get("ORDER_PROCESSOR_GRAPH_SUBSCRIPTION_AUTH_MODE", "auto"),
-            )
-        ).lower() or "auto"
+        auth_mode = self._graph_auth_mode_for_mailbox(mailbox)
         encoded_mailbox = parse.quote(mailbox_address, safe="")
         encoded_message = parse.quote(graph_message_id, safe="")
         message_url = f"https://graph.microsoft.com/v1.0/users/{encoded_mailbox}/messages/{encoded_message}"
@@ -2748,10 +2760,8 @@ class OrderProcessorApi:
                 if subject:
                     patch_payload["subject"] = subject
                 if categories is not None:
-                    patch_payload["categories"] = self._merged_graph_categories(
-                        _as_list(_pick(email, "categories", default=[])),
-                        categories,
-                    )
+                    existing_categories = [] if replace_categories else _as_list(_pick(email, "categories", default=[]))
+                    patch_payload["categories"] = self._merged_graph_categories(existing_categories, categories)
                 if patch_payload:
                     graph_patch(candidate["accessToken"], current_message_url, patch_payload)
                     candidate_result["patched"] = patch_payload
@@ -4219,17 +4229,13 @@ class OrderProcessorApi:
             for line in order.lines
             if order.customer_id and line.validation_status in {MatchStatus.UNRESOLVED, MatchStatus.POSSIBLE_MATCH}
         ]
-        for line in unresolved:
-            self._create_exception(
-                tenant_id=order.tenant_id,
-                task_type="itemValidation",
-                prompt="Resolve item match.",
-                order_run_id=order.id,
-                line_number=line.line_number,
-                customer_id=order.customer_id,
-                correlation_id=order.correlation_id,
-                context={"line": to_dict(line)},
-            )
+        self._resolve_open_order_exceptions(
+            order.tenant_id,
+            order.id,
+            {"itemValidation"},
+            reason="item validation is tracked on the order run",
+            correlation_id=order.correlation_id,
+        )
 
         if order.status == ProcessingStatus.FAILED:
             self._create_exception(
@@ -5134,23 +5140,6 @@ class OrderProcessorApi:
         )
         updated_line = self._apply_item_validation_to_order_line(payload, result)
         exception_task = None
-        if result.status != MatchStatus.MATCHED:
-            exception_task = self._create_exception(
-                tenant_id=tenant_id,
-                task_type="itemValidation",
-                prompt="Resolve item match.",
-                order_run_id=_pick(payload, "orderRunId", "order_run_id", default=None),
-                line_number=int(_pick(payload, "lineNumber", "line_number", default=0) or 0) or None,
-                customer_id=customer_id,
-                correlation_id=observability["correlationId"],
-                context={
-                    "result": to_dict(result),
-                    "request": self._item_validation_request_context(payload),
-                    "rowContext": row_context,
-                    "observability": observability,
-                },
-                dedupe_key=self._item_validation_dedupe_key(payload, result),
-            )
         self._audit(
             tenant_id,
             "item.validated",
@@ -6533,6 +6522,13 @@ class OrderProcessorApi:
         tenant_id = str(_pick(task, "tenantId", "tenant_id", default=""))
         if not tenant_id:
             return None
+        if _is_item_validation_exception(task):
+            self.repository.delete("monitorRecords", str(_pick(task, "id", default="")))
+            order_id = str(_pick(task, "orderRunId", "order_run_id", default=""))
+            order = self.repository.get("orderRuns", order_id) if order_id else None
+            if order:
+                return self._upsert_monitor_record_for_order(order)
+            return None
         email_id = str(_pick(task, "emailMessageId", "email_message_id", default=""))
         order_id = str(_pick(task, "orderRunId", "order_run_id", default=""))
         email = self.repository.get("emailMessages", email_id) if email_id else None
@@ -6562,6 +6558,7 @@ class OrderProcessorApi:
             task
             for task in self.repository.query_by_tenant("exceptionTasks", tenant_id)
             if _document_status(task) == ExceptionStatus.OPEN.value
+            and not _is_item_validation_exception(task)
         ]
         if order_run_id:
             for task in open_tasks:
@@ -6645,6 +6642,8 @@ class OrderProcessorApi:
         }
         for record in records:
             section = str(_pick(record, "section", default="nonOrderEmails"))
+            if section == "exceptions" and _is_item_validation_exception(record):
+                continue
             email_id = str(_pick(record, "emailMessageId", "email_message_id", default="") or "")
             order_id = str(_pick(record, "orderRunId", "order_run_id", default="") or "")
             if section == "active" and email_id and not order_id and email_id in email_ids_with_order_records:
@@ -6733,7 +6732,10 @@ class OrderProcessorApi:
             if _pick(order, "emailMessageId", "email_message_id", default="")
         }
         open_exceptions = [
-            task for task in exceptions if _document_status(task) == ExceptionStatus.OPEN.value
+            task
+            for task in exceptions
+            if _document_status(task) == ExceptionStatus.OPEN.value
+            and not _is_item_validation_exception(task)
         ]
         exception_email_ids = {
             str(_pick(task, "emailMessageId", "email_message_id", default=""))
@@ -7389,7 +7391,12 @@ class OrderProcessorApi:
             "activeRuns": self._sort_recent(active_runs),
             "processedOrders": self._sort_recent(processed_orders),
             "exceptionQueue": self._sort_recent(
-                [item for item in exceptions if _document_status(item) == ExceptionStatus.OPEN.value]
+                [
+                    item
+                    for item in exceptions
+                    if _document_status(item) == ExceptionStatus.OPEN.value
+                    and not _is_item_validation_exception(item)
+                ]
             ),
             "mailboxes": self._sort_recent(mailboxes),
             "customerIdentificationRules": self._sort_recent(customer_identification_rules),
@@ -8812,10 +8819,19 @@ class OrderProcessorApi:
         email = self._email_for_exception(task, resolution)
         if email is None:
             return {"status": "notFound", "message": "No email is attached to this exception."}
-        graph_result = self._manual_graph_email_action(email, categories=[category])
+        graph_result = self._manual_graph_email_action(
+            email,
+            categories=[category],
+            replace_categories=_bool_flag(_pick(resolution, "replaceCategories", "replace_categories", default=False)),
+        )
         if str(_pick(graph_result, "status", default="")) in {"failed", "partial"}:
             return {"status": "failed", "graphEmailAction": graph_result}
-        return {"status": "updated", "category": category, "graphEmailAction": graph_result}
+        status = (
+            "resolved"
+            if _bool_flag(_pick(resolution, "completeException", "complete_exception", "closeException", "close_exception", default=False))
+            else "updated"
+        )
+        return {"status": status, "category": category, "graphEmailAction": graph_result}
 
     def _apply_manual_move_resolution(self, task: dict[str, Any], resolution: dict[str, Any]) -> dict[str, Any]:
         folder = str(_pick(resolution, "folder", "folderName", "folder_name", "moveFolder", "move_folder", default="") or "").strip()
@@ -8985,7 +9001,10 @@ class OrderProcessorApi:
                     )
                 if action_plan:
                     try:
-                        candidates = self._graph_access_token_candidates(mailbox, auth_mode="auto")
+                        candidates = self._graph_access_token_candidates(
+                            mailbox,
+                            auth_mode=self._graph_auth_mode_for_mailbox(mailbox),
+                        )
                     except MicrosoftGraphError as exc:
                         candidates = []
                         graph_result = {
@@ -9581,6 +9600,8 @@ class OrderProcessorApi:
         orders_by_id = {order["id"]: order for order in visible_orders if "id" in order}
         visible = []
         for task in exceptions:
+            if _is_item_validation_exception(task):
+                continue
             order_run_id = _pick(task, "orderRunId", "order_run_id", default="")
             if order_run_id and order_run_id in orders_by_id:
                 visible.append(task)
@@ -9687,7 +9708,12 @@ class OrderProcessorApi:
     ) -> dict[str, Any]:
         completed = [order for order in order_runs if _document_status(order) == ProcessingStatus.COMPLETED.value]
         failed = [order for order in order_runs if _document_status(order) == ProcessingStatus.FAILED.value]
-        open_exceptions = [task for task in exceptions if _document_status(task) == ExceptionStatus.OPEN.value]
+        open_exceptions = [
+            task
+            for task in exceptions
+            if _document_status(task) == ExceptionStatus.OPEN.value
+            and not _is_item_validation_exception(task)
+        ]
         active_statuses = {
             ProcessingStatus.RECEIVED.value,
             ProcessingStatus.ROUTED.value,

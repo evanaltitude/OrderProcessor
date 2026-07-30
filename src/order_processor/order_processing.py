@@ -14,7 +14,14 @@ from typing import Any, Protocol
 import xml.etree.ElementTree as ET
 
 from .data_model import GLOBAL_CUSTOMER_ID
-from .item_validation import normalize_item_token, normalize_upc, unequal_length_identifier_match, validate_item
+from .item_validation import (
+    ITEM_NUMBER_FIELDS,
+    UPC_FIELDS,
+    normalize_item_token,
+    normalize_upc,
+    unequal_length_identifier_match,
+    validate_item,
+)
 from .email_body_processing import extract_email_body_order
 from .email_body_processing import order_lines_from_extraction as email_body_order_lines_from_extraction
 from .google_document_ai import extract_order_from_google_document_ai_response
@@ -156,13 +163,32 @@ class XlsxOrderProcessor:
     ) -> OrderRun:
         settings = _settings(context)
         rows = _rows_from_payload(payload) if isinstance(payload, dict) else None
+        actual_type = "xlsx"
         if rows is None:
             actual_type = _spreadsheet_file_type_from_payload(payload, settings)
             if actual_type not in {"xlsx", "xlsm", "xltx"}:
                 return SpreadsheetOrderProcessor().parse(order, payload, context)
             source = _source_bytes(payload, settings)
             rows = parse_xlsx_rows(source, settings)
+        original_po_number = order.po_number
+        original_order_number = order.order_number
+        original_source_type = order.source_type
+        original_status = order.status
+        original_lines = list(order.lines)
         _apply_rows_to_order(order, rows, settings, "xlsx")
+        if not _has_extractable_order_lines(order):
+            order.po_number = original_po_number
+            order.order_number = original_order_number
+            order.source_type = original_source_type
+            order.status = original_status
+            order.lines = original_lines
+            order.parse_warnings.append(
+                {
+                    "code": "xlsxSimpleParserFallback",
+                    "message": "Simple XLSX parsing did not find order lines; retrying with spreadsheet layout extraction.",
+                }
+            )
+            return SpreadsheetOrderProcessor().parse(order, _spreadsheet_fallback_payload(payload, actual_type), context)
         return order
 
 
@@ -576,10 +602,16 @@ def validate_order_lines(order: OrderRun, items: list[ItemRecord], max_workers: 
         if upc_key:
             upc_index.setdefault(upc_key, []).append(item)
 
+    def line_identifier_values(line: OrderLine) -> tuple[str, str]:
+        item_value = line.provided_item_number or _first_context_alias_value(line.raw, ITEM_NUMBER_FIELDS)
+        upc_value = line.provided_upc or _first_context_alias_value(line.raw, UPC_FIELDS)
+        return str(item_value or ""), str(upc_value or "")
+
     def exact_candidate_items(line: OrderLine) -> list[ItemRecord]:
         candidates: dict[str, ItemRecord] = {}
-        item_key = normalize_item_token(line.provided_item_number)
-        upc_key = normalize_upc(line.provided_upc)
+        item_value, upc_value = line_identifier_values(line)
+        item_key = normalize_item_token(item_value)
+        upc_key = normalize_upc(upc_value)
         for item in item_number_index.get(item_key, []) if item_key else []:
             candidates[item.id] = item
         for item in upc_index.get(upc_key, []) if upc_key else []:
@@ -607,13 +639,15 @@ def validate_order_lines(order: OrderRun, items: list[ItemRecord], max_workers: 
 
     def validate_line(line: OrderLine):
         candidate_items = exact_candidate_items(line)
+        item_value, upc_value = line_identifier_values(line)
+        provided_identifier = bool(normalize_item_token(item_value) or normalize_upc(upc_value))
         return validate_item(
             tenant_id=order.tenant_id,
             customer_id=order.customer_id,
             provided_item_number=line.provided_item_number,
             provided_upc=line.provided_upc,
             description=line.description,
-            items=candidate_items or scoped_items,
+            items=candidate_items if provided_identifier else scoped_items,
             row_context=line.raw,
         )
 
@@ -713,6 +747,30 @@ def _apply_rows_to_order(
     order.lines = lines
 
 
+def _has_extractable_order_lines(order: OrderRun) -> bool:
+    return any(
+        line.quantity is not None
+        and (line.provided_item_number or line.provided_upc or line.description)
+        for line in order.lines
+    )
+
+
+def _spreadsheet_fallback_payload(payload: dict[str, Any] | bytes | str, file_type: str) -> dict[str, Any] | bytes | str:
+    file_type = file_type if file_type in {"xlsx", "xlsm", "xltx"} else "xlsx"
+    if isinstance(payload, bytes):
+        return {"sourceContent": payload, "sourceFileName": f"source.{file_type}"}
+    if not isinstance(payload, dict):
+        return payload
+    if any(
+        _pick(payload, key, default=None)
+        for key in ("sourceFileName", "source_file_name", "fileName", "file_name", "contentType", "content_type")
+    ):
+        return payload
+    if _selected_spreadsheet_attachment(payload):
+        return payload
+    return {**payload, "sourceFileName": f"source.{file_type}"}
+
+
 def _matrix_to_rows(matrix: list[list[str]], settings: dict[str, Any]) -> list[dict[str, Any]]:
     if not matrix:
         return []
@@ -771,7 +829,20 @@ def _default_fields(canonical: str) -> list[str]:
             "product code",
             "Column 1",
         ],
-        "provided_upc": ["provided_upc", "providedUpc", "upc", "upc #", "barcode", "bar code", "gtin", "Column 2"],
+        "provided_upc": [
+            "provided_upc",
+            "providedUpc",
+            "upc",
+            "upc #",
+            "upc code",
+            "product upc",
+            "product upc code",
+            "barcode",
+            "bar code",
+            "product barcode",
+            "gtin",
+            "Column 2",
+        ],
         "quantity": ["quantity", "qty", "order qty", "order quantity", "qtyordered", "qty ordered", "Column 3"],
         "description": ["description", "item description", "product", "product description", "Column 4", "Column 5"],
         "unit": ["unit", "uom", "unit of measure"],
@@ -1104,11 +1175,20 @@ def _line_from_payload(index: int, payload: Any) -> OrderLine:
     status = payload.get("validationStatus", payload.get("validation_status", MatchStatus.UNRESOLVED))
     if not isinstance(status, MatchStatus):
         status = MatchStatus(status)
+    raw = dict(payload.get("raw", payload) or {})
+    provided_item_number = (
+        payload.get("providedItemNumber", payload.get("provided_item_number", ""))
+        or _first_context_alias_value(raw, ITEM_NUMBER_FIELDS)
+    )
+    provided_upc = (
+        payload.get("providedUpc", payload.get("provided_upc", ""))
+        or _first_context_alias_value(raw, UPC_FIELDS)
+    )
     return OrderLine(
         line_number=int(payload.get("lineNumber", payload.get("line_number", index)) or index),
         quantity=_as_float(payload.get("quantity")),
-        provided_item_number=str(payload.get("providedItemNumber", payload.get("provided_item_number", "")) or ""),
-        provided_upc=str(payload.get("providedUpc", payload.get("provided_upc", "")) or ""),
+        provided_item_number=str(provided_item_number or ""),
+        provided_upc=str(provided_upc or ""),
         description=str(payload.get("description", "") or ""),
         unit=str(payload.get("unit", "") or ""),
         unit_price=_as_float(payload.get("unitPrice", payload.get("unit_price"))),
@@ -1121,8 +1201,17 @@ def _line_from_payload(index: int, payload: Any) -> OrderLine:
         validation_method=str(payload.get("validationMethod", payload.get("validation_method", "")) or ""),
         validation_candidates=list(payload.get("validationCandidates", payload.get("validation_candidates", [])) or []),
         validation_errors=list(payload.get("validationErrors", payload.get("validation_errors", [])) or []),
-        raw=dict(payload.get("raw", payload) or {}),
+        raw=raw,
     )
+
+
+def _first_context_alias_value(row_context: dict[str, Any], fields: list[str]) -> str:
+    normalized = {re.sub(r"[^a-z0-9]", "", str(key or "").lower()): value for key, value in row_context.items()}
+    for field in fields:
+        value = normalized.get(re.sub(r"[^a-z0-9]", "", str(field or "").lower()))
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return ""
 
 
 def _append_error(order: OrderRun, code: str, message: str, **details: Any) -> None:

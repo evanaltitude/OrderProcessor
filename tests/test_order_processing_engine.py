@@ -23,6 +23,7 @@ from order_processor.order_processing import (
     PdfOrderProcessor,
     SpreadsheetOrderProcessor,
     XlsxOrderProcessor,
+    process_order_payload,
 )
 from order_processor.output_generation import order_to_xlsx_bytes
 from order_processor.storage import InMemoryRepository
@@ -59,6 +60,60 @@ class OrderProcessingEngineTests(unittest.TestCase):
         self.assertEqual(order.lines[0].provided_item_number, "188010145")
         self.assertEqual(order.lines[0].provided_upc, "860003377529")
         self.assertEqual(order.lines[0].quantity, 1.0)
+
+    def test_xlsx_processor_maps_product_upc_header(self) -> None:
+        source = _xlsx_bytes(
+            [
+                ["PO", "Product UPC", "Vendor Sku", "QTY", "Description"],
+                ["443713", "072705121854", "", "2.0000", "Fromm Treats"],
+            ]
+        )
+        order = XlsxOrderProcessor().parse(_order(), {"sourceContent": source})
+
+        self.assertEqual(order.po_number, "443713")
+        self.assertEqual(order.lines[0].provided_upc, "072705121854")
+        self.assertEqual(order.lines[0].quantity, 2.0)
+
+    def test_xlsx_processor_falls_back_when_header_is_below_metadata(self) -> None:
+        source = _xlsx_bytes(
+            [
+                ["Customer", "Premier Pet Supply"],
+                ["PO", "443713"],
+                [],
+                ["Supplier Code", "Product UPC", "Product", "Qty Ordered"],
+                ["FRM-100", "072705121854", "Fromm Treats", "2.0000"],
+            ]
+        )
+        order = XlsxOrderProcessor().parse(_order(), {"sourceContent": source})
+
+        self.assertEqual(order.source_type, "spreadsheet")
+        self.assertEqual(order.po_number, "443713")
+        self.assertEqual(order.lines[0].provided_item_number, "FRM100")
+        self.assertEqual(order.lines[0].provided_upc, "072705121854")
+        self.assertEqual(order.lines[0].quantity, 2.0)
+        self.assertIn("xlsxSimpleParserFallback", {warning["code"] for warning in order.parse_warnings})
+
+    def test_canonical_lines_map_raw_product_upc_and_vendor_sku(self) -> None:
+        order = process_order_payload(
+            _order(),
+            {
+                "lines": [
+                    {
+                        "quantity": "2.0000",
+                        "description": "Fromm Treats",
+                        "raw": {
+                            "Product UPC": "072705121854",
+                            "Vendor Sku": "FRM-100",
+                        },
+                    }
+                ]
+            },
+        )
+
+        self.assertEqual(order.source_type, "canonicalLines")
+        self.assertEqual(order.lines[0].provided_item_number, "FRM-100")
+        self.assertEqual(order.lines[0].provided_upc, "072705121854")
+        self.assertEqual(order.lines[0].quantity, 2.0)
 
     def test_xlsx_processor_accepts_legacy_xlt_attachment(self) -> None:
         source = (ROOT / "samples/phase-2/xls-xlt/legacy-template.xlt").read_bytes()

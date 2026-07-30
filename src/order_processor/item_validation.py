@@ -23,6 +23,9 @@ ITEM_NUMBER_FIELDS = [
     "item_number",
     "item",
     "sku",
+    "vendorSku",
+    "vendor_sku",
+    "vendor sku",
     "supplierCode",
     "suppliercode",
     "vendorItem",
@@ -33,7 +36,24 @@ ITEM_NUMBER_FIELDS = [
     "product_code",
     "Column 1",
 ]
-UPC_FIELDS = ["varItemUPC", "providedUpc", "provided_upc", "upc", "barcode", "barCode", "gtin", "Column 2"]
+UPC_FIELDS = [
+    "varItemUPC",
+    "providedUpc",
+    "provided_upc",
+    "upc",
+    "upcCode",
+    "upc_code",
+    "productUpc",
+    "product_upc",
+    "product upc",
+    "productUpcCode",
+    "product_upc_code",
+    "product upc code",
+    "barcode",
+    "barCode",
+    "gtin",
+    "Column 2",
+]
 DESCRIPTION_FIELDS = [
     "varItemDescription",
     "description",
