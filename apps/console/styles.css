@@ -816,9 +816,11 @@ th {
 
 .exception-resolution-form {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) max-content;
   gap: 10px;
   align-items: end;
+  min-width: 0;
+  width: 100%;
 }
 
 .exception-overview {
@@ -880,7 +882,7 @@ th {
 
 .exception-actions {
   display: grid;
-  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.25fr);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 760px), 1fr));
   gap: 14px;
   padding-top: 2px;
 }
@@ -918,13 +920,13 @@ th {
 .exception-preprocess-grid,
 .exception-terminal-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
   gap: 10px 12px;
   align-items: end;
 }
 
 .exception-terminal-grid {
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
 }
 
 .exception-empty-action {
@@ -932,15 +934,19 @@ th {
 }
 
 .exception-resolution-form.multi {
-  grid-template-columns: minmax(160px, 1fr) minmax(220px, 1.5fr) auto auto;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) max-content max-content;
 }
 
 .exception-resolution-form.move-form {
-  grid-template-columns: minmax(150px, 1fr) minmax(160px, 1fr) auto;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) max-content;
 }
 
 .exception-resolution-form.compact {
   display: flex;
+  width: fit-content;
+  max-width: 100%;
 }
 
 .exception-resolution-form label {
@@ -953,7 +959,10 @@ th {
 }
 
 .exception-resolution-form button {
-  min-width: 120px;
+  max-width: 100%;
+  min-width: min(150px, 100%);
+  line-height: 1.15;
+  white-space: normal;
 }
 
 .exception-resolution-form .checkbox-label {
