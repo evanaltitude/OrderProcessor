@@ -461,14 +461,7 @@ def _line_output_row(order: OrderRun, line: Any) -> dict[str, Any]:
 
 
 def _line_export_item_number(line: Any) -> str:
-    matched = str(getattr(line, "matched_internal_item_number", "") or "").strip()
-    if matched:
-        return matched
-    provided_item_number = str(getattr(line, "provided_item_number", "") or "").strip()
-    provided_upc = str(getattr(line, "provided_upc", "") or "").strip()
-    if provided_item_number and provided_upc:
-        return f"{provided_item_number} - {provided_upc}"
-    return provided_item_number or provided_upc
+    return str(getattr(line, "matched_internal_item_number", "") or "").strip()
 
 
 def _file_name(order: OrderRun, settings: dict[str, Any], default_name: str) -> str:

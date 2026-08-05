@@ -925,10 +925,6 @@ def _document_status(document: dict[str, Any]) -> str:
     return str(_pick(document, "status", default="") or "")
 
 
-def _is_item_validation_exception(document: dict[str, Any]) -> bool:
-    return str(_pick(document, "type", default="") or "") == "itemValidation"
-
-
 def _bounded_worker_count(
     count: int,
     *,
@@ -1838,6 +1834,16 @@ class OrderProcessorApi:
         if not message_id:
             return {"status": "failed", "reason": "notification did not include a message id", "subscriptionId": subscription_id}
 
+        existing_email = self._email_for_graph_message_identity(tenant_id, mailbox_id, message_id)
+        if existing_email is not None:
+            return {
+                "status": "skipped",
+                "reason": "already claimed or processed",
+                "subscriptionId": subscription_id,
+                "emailMessageId": str(_pick(existing_email, "id", default="") or ""),
+                "orderRunId": str(_pick(existing_email, "orderRunId", "order_run_id", default="") or ""),
+            }
+
         auth_mode = str(
             _pick(
                 dict(_pick(mailbox, "settings", default={}) or {}).get("graphSubscription", {}) or {},
@@ -1894,6 +1900,48 @@ class OrderProcessorApi:
             "subscriptionId": subscription_id,
             "graphMessageId": message_id,
         }
+
+    def _email_for_graph_message_identity(
+        self,
+        tenant_id: str,
+        mailbox_id: str,
+        graph_message_id: str,
+    ) -> dict[str, Any] | None:
+        if not tenant_id or not graph_message_id:
+            return None
+        query_fields = getattr(self.repository, "query_by_tenant_fields", None)
+        emails = (
+            query_fields(
+                "emailMessages",
+                tenant_id,
+                ["id", "tenantId", "mailboxAccountId", "orderRunId", "source"],
+            )
+            if callable(query_fields)
+            else self.repository.query_by_tenant("emailMessages", tenant_id)
+        )
+        for email in emails:
+            if mailbox_id and str(_pick(email, "mailboxAccountId", "mailbox_account_id", default="") or "") != mailbox_id:
+                continue
+            source = _as_dict(_pick(email, "source", default={}))
+            claim = _as_dict(_pick(source, "processingClaim", "processing_claim", default={}))
+            known_ids = {
+                str(_pick(source, "graphMessageId", "graph_message_id", default="") or ""),
+                str(_pick(claim, "graphMessageId", "graph_message_id", default="") or ""),
+            }
+            for action_result in _as_list(
+                _pick(source, "graphEmailActionHistory", "graph_email_action_history", default=[])
+            ):
+                if not isinstance(action_result, dict):
+                    continue
+                known_ids.add(str(_pick(action_result, "graphMessageId", "graph_message_id", default="") or ""))
+                for applied in _as_list(_pick(action_result, "applied", default=[])):
+                    if isinstance(applied, dict):
+                        known_ids.add(
+                            str(_pick(applied, "movedGraphMessageId", "moved_graph_message_id", default="") or "")
+                        )
+            if graph_message_id in known_ids:
+                return email
+        return None
 
     def _poll_mailbox(self, mailbox: dict[str, Any], *, limit: int, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         payload = payload or {}
@@ -3199,9 +3247,124 @@ class OrderProcessorApi:
         mailbox_id = str(_pick(mailbox, "id", default=""))
         mailbox_address = str(_pick(mailbox, "mailboxAddress", "mailbox_address", default="")).strip().lower()
         graph_message_id = str(_pick(message, "id", default=""))
-        email_id = stable_id(tenant_id, mailbox_id, graph_message_id)
-        if self.repository.get("emailMessages", email_id):
-            return {"status": "skipped", "reason": "already ingested", "emailMessageId": email_id}
+        internet_message_id = str(_pick(message, "internetMessageId", "internet_message_id", default="") or "").strip()
+        message_identity = internet_message_id.lower() or graph_message_id
+        email_id = stable_id(tenant_id, mailbox_id, message_identity)
+        now = utc_now()
+        claim = {
+            "status": "processing",
+            "claimedAt": now,
+            "attempt": 1,
+            "source": "microsoftGraph",
+            "graphMessageId": graph_message_id,
+            "internetMessageId": internet_message_id,
+        }
+        claim_document = {
+            "id": email_id,
+            "tenantId": tenant_id,
+            "mailboxAccountId": mailbox_id,
+            "mailbox": mailbox_address,
+            "messageId": internet_message_id or graph_message_id,
+            "subject": str(_pick(message, "subject", default="")),
+            "sender": _graph_email_address(message.get("from")) or _graph_email_address(message.get("sender")),
+            "receivedAt": str(_pick(message, "receivedDateTime", default=now)),
+            "categories": list(_as_list(_pick(message, "categories", default=[]))),
+            "attachments": [],
+            "status": ProcessingStatus.PROCESSING.value,
+            "source": {
+                "provider": "microsoftGraph",
+                "graphMessageId": graph_message_id,
+                "mailboxAccountId": mailbox_id,
+                "processingClaim": claim,
+            },
+            "createdAt": now,
+            "updatedAt": now,
+        }
+        created, existing = self.repository.create_if_absent("emailMessages", claim_document)
+        if not created:
+            return {
+                "status": "skipped",
+                "reason": "already claimed or processed",
+                "emailMessageId": email_id,
+                "orderRunId": str(_pick(existing, "orderRunId", "order_run_id", default="") or ""),
+                "processingClaim": _as_dict(
+                    _pick(_as_dict(_pick(existing, "source", default={})), "processingClaim", "processing_claim", default={})
+                ),
+            }
+
+        self._upsert_monitor_record_for_email(claim_document)
+        try:
+            result = self._ingest_claimed_graph_message(access_token, mailbox, message, email_id)
+        except Exception as exc:
+            self._finish_graph_processing_claim(email_id, "failed", error=str(exc))
+            self._create_exception(
+                tenant_id=tenant_id,
+                task_type="routing",
+                prompt="Retry failed email processing explicitly.",
+                email_message_id=email_id,
+                correlation_id=email_id,
+                context={
+                    "graphMessageId": graph_message_id,
+                    "internetMessageId": internet_message_id,
+                    "error": str(exc),
+                    "processingClaim": claim,
+                },
+                dedupe_key="graphProcessingClaim",
+            )
+            raise
+        self._finish_graph_processing_claim(email_id, "completed", result=result)
+        return result
+
+    def _finish_graph_processing_claim(
+        self,
+        email_id: str,
+        status: str,
+        *,
+        result: dict[str, Any] | None = None,
+        error: str = "",
+    ) -> None:
+        email = self.repository.get("emailMessages", email_id)
+        if email is None:
+            return
+        now = utc_now()
+        source = dict(_pick(email, "source", default={}) or {})
+        claim = dict(_pick(source, "processingClaim", "processing_claim", default={}) or {})
+        claim.update(
+            {
+                "status": status,
+                "completedAt" if status == "completed" else "failedAt": now,
+            }
+        )
+        if result is not None:
+            claim["result"] = {
+                "status": str(_pick(result, "status", default="") or ""),
+                "orderRunId": str(_pick(result, "orderRunId", "order_run_id", default="") or ""),
+                "orderRunIds": [str(value) for value in _as_list(_pick(result, "orderRunIds", "order_run_ids", default=[]))],
+                "processed": bool(_pick(result, "processed", default=False)),
+            }
+        if error:
+            claim["error"] = error
+        source["processingClaim"] = claim
+        email["source"] = source
+        email["updatedAt"] = now
+        stored = self.repository.upsert("emailMessages", email)
+        self._upsert_monitor_record_for_email(stored)
+
+    def _ingest_claimed_graph_message(
+        self,
+        access_token: str,
+        mailbox: dict[str, Any],
+        message: dict[str, Any],
+        email_id: str,
+    ) -> dict[str, Any]:
+        tenant_id = str(_pick(mailbox, "tenantId", "tenant_id", default=""))
+        mailbox_id = str(_pick(mailbox, "id", default=""))
+        mailbox_address = str(_pick(mailbox, "mailboxAddress", "mailbox_address", default="")).strip().lower()
+        graph_message_id = str(_pick(message, "id", default=""))
+        claimed_email = self.repository.get("emailMessages", email_id) or {}
+        processing_claim = _as_dict(
+            _pick(_as_dict(_pick(claimed_email, "source", default={})), "processingClaim", "processing_claim", default={})
+        )
 
         original_categories = list(_as_list(_pick(message, "categories", default=[])))
         processing_category_result = self._mark_graph_message_processing(
@@ -3243,6 +3406,7 @@ class OrderProcessorApi:
                 "provider": "microsoftGraph",
                 "graphMessageId": graph_message_id,
                 "mailboxAccountId": mailbox_id,
+                "processingClaim": processing_claim,
                 "isRead": bool(message.get("isRead")),
                 "webLink": str(_pick(message, "webLink", "web_link", default="")),
                 "toRecipients": _graph_recipient_addresses(_pick(message, "toRecipients", "to_recipients", default=[])),
@@ -3447,8 +3611,6 @@ class OrderProcessorApi:
         unresolved_count = sum(int(_pick(result, "unresolvedLineCount", "unresolved_line_count", default=0) or 0) for result in results)
         if failed:
             aggregate_order["status"] = ProcessingStatus.FAILED.value
-        elif unresolved_count:
-            aggregate_order["status"] = ProcessingStatus.NEEDS_REVIEW.value
         else:
             aggregate_order["status"] = ProcessingStatus.COMPLETED.value
         return {
@@ -4229,13 +4391,7 @@ class OrderProcessorApi:
             for line in order.lines
             if order.customer_id and line.validation_status in {MatchStatus.UNRESOLVED, MatchStatus.POSSIBLE_MATCH}
         ]
-        self._resolve_open_order_exceptions(
-            order.tenant_id,
-            order.id,
-            {"itemValidation"},
-            reason="item validation is tracked on the order run",
-            correlation_id=order.correlation_id,
-        )
+        self._sync_item_validation_exceptions(order, unresolved)
 
         if order.status == ProcessingStatus.FAILED:
             self._create_exception(
@@ -4249,7 +4405,7 @@ class OrderProcessorApi:
             )
 
         if order.status != ProcessingStatus.FAILED:
-            order.status = ProcessingStatus.NEEDS_REVIEW if missing_customer_for_order or unresolved else ProcessingStatus.COMPLETED
+            order.status = ProcessingStatus.NEEDS_REVIEW if missing_customer_for_order else ProcessingStatus.COMPLETED
         order.updated_at = utc_now()
         order.source_metadata["stageCategoryResults"] = stage_category_results
         order.output_artifacts = []
@@ -5140,6 +5296,40 @@ class OrderProcessorApi:
         )
         updated_line = self._apply_item_validation_to_order_line(payload, result)
         exception_task = None
+        order_run_id = str(_pick(payload, "orderRunId", "order_run_id", default="") or "")
+        line_number = int(_pick(payload, "lineNumber", "line_number", default=0) or 0)
+        if order_run_id and updated_line is not None:
+            order_doc = self.repository.get("orderRuns", order_run_id)
+            if order_doc is not None:
+                order = _order_from_doc(order_doc)
+                unresolved = [
+                    line
+                    for line in order.lines
+                    if line.validation_status in {MatchStatus.UNRESOLVED, MatchStatus.POSSIBLE_MATCH}
+                ]
+                tasks = self._sync_item_validation_exceptions(order, unresolved)
+                exception_task = next(
+                    (
+                        task
+                        for task in tasks
+                        if int(_pick(task, "lineNumber", "line_number", default=0) or 0) == line_number
+                    ),
+                    None,
+                )
+        elif result.status != MatchStatus.MATCHED:
+            exception_task = self._create_exception(
+                tenant_id=tenant_id,
+                task_type="itemValidation",
+                prompt="Validate item match.",
+                customer_id=customer_id,
+                correlation_id=observability["correlationId"],
+                context={
+                    "request": self._item_validation_request_context(payload),
+                    "rowContext": row_context,
+                    "result": _api_value(result),
+                },
+                dedupe_key=self._item_validation_dedupe_key(payload, result),
+            )
         self._audit(
             tenant_id,
             "item.validated",
@@ -5224,17 +5414,77 @@ class OrderProcessorApi:
         if updated_line is None:
             return None
 
-        unresolved = [
-            line
-            for line in order.lines
-            if line.validation_status in {MatchStatus.UNRESOLVED, MatchStatus.POSSIBLE_MATCH}
-        ]
         if order.status != ProcessingStatus.FAILED:
-            order.status = ProcessingStatus.NEEDS_REVIEW if unresolved else ProcessingStatus.COMPLETED
+            order.status = ProcessingStatus.COMPLETED if order.customer_id else ProcessingStatus.NEEDS_REVIEW
         order.updated_at = utc_now()
         order_doc = self.repository.upsert("orderRuns", to_dict(order))
         self._upsert_monitor_record_for_order(order_doc)
         return updated_line
+
+    def _sync_item_validation_exceptions(
+        self,
+        order: OrderRun,
+        unresolved: list[OrderLine],
+    ) -> list[dict[str, Any]]:
+        unresolved_by_line = {line.line_number: line for line in unresolved}
+        now = utc_now()
+        for task in self.repository.query_by_tenant("exceptionTasks", order.tenant_id):
+            if str(_pick(task, "orderRunId", "order_run_id", default="") or "") != order.id:
+                continue
+            if str(_pick(task, "type", default="") or "") != "itemValidation":
+                continue
+            if _document_status(task) != ExceptionStatus.OPEN.value:
+                continue
+            task_line = int(_pick(task, "lineNumber", "line_number", default=0) or 0)
+            if task_line in unresolved_by_line:
+                continue
+            task["status"] = ExceptionStatus.RESOLVED.value
+            task["resolution"] = {
+                **dict(_pick(task, "resolution", default={}) or {}),
+                "reason": "item matched",
+                "resolvedBy": "system",
+            }
+            task["resolvedAt"] = now
+            task["resolved_at"] = now
+            task["updatedAt"] = now
+            stored = self.repository.upsert("exceptionTasks", task)
+            self.repository.delete("monitorRecords", str(_pick(stored, "id", default="")))
+
+        tasks: list[dict[str, Any]] = []
+        for line in unresolved:
+            validation_error = next(
+                (
+                    error
+                    for error in line.validation_errors
+                    if str(_pick(error, "code", default="") or "") == "unresolvedItem"
+                ),
+                {},
+            )
+            tasks.append(
+                self._create_exception(
+                    tenant_id=order.tenant_id,
+                    task_type="itemValidation",
+                    prompt=f"Validate item match for order line {line.line_number}.",
+                    order_run_id=order.id,
+                    email_message_id=order.email_message_id,
+                    line_number=line.line_number,
+                    customer_id=order.customer_id,
+                    correlation_id=order.correlation_id,
+                    context={
+                        "line": _api_value(line),
+                        "providedItemNumber": line.provided_item_number,
+                        "providedUpc": line.provided_upc,
+                        "description": line.description,
+                        "sourceRowIndex": line.source_row_index,
+                        "validationStatus": _api_value(line.validation_status),
+                        "validationConfidence": line.validation_confidence,
+                        "validationMethod": line.validation_method,
+                        "candidates": line.validation_candidates,
+                        "reason": _pick(validation_error, "message", default="Item did not positively match an internal item ID."),
+                    },
+                )
+            )
+        return tasks
 
     def _item_validation_request_context(self, payload: dict[str, Any]) -> dict[str, Any]:
         safe_keys = [
@@ -6522,13 +6772,6 @@ class OrderProcessorApi:
         tenant_id = str(_pick(task, "tenantId", "tenant_id", default=""))
         if not tenant_id:
             return None
-        if _is_item_validation_exception(task):
-            self.repository.delete("monitorRecords", str(_pick(task, "id", default="")))
-            order_id = str(_pick(task, "orderRunId", "order_run_id", default=""))
-            order = self.repository.get("orderRuns", order_id) if order_id else None
-            if order:
-                return self._upsert_monitor_record_for_order(order)
-            return None
         email_id = str(_pick(task, "emailMessageId", "email_message_id", default=""))
         order_id = str(_pick(task, "orderRunId", "order_run_id", default=""))
         email = self.repository.get("emailMessages", email_id) if email_id else None
@@ -6558,7 +6801,6 @@ class OrderProcessorApi:
             task
             for task in self.repository.query_by_tenant("exceptionTasks", tenant_id)
             if _document_status(task) == ExceptionStatus.OPEN.value
-            and not _is_item_validation_exception(task)
         ]
         if order_run_id:
             for task in open_tasks:
@@ -6642,8 +6884,6 @@ class OrderProcessorApi:
         }
         for record in records:
             section = str(_pick(record, "section", default="nonOrderEmails"))
-            if section == "exceptions" and _is_item_validation_exception(record):
-                continue
             email_id = str(_pick(record, "emailMessageId", "email_message_id", default="") or "")
             order_id = str(_pick(record, "orderRunId", "order_run_id", default="") or "")
             if section == "active" and email_id and not order_id and email_id in email_ids_with_order_records:
@@ -6701,7 +6941,9 @@ class OrderProcessorApi:
             "processedOrderCount": len(processed_orders),
             "successRate": round(len(completed) / total_finished, 4) if total_finished else 0.0,
             "openExceptionCount": len(exceptions),
-            "unresolvedLineCount": 0,
+            "unresolvedLineCount": len(
+                [item for item in exceptions if str(_pick(item, "type", default="")) == "itemValidation"]
+            ),
             "itemRecordCount": int((item_stats or {}).get("count") or 0),
             "customerIdentificationFailureCount": len(
                 [item for item in exceptions if str(_pick(item, "type", default="")) == "customerIdentification"]
@@ -6735,7 +6977,6 @@ class OrderProcessorApi:
             task
             for task in exceptions
             if _document_status(task) == ExceptionStatus.OPEN.value
-            and not _is_item_validation_exception(task)
         ]
         exception_email_ids = {
             str(_pick(task, "emailMessageId", "email_message_id", default=""))
@@ -7395,7 +7636,6 @@ class OrderProcessorApi:
                     item
                     for item in exceptions
                     if _document_status(item) == ExceptionStatus.OPEN.value
-                    and not _is_item_validation_exception(item)
                 ]
             ),
             "mailboxes": self._sort_recent(mailboxes),
@@ -9278,13 +9518,8 @@ class OrderProcessorApi:
         if not updated:
             return {"status": "notFound", "message": f"Line {line_number} was not found."}
 
-        unresolved = [
-            line
-            for line in order.lines
-            if line.validation_status in {MatchStatus.UNRESOLVED, MatchStatus.POSSIBLE_MATCH}
-        ]
         if order.status != ProcessingStatus.FAILED:
-            order.status = ProcessingStatus.NEEDS_REVIEW if unresolved else ProcessingStatus.COMPLETED
+            order.status = ProcessingStatus.COMPLETED if order.customer_id else ProcessingStatus.NEEDS_REVIEW
         order.updated_at = utc_now()
         order_doc = self.repository.upsert("orderRuns", to_dict(order))
         self._upsert_monitor_record_for_order(order_doc)
@@ -9600,8 +9835,6 @@ class OrderProcessorApi:
         orders_by_id = {order["id"]: order for order in visible_orders if "id" in order}
         visible = []
         for task in exceptions:
-            if _is_item_validation_exception(task):
-                continue
             order_run_id = _pick(task, "orderRunId", "order_run_id", default="")
             if order_run_id and order_run_id in orders_by_id:
                 visible.append(task)
@@ -9712,7 +9945,6 @@ class OrderProcessorApi:
             task
             for task in exceptions
             if _document_status(task) == ExceptionStatus.OPEN.value
-            and not _is_item_validation_exception(task)
         ]
         active_statuses = {
             ProcessingStatus.RECEIVED.value,

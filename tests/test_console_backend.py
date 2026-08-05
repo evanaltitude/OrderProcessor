@@ -4,7 +4,9 @@ import base64
 import json
 import os
 import sys
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -149,9 +151,9 @@ class ConsoleBackendTests(unittest.TestCase):
         self.assertEqual([customer["id"] for customer in dashboard["customers"]], ["pilot-customer"])
         self.assertEqual([mailbox["customerId"] for mailbox in dashboard["mailboxes"]], ["_global"])
         self.assertEqual([run["id"] for run in dashboard["activeRuns"]], ["pilot-run"])
-        self.assertEqual(dashboard["summary"]["openExceptionCount"], 0)
+        self.assertEqual(dashboard["summary"]["openExceptionCount"], 1)
         self.assertEqual(dashboard["summary"]["unresolvedLineCount"], 1)
-        self.assertEqual(dashboard["exceptionQueue"], [])
+        self.assertEqual([task["type"] for task in dashboard["exceptionQueue"]], ["itemValidation"])
         self.assertEqual({customer["id"] for customer in tenant_dashboard["customers"]}, {"pilot-customer", "other-customer"})
         self.assertIn("distributorCustomers", tenant_dashboard)
         self.assertEqual(tenant_dashboard["tenant"]["tenantId"], "altitude")
@@ -229,7 +231,7 @@ class ConsoleBackendTests(unittest.TestCase):
         self.assertEqual(monitor["webstoreOrders"][0]["movedTo"], "Jane")
         self.assertEqual(monitor["webstoreOrders"][0]["emailUrl"], "https://outlook.office.com/mail/id/1")
 
-    def test_console_monitor_hides_item_validation_exceptions(self) -> None:
+    def test_console_monitor_shows_item_validation_exceptions(self) -> None:
         api, repo, _ = self._api()
         headers = {"x-ms-client-principal": _easy_auth_header("connect@focuseautomate.com")}
         api.upsert_customer_config(
@@ -265,13 +267,14 @@ class ConsoleBackendTests(unittest.TestCase):
         dashboard = api.console_dashboard({"tenantId": "altitude", "headers": headers, "view": "monitor"})
         monitor = dashboard["monitor"]
 
-        self.assertEqual(repo.get("monitorRecords", task["id"]), None)
-        self.assertEqual(monitor["exceptions"], [])
-        self.assertEqual(dashboard["summary"]["openExceptionCount"], 0)
+        self.assertIsNotNone(repo.get("monitorRecords", task["id"]))
+        self.assertEqual([entry["exceptionId"] for entry in monitor["exceptions"]], [task["id"]])
+        self.assertEqual(dashboard["summary"]["openExceptionCount"], 1)
+        self.assertEqual(dashboard["summary"]["unresolvedLineCount"], 1)
         self.assertEqual([entry["orderRunId"] for entry in monitor["processedOrders"]], ["pilot-run"])
 
     def test_console_can_clear_stuck_active_processing_email(self) -> None:
-        api, repo, _ = self._api()
+        api, repo, store = self._api()
         headers = {"x-ms-client-principal": _easy_auth_header("connect@focuseautomate.com")}
         api.upsert_customer_config(
             {
@@ -956,7 +959,7 @@ class ConsoleBackendTests(unittest.TestCase):
         self.assertIn("no longer present in inbox", monitor_record["actionTaken"])
 
     def test_graph_webhook_subscription_processes_message_notification(self) -> None:
-        api, repo, _ = self._api()
+        api, repo, store = self._api()
         mailbox = api.upsert_mailbox(
             {
                 "tenantId": "altitude",
@@ -1057,15 +1060,37 @@ class ConsoleBackendTests(unittest.TestCase):
                 "changeType": "created",
                 "resourceData": {"id": "graph-message-1"},
             }
-            first = api.process_graph_notifications({"notifications": [notification]})
-            second = api.process_graph_notifications({"notifications": [notification]})
+            original_create_if_absent = repo.create_if_absent
+            claim_barrier = threading.Barrier(2)
+
+            def synchronized_create_if_absent(container: str, document: dict[str, object]):
+                if container == "emailMessages":
+                    claim_barrier.wait(timeout=5)
+                return original_create_if_absent(container, document)
+
+            with patch.object(repo, "create_if_absent", side_effect=synchronized_create_if_absent):
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    first, second = list(
+                        executor.map(
+                            api.process_graph_notifications,
+                            [{"notifications": [notification]}, {"notifications": [notification]}],
+                        )
+                    )
 
         self.assertEqual(subscription_result["mailboxSubscriptions"]["createdCount"], 1)
         self.assertEqual(created_payloads[0]["resource"], "users/orders%40example.com/mailFolders('inbox')/messages")
-        self.assertEqual(first["graphNotifications"]["ingestedCount"], 1)
-        self.assertEqual(second["graphNotifications"]["skippedCount"], 1)
+        self.assertEqual(
+            first["graphNotifications"]["ingestedCount"] + second["graphNotifications"]["ingestedCount"],
+            1,
+        )
+        self.assertEqual(
+            first["graphNotifications"]["skippedCount"] + second["graphNotifications"]["skippedCount"],
+            1,
+        )
         orders = repo.query_by_tenant("orderRuns", "altitude")
         self.assertEqual(len(orders), 1)
+        self.assertEqual(len(repo.query_by_tenant("emailMessages", "altitude")), 1)
+        self.assertEqual(len(store.objects), 2)
         self.assertEqual(orders[0]["customerId"], "frontier-102598")
         self.assertEqual(orders[0]["sourceFileName"], "order.csv")
 

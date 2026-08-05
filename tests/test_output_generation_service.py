@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import csv
 import json
 import os
 import sys
 import unittest
 import zipfile
-from io import BytesIO
+from io import BytesIO, StringIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -69,7 +70,7 @@ class OutputGenerationServiceTests(unittest.TestCase):
         stored_order = repo.get("orderRuns", "order-run-default-output")
         self.assertEqual(stored_order["outputArtifacts"][0]["checksum"], artifacts[0]["checksum"])
 
-    def test_unvalidated_lines_export_provided_item_and_upc_without_exception_task(self) -> None:
+    def test_unvalidated_lines_complete_with_exception_and_blank_internal_item(self) -> None:
         api, repo, store = self._api()
 
         result = api.process_order(
@@ -83,12 +84,19 @@ class OutputGenerationServiceTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(result["orderRun"]["status"], "needsReview")
+        self.assertEqual(result["orderRun"]["status"], "completed")
         self.assertEqual(result["unresolvedLineCount"], 1)
-        self.assertEqual(repo.query_by_tenant("exceptionTasks", "altitude"), [])
+        exceptions = repo.query_by_tenant("exceptionTasks", "altitude")
+        self.assertEqual(len(exceptions), 1)
+        self.assertEqual(exceptions[0]["type"], "itemValidation")
+        self.assertEqual(exceptions[0]["status"], "open")
+        self.assertEqual(exceptions[0]["lineNumber"], 1)
         csv_artifact = next(artifact for artifact in result["orderRun"]["outputArtifacts"] if artifact["type"] == "lineCsv")
         csv_body = store.objects[csv_artifact["blobUrl"]].decode("utf-8")
-        self.assertIn("12345678 - 999999999", csv_body)
+        row = next(csv.DictReader(StringIO(csv_body)))
+        self.assertEqual(row["provided_item_number"], "12345678")
+        self.assertEqual(row["provided_upc"], "999999999")
+        self.assertEqual(row["matched_internal_item_number"], "")
 
     def test_customer_output_profiles_generate_csv_text_and_api_payload_artifacts(self) -> None:
         api, _, store = self._api()

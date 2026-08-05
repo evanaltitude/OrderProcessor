@@ -191,7 +191,7 @@ class ItemValidationServiceTests(unittest.TestCase):
         self.assertEqual(result["result"]["matchedInternalItemNumber"], "00123456789")
         self.assertEqual(result["result"]["matchMethod"], "itemNumberLeadingZeroTolerant")
 
-    def test_validate_item_endpoint_marks_line_unresolved_without_exception_task(self) -> None:
+    def test_validate_item_endpoint_marks_line_unresolved_with_completed_exception(self) -> None:
         api, repo = self._api_with_item()
         repo.upsert(
             "orderRuns",
@@ -218,14 +218,15 @@ class ItemValidationServiceTests(unittest.TestCase):
         )
 
         self.assertEqual(result["result"]["status"], "unresolved")
-        self.assertIsNone(result["exceptionTask"])
+        self.assertEqual(result["exceptionTask"]["type"], "itemValidation")
+        self.assertEqual(result["exceptionTask"]["lineNumber"], 1)
         self.assertEqual(result["updatedOrderLine"]["validationStatus"], "unresolved")
         stored_order = repo.get("orderRuns", "order-run-2")
-        self.assertEqual(stored_order["status"], "needsReview")
+        self.assertEqual(stored_order["status"], "completed")
         self.assertEqual(stored_order["lines"][0]["validationErrors"][0]["code"], "unresolvedItem")
-        self.assertEqual(repo.query_by_tenant("exceptionTasks", "altitude"), [])
+        self.assertEqual(len(repo.query_by_tenant("exceptionTasks", "altitude")), 1)
 
-    def test_validate_item_endpoint_returns_possible_match_without_exception_task(self) -> None:
+    def test_validate_item_endpoint_returns_possible_match_with_exception_task(self) -> None:
         api, _ = self._api_with_item()
 
         result = api.validate_item(
@@ -238,7 +239,7 @@ class ItemValidationServiceTests(unittest.TestCase):
         )
 
         self.assertEqual(result["result"]["status"], "possibleMatch")
-        self.assertIsNone(result["exceptionTask"])
+        self.assertEqual(result["exceptionTask"]["type"], "itemValidation")
         self.assertEqual(
             result["result"]["unresolvedReason"],
             "best candidate below confidence threshold",

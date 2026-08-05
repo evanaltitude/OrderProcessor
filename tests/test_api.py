@@ -920,6 +920,21 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(plan["move"]["folderName"], "Jane")
         self.assertTrue(plan["move"]["enabled"])
 
+        validation_plan = api._order_completion_action_plan(
+            {"tenantId": "altitude", "id": "email-1", "subject": "PO"},
+            {"ruleId": "generic-order", "customerId": None},
+            {
+                "orderRun": {
+                    "id": "order-1",
+                    "tenantId": "altitude",
+                    "customerId": "pilot-customer",
+                    "status": "completed",
+                },
+                "unresolvedLineCount": 1,
+            },
+        )
+        self.assertEqual(validation_plan["categories"], ["Jane - Validate"])
+
     def test_order_completion_move_falls_back_to_csr_name_when_csr_folder_missing(self) -> None:
         repo = InMemoryRepository()
         api = OrderProcessorApi(repo)

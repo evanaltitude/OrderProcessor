@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 import os
+from threading import RLock
 import time
 from typing import Any
 
@@ -34,12 +35,25 @@ class InMemoryRepository:
 
     def __init__(self) -> None:
         self._containers: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+        self._lock = RLock()
 
     def upsert(self, container: str, document: dict[str, Any]) -> dict[str, Any]:
         normalized = normalize_document_for_storage(container, document)
         document_id = str(normalized["id"])
-        self._containers[container][document_id] = normalized
+        with self._lock:
+            self._containers[container][document_id] = normalized
         return normalized
+
+    def create_if_absent(self, container: str, document: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+        """Atomically create a document, returning the existing document on conflict."""
+        normalized = normalize_document_for_storage(container, document)
+        document_id = str(normalized["id"])
+        with self._lock:
+            existing = self._containers[container].get(document_id)
+            if existing is not None:
+                return False, existing
+            self._containers[container][document_id] = normalized
+            return True, normalized
 
     def get(self, container: str, document_id: str) -> dict[str, Any] | None:
         self._ensure_container(container)
@@ -178,6 +192,21 @@ class CosmosRepository:
         normalized = normalize_document_for_storage(container, document)
         self._container(container).upsert_item(normalized)
         return normalized
+
+    def create_if_absent(self, container: str, document: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+        """Atomically create a document, returning the winner when it already exists."""
+        try:
+            from azure.cosmos.exceptions import CosmosResourceExistsError
+        except ModuleNotFoundError as exc:  # pragma: no cover - depends on deployed dependencies.
+            raise RepositoryError("Azure Cosmos dependencies are not installed.") from exc
+
+        normalized = normalize_document_for_storage(container, document)
+        try:
+            stored = self._container(container).create_item(normalized)
+            return True, stored
+        except CosmosResourceExistsError:
+            existing = self.get(container, str(normalized["id"]))
+            return False, existing or normalized
 
     def get(self, container: str, document_id: str) -> dict[str, Any] | None:
         query = "SELECT * FROM c WHERE c.id = @id"
