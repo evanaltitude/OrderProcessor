@@ -248,6 +248,7 @@ CONSOLE_MONITOR_RECORD_FIELDS = [
     "poNumber",
     "orderNumber",
     "lineCount",
+    "unresolvedLineCount",
     "artifactCount",
     "outputArtifactId",
     "outputArtifactFileName",
@@ -4391,7 +4392,13 @@ class OrderProcessorApi:
             for line in order.lines
             if order.customer_id and line.validation_status in {MatchStatus.UNRESOLVED, MatchStatus.POSSIBLE_MATCH}
         ]
-        self._sync_item_validation_exceptions(order, unresolved)
+        self._resolve_open_order_exceptions(
+            order.tenant_id,
+            order.id,
+            {"itemValidation"},
+            reason="item validation is tracked on the order run",
+            correlation_id=order.correlation_id,
+        )
 
         if order.status == ProcessingStatus.FAILED:
             self._create_exception(
@@ -5297,39 +5304,17 @@ class OrderProcessorApi:
         updated_line = self._apply_item_validation_to_order_line(payload, result)
         exception_task = None
         order_run_id = str(_pick(payload, "orderRunId", "order_run_id", default="") or "")
-        line_number = int(_pick(payload, "lineNumber", "line_number", default=0) or 0)
         if order_run_id and updated_line is not None:
             order_doc = self.repository.get("orderRuns", order_run_id)
             if order_doc is not None:
                 order = _order_from_doc(order_doc)
-                unresolved = [
-                    line
-                    for line in order.lines
-                    if line.validation_status in {MatchStatus.UNRESOLVED, MatchStatus.POSSIBLE_MATCH}
-                ]
-                tasks = self._sync_item_validation_exceptions(order, unresolved)
-                exception_task = next(
-                    (
-                        task
-                        for task in tasks
-                        if int(_pick(task, "lineNumber", "line_number", default=0) or 0) == line_number
-                    ),
-                    None,
+                self._resolve_open_order_exceptions(
+                    order.tenant_id,
+                    order.id,
+                    {"itemValidation"},
+                    reason="item validation is tracked on the order run",
+                    correlation_id=order.correlation_id,
                 )
-        elif result.status != MatchStatus.MATCHED:
-            exception_task = self._create_exception(
-                tenant_id=tenant_id,
-                task_type="itemValidation",
-                prompt="Validate item match.",
-                customer_id=customer_id,
-                correlation_id=observability["correlationId"],
-                context={
-                    "request": self._item_validation_request_context(payload),
-                    "rowContext": row_context,
-                    "result": _api_value(result),
-                },
-                dedupe_key=self._item_validation_dedupe_key(payload, result),
-            )
         self._audit(
             tenant_id,
             "item.validated",
@@ -5420,118 +5405,6 @@ class OrderProcessorApi:
         order_doc = self.repository.upsert("orderRuns", to_dict(order))
         self._upsert_monitor_record_for_order(order_doc)
         return updated_line
-
-    def _sync_item_validation_exceptions(
-        self,
-        order: OrderRun,
-        unresolved: list[OrderLine],
-    ) -> list[dict[str, Any]]:
-        unresolved_by_line = {line.line_number: line for line in unresolved}
-        now = utc_now()
-        for task in self.repository.query_by_tenant("exceptionTasks", order.tenant_id):
-            if str(_pick(task, "orderRunId", "order_run_id", default="") or "") != order.id:
-                continue
-            if str(_pick(task, "type", default="") or "") != "itemValidation":
-                continue
-            if _document_status(task) != ExceptionStatus.OPEN.value:
-                continue
-            task_line = int(_pick(task, "lineNumber", "line_number", default=0) or 0)
-            if task_line in unresolved_by_line:
-                continue
-            task["status"] = ExceptionStatus.RESOLVED.value
-            task["resolution"] = {
-                **dict(_pick(task, "resolution", default={}) or {}),
-                "reason": "item matched",
-                "resolvedBy": "system",
-            }
-            task["resolvedAt"] = now
-            task["resolved_at"] = now
-            task["updatedAt"] = now
-            stored = self.repository.upsert("exceptionTasks", task)
-            self.repository.delete("monitorRecords", str(_pick(stored, "id", default="")))
-
-        tasks: list[dict[str, Any]] = []
-        for line in unresolved:
-            validation_error = next(
-                (
-                    error
-                    for error in line.validation_errors
-                    if str(_pick(error, "code", default="") or "") == "unresolvedItem"
-                ),
-                {},
-            )
-            tasks.append(
-                self._create_exception(
-                    tenant_id=order.tenant_id,
-                    task_type="itemValidation",
-                    prompt=f"Validate item match for order line {line.line_number}.",
-                    order_run_id=order.id,
-                    email_message_id=order.email_message_id,
-                    line_number=line.line_number,
-                    customer_id=order.customer_id,
-                    correlation_id=order.correlation_id,
-                    context={
-                        "line": _api_value(line),
-                        "providedItemNumber": line.provided_item_number,
-                        "providedUpc": line.provided_upc,
-                        "description": line.description,
-                        "sourceRowIndex": line.source_row_index,
-                        "validationStatus": _api_value(line.validation_status),
-                        "validationConfidence": line.validation_confidence,
-                        "validationMethod": line.validation_method,
-                        "candidates": line.validation_candidates,
-                        "reason": _pick(validation_error, "message", default="Item did not positively match an internal item ID."),
-                    },
-                )
-            )
-        return tasks
-
-    def _item_validation_request_context(self, payload: dict[str, Any]) -> dict[str, Any]:
-        safe_keys = [
-            "tenantId",
-            "tenant_id",
-            "customerId",
-            "customer_id",
-            "varItemNumber",
-            "providedItemNumber",
-            "provided_item_number",
-            "itemNumber",
-            "item_number",
-            "varItemUPC",
-            "providedUpc",
-            "provided_upc",
-            "upc",
-            "barcode",
-            "varItemDescription",
-            "description",
-            "orderRunId",
-            "order_run_id",
-            "lineNumber",
-            "line_number",
-            "confidenceThreshold",
-            "confidence_threshold",
-            "candidateLimit",
-            "candidate_limit",
-        ]
-        return {key: payload[key] for key in safe_keys if key in payload}
-
-    def _item_validation_dedupe_key(
-        self,
-        payload: dict[str, Any],
-        result: ItemValidationResult,
-    ) -> str:
-        order_run_id = _pick(payload, "orderRunId", "order_run_id", default="")
-        line_number = _pick(payload, "lineNumber", "line_number", default="")
-        if order_run_id or line_number:
-            return ""
-        return stable_id(
-            _pick(payload, "tenantId", "tenant_id", default="default"),
-            _pick(payload, "customerId", "customer_id", default=""),
-            _pick(payload, "varItemNumber", "providedItemNumber", "provided_item_number", "itemNumber", default=""),
-            _pick(payload, "varItemUPC", "providedUpc", "provided_upc", "upc", default=""),
-            _pick(payload, "varItemDescription", "description", default=""),
-            result.unresolved_reason or result.match_method,
-        )
 
     def import_customers(self, payload: dict[str, Any]) -> dict[str, Any]:
         tenant_id = _pick(payload, "tenantId", "tenant_id", default="default")
@@ -6941,8 +6814,9 @@ class OrderProcessorApi:
             "processedOrderCount": len(processed_orders),
             "successRate": round(len(completed) / total_finished, 4) if total_finished else 0.0,
             "openExceptionCount": len(exceptions),
-            "unresolvedLineCount": len(
-                [item for item in exceptions if str(_pick(item, "type", default="")) == "itemValidation"]
+            "unresolvedLineCount": sum(
+                int(_pick(item, "unresolvedLineCount", "unresolved_line_count", default=0) or 0)
+                for item in processed_orders
             ),
             "itemRecordCount": int((item_stats or {}).get("count") or 0),
             "customerIdentificationFailureCount": len(
@@ -7119,6 +6993,14 @@ class OrderProcessorApi:
                 "poNumber": str(_pick(order, "poNumber", "po_number", default="")),
                 "orderNumber": str(_pick(order, "orderNumber", "order_number", default="")),
                 "lineCount": len(_as_list(_pick(order, "lines", default=[]))),
+                "unresolvedLineCount": len(
+                    [
+                        line
+                        for line in _as_list(_pick(order, "lines", default=[]))
+                        if _pick(_as_dict(line), "validationStatus", "validation_status", default="")
+                        in {MatchStatus.UNRESOLVED.value, MatchStatus.POSSIBLE_MATCH.value}
+                    ]
+                ),
                 "artifactCount": len(_as_list(_pick(order, "outputArtifacts", "output_artifacts", default=[]))),
                 "actionTaken": self._order_monitor_action(order) or self._monitor_action_summary(
                     email or {},

@@ -70,7 +70,7 @@ class OutputGenerationServiceTests(unittest.TestCase):
         stored_order = repo.get("orderRuns", "order-run-default-output")
         self.assertEqual(stored_order["outputArtifacts"][0]["checksum"], artifacts[0]["checksum"])
 
-    def test_unvalidated_lines_complete_with_exception_and_blank_internal_item(self) -> None:
+    def test_unvalidated_lines_complete_without_exception_and_with_blank_internal_item(self) -> None:
         api, repo, store = self._api()
 
         result = api.process_order(
@@ -87,10 +87,7 @@ class OutputGenerationServiceTests(unittest.TestCase):
         self.assertEqual(result["orderRun"]["status"], "completed")
         self.assertEqual(result["unresolvedLineCount"], 1)
         exceptions = repo.query_by_tenant("exceptionTasks", "altitude")
-        self.assertEqual(len(exceptions), 1)
-        self.assertEqual(exceptions[0]["type"], "itemValidation")
-        self.assertEqual(exceptions[0]["status"], "open")
-        self.assertEqual(exceptions[0]["lineNumber"], 1)
+        self.assertEqual(exceptions, [])
         csv_artifact = next(artifact for artifact in result["orderRun"]["outputArtifacts"] if artifact["type"] == "lineCsv")
         csv_body = store.objects[csv_artifact["blobUrl"]].decode("utf-8")
         row = next(csv.DictReader(StringIO(csv_body)))

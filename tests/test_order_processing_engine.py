@@ -463,6 +463,57 @@ class OrderProcessingEngineTests(unittest.TestCase):
         self.assertEqual(result["orderRun"]["lines"][0]["validationStatus"], "matched")
         self.assertIn("lineXlsx", {artifact["type"] for artifact in result["orderRun"]["outputArtifacts"]})
 
+    def test_xlsx_order_keeps_unmatched_item_on_order_without_creating_exception(self) -> None:
+        repo = InMemoryRepository()
+        api = OrderProcessorApi(repo)
+        repo.upsert(
+            "items",
+            {
+                "id": "known-item",
+                "tenantId": "altitude",
+                "customerId": "_global",
+                "internalItemNumber": "KNOWN-100",
+                "description": "Known item",
+                "customerItemNumbers": ["KNOWN-100"],
+            },
+        )
+        repo.upsert(
+            "processorProfiles",
+            {
+                "id": "unmatched-xlsx",
+                "tenantId": "altitude",
+                "customerId": "pilot-customer",
+                "name": "Unmatched workbook processor",
+                "processorType": "xlsx",
+            },
+        )
+        source = base64.b64encode(
+            _xlsx_bytes(
+                [
+                    ["Item Number", "Quantity", "Description"],
+                    ["UNKNOWN-XLSX", "2", "Unknown item"],
+                ]
+            )
+        ).decode("ascii")
+
+        result = api.process_order(
+            "order-run-unmatched-xlsx",
+            {
+                "tenantId": "altitude",
+                "customerId": "pilot-customer",
+                "processorProfileId": "unmatched-xlsx",
+                "sourceContentBase64": source,
+                "sourceFileName": "unmatched-order.xlsx",
+            },
+        )
+
+        line = result["orderRun"]["lines"][0]
+        self.assertEqual(result["orderRun"]["status"], "completed")
+        self.assertEqual(result["unresolvedLineCount"], 1)
+        self.assertEqual(line["validationStatus"], "unresolved")
+        self.assertFalse(line.get("matchedInternalItemNumber"))
+        self.assertEqual(repo.query_by_tenant("exceptionTasks", "altitude"), [])
+
     def test_spreadsheet_api_normalizes_and_extracts_order_lines(self) -> None:
         api = OrderProcessorApi(InMemoryRepository())
         source = "Intro row\n\nSupplier Code,Barcode,Product,Qty Ordered\n188010145,860003377529,Treats,4\n"
