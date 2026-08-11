@@ -508,6 +508,23 @@ paths:
             application/json:
               schema:
                 type: object
+  /console/exceptions/resolve-batch:
+    post:
+      operationId: consoleExceptionsResolveBatch
+      summary: Resolve multiple console exception tasks with the same action.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExceptionBatchResolveRequest'
+      responses:
+        '200':
+          description: Batch exception resolution result.
+          content:
+            application/json:
+              schema:
+                type: object
   /console/exceptions/{id}/resolve:
     post:
       operationId: consoleExceptionsResolve
@@ -1488,6 +1505,24 @@ components:
       properties:
         tenantId:
           type: string
+        resolution:
+          type: object
+          additionalProperties: true
+    ExceptionBatchResolveRequest:
+      type: object
+      required:
+        - tenantId
+        - exceptionIds
+        - resolution
+      properties:
+        tenantId:
+          type: string
+        exceptionIds:
+          type: array
+          minItems: 1
+          maxItems: 250
+          items:
+            type: string
         resolution:
           type: object
           additionalProperties: true

@@ -8210,6 +8210,143 @@ class OrderProcessorApi:
         result["session"] = session
         return result
 
+    def console_resolve_exceptions_batch(self, payload: dict[str, Any]) -> dict[str, Any]:
+        session = self.console_session(payload)
+        if not session.get("authorized"):
+            return {"session": session}
+        if "resolveExceptions" not in set(_as_list(session.get("permissions", []))):
+            return {"session": session, "error": "forbidden", "message": "User cannot resolve exceptions."}
+
+        exception_ids = list(
+            dict.fromkeys(
+                str(value or "").strip()
+                for value in _as_list(_pick(payload, "exceptionIds", "exception_ids", default=[]))
+                if str(value or "").strip()
+            )
+        )
+        if not exception_ids:
+            return {"session": session, "error": "invalid", "message": "Select at least one exception."}
+        if len(exception_ids) > 250:
+            return {
+                "session": session,
+                "error": "invalid",
+                "message": "A batch can contain at most 250 exceptions.",
+            }
+
+        tasks: list[dict[str, Any]] = []
+        for exception_id in exception_ids:
+            task = self.repository.get("exceptionTasks", exception_id)
+            if task is None:
+                return {
+                    "session": session,
+                    "error": "notFound",
+                    "message": f"Exception task {exception_id} was not found. Refresh the queue and try again.",
+                }
+            if not self._session_can_access_customer(session, self._exception_customer_id(task)):
+                return {
+                    "session": session,
+                    "error": "forbidden",
+                    "message": "One or more selected exceptions are outside this user's assignments.",
+                }
+            if _document_status(task) != ExceptionStatus.OPEN.value:
+                return {
+                    "session": session,
+                    "error": "invalid",
+                    "message": f"Exception task {exception_id} is no longer open. Refresh the queue and try again.",
+                }
+            tasks.append(task)
+
+        resolution = dict(_pick(payload, "resolution", default={}) or {})
+        queued_ids = [
+            str(_pick(task, "id", default=""))
+            for task in tasks
+            if self._exception_resolution_should_queue(task, resolution)
+        ]
+        if queued_ids:
+            return {
+                "session": session,
+                "error": "invalid",
+                "message": "Reprocess and force-order actions must be submitted individually.",
+                "unsupportedExceptionIds": queued_ids,
+            }
+
+        batch_payload = {
+            **payload,
+            "resolution": {**resolution, "_deferMonitorRefresh": True},
+        }
+        results: list[dict[str, Any]] = []
+        for task in tasks:
+            exception_id = str(_pick(task, "id", default=""))
+            try:
+                result = self.resolve_exception(exception_id, batch_payload, defer_monitor_refresh=True)
+            except Exception as exc:  # pragma: no cover - defensive storage and Graph boundary.
+                result = {"error": "failed", "message": str(exc)}
+            results.append({"exceptionId": exception_id, **result})
+
+        self._refresh_monitors_for_exception_batch(tasks)
+        resolved_count = len(
+            [
+                result
+                for result in results
+                if _document_status(_as_dict(_pick(result, "exceptionTask", "exception_task", default={})))
+                == ExceptionStatus.RESOLVED.value
+            ]
+        )
+        open_count = len(
+            [
+                result
+                for result in results
+                if not _pick(result, "error", default=None)
+                and _document_status(_as_dict(_pick(result, "exceptionTask", "exception_task", default={})))
+                == ExceptionStatus.OPEN.value
+                and str(_pick(_as_dict(_pick(result, "resolutionResult", default={})), "status", default=""))
+                == "updated"
+            ]
+        )
+        failed_count = len(
+            [
+                result
+                for result in results
+                if _pick(result, "error", default=None)
+                or str(_pick(_as_dict(_pick(result, "resolutionResult", default={})), "status", default=""))
+                in {"notFound", "invalid", "failed"}
+            ]
+        )
+        return {
+            "session": session,
+            "batch": {
+                "requestedCount": len(exception_ids),
+                "resolvedCount": resolved_count,
+                "openCount": open_count,
+                "failedCount": failed_count,
+            },
+            "results": results,
+        }
+
+    def _refresh_monitors_for_exception_batch(self, tasks: list[dict[str, Any]]) -> None:
+        email_ids = {
+            str(_pick(task, "emailMessageId", "email_message_id", default="") or "")
+            for task in tasks
+            if _pick(task, "emailMessageId", "email_message_id", default="")
+        }
+        order_ids = {
+            str(_pick(task, "orderRunId", "order_run_id", default="") or "")
+            for task in tasks
+            if _pick(task, "orderRunId", "order_run_id", default="")
+        }
+        for email_id in email_ids:
+            email = self.repository.get("emailMessages", email_id)
+            if email is not None:
+                self._upsert_monitor_record_for_email(email)
+        for order_id in order_ids:
+            order = self.repository.get("orderRuns", order_id)
+            if order is None:
+                continue
+            email_id = str(_pick(order, "emailMessageId", "email_message_id", default="") or "")
+            if email_id and email_id in email_ids:
+                continue
+            self._upsert_monitor_record_for_order(order)
+
     def console_prepare_async_exception_resolution(self, exception_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         session = self.console_session(payload)
         if not session.get("authorized"):
@@ -8812,7 +8949,13 @@ class OrderProcessorApi:
         self._audit(tenant_id, "microsoftAuthConnection.upserted", stored["id"], stored["id"], {"provider": provider})
         return {"microsoftAuthConnection": stored}
 
-    def resolve_exception(self, exception_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def resolve_exception(
+        self,
+        exception_id: str,
+        payload: dict[str, Any],
+        *,
+        defer_monitor_refresh: bool = False,
+    ) -> dict[str, Any]:
         existing = self.repository.get("exceptionTasks", exception_id)
         if existing is None:
             return {"error": "notFound", "message": f"Exception task {exception_id} was not found."}
@@ -8826,7 +8969,11 @@ class OrderProcessorApi:
         existing["status"] = (
             ExceptionStatus.OPEN.value if resolution_status in {"notFound", "invalid", "failed", "updated"} else ExceptionStatus.RESOLVED.value
         )
-        existing["resolution"] = resolution
+        existing["resolution"] = {
+            key: value
+            for key, value in resolution.items()
+            if not str(key).startswith("_")
+        }
         existing["resolvedBy"] = self._actor_from_payload(payload)
         existing["updatedAt"] = now
         if existing["status"] == ExceptionStatus.RESOLVED.value:
@@ -8834,7 +8981,8 @@ class OrderProcessorApi:
             existing["resolvedAt"] = now
             self.repository.delete("monitorRecords", exception_id)
         stored = self.repository.upsert("exceptionTasks", existing)
-        self._upsert_monitor_record_for_exception(stored)
+        if not defer_monitor_refresh:
+            self._upsert_monitor_record_for_exception(stored)
         event_type = (
             "exception.resolved"
             if existing["status"] == ExceptionStatus.RESOLVED.value
@@ -8951,7 +9099,8 @@ class OrderProcessorApi:
                 email["updatedAt"] = now
                 email_doc = self.repository.upsert("emailMessages", email)
                 result["emailMessageId"] = email_message_id
-                self._upsert_monitor_record_for_email(email_doc)
+                if not bool(_pick(resolution, "_deferMonitorRefresh", default=False)):
+                    self._upsert_monitor_record_for_email(email_doc)
 
         order_run_id = str(_pick(task, "orderRunId", "order_run_id", default="") or "")
         if order_run_id:
@@ -8970,7 +9119,8 @@ class OrderProcessorApi:
                 order["updatedAt"] = now
                 order_doc = self.repository.upsert("orderRuns", order)
                 result["orderRunId"] = order_run_id
-                self._upsert_monitor_record_for_order(order_doc)
+                if not bool(_pick(resolution, "_deferMonitorRefresh", default=False)):
+                    self._upsert_monitor_record_for_order(order_doc)
         return result
 
     def _customer_for_exception(self, task: dict[str, Any], resolution: dict[str, Any]) -> dict[str, Any] | None:
@@ -10410,6 +10560,10 @@ def console_assign_customer_user(customer_id: str, payload: dict[str, Any]) -> d
 
 def console_resolve_exception(exception_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     return default_api.console_resolve_exception(exception_id, payload)
+
+
+def console_resolve_exceptions_batch(payload: dict[str, Any]) -> dict[str, Any]:
+    return default_api.console_resolve_exceptions_batch(payload)
 
 
 def console_prepare_async_exception_resolution(exception_id: str, payload: dict[str, Any]) -> dict[str, Any]:

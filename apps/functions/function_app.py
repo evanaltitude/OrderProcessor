@@ -600,6 +600,10 @@ if func is not None:
             lambda: order_api.console_assign_customer_user(req.route_params["customerId"], _payload_with_headers(req)),
         )
 
+    @app.route(route="console/exceptions/resolve-batch", methods=["POST"])
+    def console_exceptions_resolve_batch(req: func.HttpRequest) -> func.HttpResponse:
+        return _handle(req, lambda: order_api.console_resolve_exceptions_batch(_payload_with_headers(req)))
+
     @app.route(route="console/exceptions/{id}/resolve", methods=["POST"])
     def console_exceptions_resolve(req: func.HttpRequest) -> func.HttpResponse:
         return _handle_console_exception_resolution(req, req.route_params["id"])

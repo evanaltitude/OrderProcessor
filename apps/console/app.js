@@ -37,6 +37,8 @@ const state = {
   },
   outputs: { outputArtifacts: [], page: { total: 0, limit: 100, offset: 0, hasNext: false, hasPrevious: false }, loaded: false },
   costs: { summary: null, loaded: false },
+  selectedExceptionIds: new Set(),
+  batchExceptionAction: "disregard",
   monitorFilters: defaultMonitorFilters(),
   monitorPages: { processedOrders: 0, webstoreOrders: 0, nonOrderEmails: 0 },
   listTimers: {}
@@ -1263,9 +1265,11 @@ function renderRows() {
 }
 
 function exceptionCard(task) {
+  const exceptionId = String(task.exceptionId || task.id || "");
+  const selected = state.selectedExceptionIds.has(exceptionId);
   const identifier = task.orderRunId ? `Run ${task.orderRunId}` : `Email ${task.emailMessageId || ""}`;
   return `
-    <article class="task exception-card">
+    <article class="task exception-card${selected ? " selected" : ""}">
       <header class="exception-card-header">
         <div class="exception-card-title">
           <div class="exception-type-row">
@@ -1275,6 +1279,10 @@ function exceptionCard(task) {
           <p>${escapeHtml(task.exception || task.prompt || task.id)}</p>
         </div>
         <div class="exception-card-status">
+          <label class="exception-select-control">
+            <input type="checkbox" data-exception-select="${escapeHtml(exceptionId)}" ${selected ? "checked" : ""}>
+            <span>Select</span>
+          </label>
           <span class="pill">${escapeHtml(identifier)}</span>
         </div>
       </header>
@@ -1284,13 +1292,121 @@ function exceptionCard(task) {
   `;
 }
 
+function batchActionsForException(task = {}) {
+  const actions = new Set(["disregard"]);
+  const hasEmail = Boolean(task.emailMessageId);
+  const hasOrder = Boolean(task.orderRunId);
+  if (hasEmail || hasOrder || ["customerIdentification", "routing"].includes(task.type)) actions.add("customer");
+  if (hasEmail) {
+    ["csr", "emailSubject", "manualCategory", "moveEmail"].forEach((action) => actions.add(action));
+  }
+  if (task.type === "itemValidation") actions.add("item");
+  return actions;
+}
+
+const BATCH_EXCEPTION_ACTION_LABELS = {
+  disregard: "Manual Override",
+  item: "Set ERP Item",
+  customer: "Set Customer",
+  csr: "Assign CSR",
+  emailSubject: "Update Subject",
+  manualCategory: "Apply Category",
+  moveEmail: "Move Email"
+};
+
+function selectedExceptionTasks(tasks = []) {
+  return tasks.filter((task) => state.selectedExceptionIds.has(String(task.exceptionId || task.id || "")));
+}
+
+function commonBatchExceptionActions(tasks = []) {
+  if (!tasks.length) return ["disregard"];
+  const common = batchActionsForException(tasks[0]);
+  tasks.slice(1).forEach((task) => {
+    const available = batchActionsForException(task);
+    [...common].forEach((action) => {
+      if (!available.has(action)) common.delete(action);
+    });
+  });
+  return [...common].sort((left, right) => {
+    const preferred = ["disregard", "item", "customer", "csr", "emailSubject", "manualCategory", "moveEmail"];
+    return preferred.indexOf(left) - preferred.indexOf(right);
+  });
+}
+
+function batchExceptionFields(action, task = {}) {
+  if (action === "customer") {
+    return '<label>Customer<input name="customerCode" placeholder="Customer code or record id" required></label>';
+  }
+  if (action === "csr") {
+    return `<label>CSR<select name="csrDirectoryKey" required>${selectOptions(csrDirectoryOptions())}</select></label>`;
+  }
+  if (action === "emailSubject") {
+    return '<label>Subject<input name="subject" placeholder="Updated subject" required></label>';
+  }
+  if (action === "manualCategory") {
+    return `<label>Category<select name="category" required>${selectOptions(exceptionCategoryOptions(task))}</select></label>`;
+  }
+  if (action === "moveEmail") {
+    return `
+      <label>Folder<select name="moveFolder">${selectOptions(exceptionFolderOptions(task))}</select></label>
+      <label>Other folder<input name="customFolder" placeholder="Root folder name"></label>
+    `;
+  }
+  if (action === "item") {
+    return '<label>ERP item<input name="matchedInternalItemNumber" placeholder="10001" required></label>';
+  }
+  return '<label>Manual note<input name="notes" placeholder="Handled outside automation"></label>';
+}
+
+function batchExceptionToolbarHtml(tasks = []) {
+  const selectedTasks = selectedExceptionTasks(tasks);
+  const count = selectedTasks.length;
+  const actions = commonBatchExceptionActions(selectedTasks);
+  if (!actions.includes(state.batchExceptionAction)) state.batchExceptionAction = actions[0] || "disregard";
+  const action = state.batchExceptionAction;
+  const actionOptions = actions.map((key) => (
+    `<option value="${escapeHtml(key)}" ${key === action ? "selected" : ""}>${escapeHtml(BATCH_EXCEPTION_ACTION_LABELS[key] || key)}</option>`
+  )).join("");
+  const controls = count ? `
+    <form class="batch-exception-form">
+      <label>Action<select name="batchAction">${actionOptions}</select></label>
+      ${batchExceptionFields(action, selectedTasks[0])}
+      <button type="submit">Apply to ${count}</button>
+    </form>
+  ` : '<p class="muted">Select exceptions below to apply one action to all of them.</p>';
+  return `
+    <section class="exception-batch-toolbar" aria-label="Batch exception actions">
+      <div class="exception-batch-summary">
+        <div><strong>Batch actions</strong><span>${count} selected</span></div>
+        <div class="row-actions">
+          <button class="secondary" data-action="batch-select-all-exceptions" type="button" ${tasks.length ? "" : "disabled"}>Select all (${tasks.length})</button>
+          <button class="secondary" data-action="batch-clear-exceptions" type="button" ${count ? "" : "disabled"}>Clear</button>
+        </div>
+      </div>
+      ${controls}
+    </section>
+  `;
+}
+
+function renderExceptionBatchToolbars(tasks = []) {
+  const html = batchExceptionToolbarHtml(tasks);
+  ["monitorBatchExceptionToolbar", "batchExceptionToolbar"].forEach((id) => {
+    if (el(id)) el(id).innerHTML = html;
+  });
+}
+
 function renderExceptions() {
   const tasks = state.dashboard?.monitor?.exceptions || state.dashboard?.exceptionQueue || [];
+  const visibleIds = new Set(tasks.map((task) => String(task.exceptionId || task.id || "")));
+  [...state.selectedExceptionIds].forEach((id) => {
+    if (!visibleIds.has(id)) state.selectedExceptionIds.delete(id);
+  });
   const html = tasks.length
     ? tasks.map(exceptionCard).join("")
     : '<p class="muted">No open exceptions.</p>';
   if (el("monitorExceptionList")) el("monitorExceptionList").innerHTML = html;
   el("exceptionList").innerHTML = html;
+  renderExceptionBatchToolbars(tasks);
 }
 
 function exceptionResolutionControls(task) {
@@ -2104,10 +2220,7 @@ function removeExceptionFromState(id) {
   renderExceptions();
 }
 
-async function resolveExceptionForm(form) {
-  const id = form.dataset.exceptionId;
-  const type = form.dataset.exceptionType;
-  const action = form.dataset.resolutionAction || "";
+function exceptionResolutionFromForm(form, action = "", type = "") {
   const resolution = {
     action,
     notes: value(form, "notes") || "Resolved from console"
@@ -2139,12 +2252,41 @@ async function resolveExceptionForm(form) {
   } else {
     resolution.reprocess = value(form, "reprocess") === "true";
   }
+  return resolution;
+}
+
+async function resolveExceptionForm(form) {
+  const id = form.dataset.exceptionId;
+  const type = form.dataset.exceptionType;
+  const action = form.dataset.resolutionAction || "";
+  const resolution = exceptionResolutionFromForm(form, action, type);
   const result = await post(`/console/exceptions/${id}/resolve`, { resolution });
   showDetails(result);
   const storedStatus = result?.exceptionTask?.status || "";
   const resultStatus = result?.resolutionResult?.status || "";
   if (!actionFailed(result) && storedStatus === "resolved" && !["updated", "invalid", "failed", "notFound"].includes(resultStatus)) {
     removeExceptionFromState(id);
+  }
+  await refresh();
+}
+
+async function resolveBatchExceptionForm(form) {
+  const exceptionIds = [...state.selectedExceptionIds];
+  if (!exceptionIds.length) return;
+  const action = value(form, "batchAction") || state.batchExceptionAction || "disregard";
+  const label = BATCH_EXCEPTION_ACTION_LABELS[action] || action;
+  if (!window.confirm(`Apply ${label} to ${exceptionIds.length} selected exceptions?`)) return;
+  const resolution = exceptionResolutionFromForm(form, action, action === "item" ? "itemValidation" : "");
+  const result = await post(
+    "/console/exceptions/resolve-batch",
+    { exceptionIds, resolution },
+    { busyText: `Applying ${label} to ${exceptionIds.length} exceptions` }
+  );
+  showDetails(result);
+  if (!actionFailed(result)) {
+    (result.results || []).forEach((item) => {
+      if (item?.exceptionTask?.status === "resolved") state.selectedExceptionIds.delete(String(item.exceptionId || ""));
+    });
   }
   await refresh();
 }
@@ -2450,6 +2592,16 @@ async function testMailbox() {
 }
 
 document.addEventListener("submit", async (event) => {
+  const batchForm = event.target.closest(".batch-exception-form");
+  if (batchForm) {
+    event.preventDefault();
+    try {
+      await resolveBatchExceptionForm(batchForm);
+    } catch (error) {
+      showDetails(payloadForError(error));
+    }
+    return;
+  }
   const form = event.target.closest(".exception-resolution-form");
   if (!form) return;
   event.preventDefault();
@@ -2457,6 +2609,23 @@ document.addEventListener("submit", async (event) => {
     await resolveExceptionForm(form);
   } catch (error) {
     showDetails(payloadForError(error));
+  }
+});
+
+document.addEventListener("change", (event) => {
+  const selection = event.target.closest("[data-exception-select]");
+  if (selection) {
+    const id = String(selection.dataset.exceptionSelect || "");
+    if (selection.checked) state.selectedExceptionIds.add(id);
+    else state.selectedExceptionIds.delete(id);
+    renderExceptions();
+    return;
+  }
+  const batchAction = event.target.closest(".batch-exception-form select[name='batchAction']");
+  if (batchAction) {
+    state.batchExceptionAction = batchAction.value || "disregard";
+    const tasks = state.dashboard?.monitor?.exceptions || state.dashboard?.exceptionQueue || [];
+    renderExceptionBatchToolbars(tasks);
   }
 });
 
@@ -2535,6 +2704,15 @@ document.addEventListener("click", async (event) => {
   if (target.dataset.action === "edit-processor-profile") loadProcessorProfile(target.dataset.profile);
   if (target.dataset.action === "edit-output-profile") loadOutputProfile(target.dataset.profile);
   if (target.dataset.action === "inspect") showDetails(JSON.parse(target.dataset.payload));
+  if (target.dataset.action === "batch-select-all-exceptions") {
+    const tasks = state.dashboard?.monitor?.exceptions || state.dashboard?.exceptionQueue || [];
+    tasks.forEach((task) => state.selectedExceptionIds.add(String(task.exceptionId || task.id || "")));
+    renderExceptions();
+  }
+  if (target.dataset.action === "batch-clear-exceptions") {
+    state.selectedExceptionIds.clear();
+    renderExceptions();
+  }
   if (target.dataset.action === "resolve") await resolveTask(target.dataset.id, target.dataset.type);
   if (target.dataset.action === "reprocess") {
     showDetails(await post(`/console/orders/${target.dataset.run}/reprocess`, { source: "console" }));

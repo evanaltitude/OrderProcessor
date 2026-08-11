@@ -2122,6 +2122,93 @@ class ConsoleBackendTests(unittest.TestCase):
         self.assertEqual(resolved["exceptionTask"]["status"], "resolved")
         self.assertEqual(reprocess["orderRun"]["status"], "received")
 
+    def test_console_can_batch_override_exceptions_with_one_monitor_refresh(self) -> None:
+        api, repo, _ = self._api()
+        headers = {"x-ms-client-principal": _easy_auth_header("connect@focuseautomate.com")}
+        repo.upsert(
+            "emailMessages",
+            to_dict(
+                EmailMessage(
+                    id="batch-email-1",
+                    tenant_id="altitude",
+                    message_id="graph-batch-1",
+                    mailbox="orders@example.com",
+                    sender="buyer@example.com",
+                    subject="PO 456",
+                    received_at=utc_now(),
+                    status=ProcessingStatus.NEEDS_REVIEW,
+                )
+            ),
+        )
+        repo.upsert(
+            "orderRuns",
+            to_dict(
+                OrderRun(
+                    id="batch-order-1",
+                    tenant_id="altitude",
+                    email_message_id="batch-email-1",
+                    status=ProcessingStatus.NEEDS_REVIEW,
+                    lines=[
+                        OrderLine(line_number=1, validation_status=MatchStatus.UNRESOLVED),
+                        OrderLine(line_number=2, validation_status=MatchStatus.UNRESOLVED),
+                    ],
+                )
+            ),
+        )
+        tasks = [
+            api._create_exception(
+                tenant_id="altitude",
+                task_type="itemValidation",
+                prompt=f"Resolve item {line_number}",
+                email_message_id="batch-email-1",
+                order_run_id="batch-order-1",
+                line_number=line_number,
+            )
+            for line_number in (1, 2)
+        ]
+
+        with patch.object(api, "_upsert_monitor_record_for_email", wraps=api._upsert_monitor_record_for_email) as refresh:
+            result = api.console_resolve_exceptions_batch(
+                {
+                    "tenantId": "altitude",
+                    "headers": headers,
+                    "exceptionIds": [task["id"] for task in tasks],
+                    "resolution": {"action": "disregard", "notes": "Validated outside automation"},
+                }
+            )
+
+        self.assertEqual(result["batch"], {"requestedCount": 2, "resolvedCount": 2, "openCount": 0, "failedCount": 0})
+        self.assertEqual(refresh.call_count, 1)
+        self.assertTrue(all(repo.get("exceptionTasks", task["id"])["status"] == "resolved" for task in tasks))
+        self.assertEqual(repo.get("emailMessages", "batch-email-1")["status"], "completed")
+        self.assertEqual(repo.get("orderRuns", "batch-order-1")["status"], "completed")
+        self.assertEqual(
+            len([event for event in repo.query_by_tenant("auditEvents", "altitude") if event["eventType"] == "exception.resolved"]),
+            2,
+        )
+
+    def test_console_batch_rejects_background_reprocess_actions_before_mutating(self) -> None:
+        api, repo, _ = self._api()
+        headers = {"x-ms-client-principal": _easy_auth_header("connect@focuseautomate.com")}
+        task = api._create_exception(
+            tenant_id="altitude",
+            task_type="parserFailure",
+            prompt="Review parser failure",
+            email_message_id="batch-email-2",
+        )
+
+        result = api.console_resolve_exceptions_batch(
+            {
+                "tenantId": "altitude",
+                "headers": headers,
+                "exceptionIds": [task["id"]],
+                "resolution": {"action": "emailReprocess", "reprocess": True},
+            }
+        )
+
+        self.assertEqual(result["error"], "invalid")
+        self.assertEqual(repo.get("exceptionTasks", task["id"])["status"], "open")
+
     def test_console_prepare_async_exception_resolution_authorizes_without_resolving(self) -> None:
         api, repo, _ = self._api()
         headers = {"x-ms-client-principal": _easy_auth_header("connect@focuseautomate.com")}

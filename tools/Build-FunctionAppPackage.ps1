@@ -77,6 +77,7 @@ $routes = @(
     @{ Name = "console_output_profiles_upsert"; EntryPoint = "console_output_profiles_upsert"; Route = "console/output-profiles" },
     @{ Name = "console_users_upsert"; EntryPoint = "console_users_upsert"; Route = "console/users" },
     @{ Name = "console_customer_users_assign"; EntryPoint = "console_customer_users_assign"; Route = "console/customers/{customerId}/users" },
+    @{ Name = "console_exceptions_resolve_batch"; EntryPoint = "console_exceptions_resolve_batch"; Route = "console/exceptions/resolve-batch" },
     @{ Name = "console_exceptions_resolve"; EntryPoint = "console_exceptions_resolve"; Route = "console/exceptions/{id}/resolve" },
     @{ Name = "console_monitor_active_clear"; EntryPoint = "console_monitor_active_clear"; Route = "console/monitor/active/{id}/clear" },
     @{ Name = "console_orders_reprocess"; EntryPoint = "console_orders_reprocess"; Route = "console/orders/{orderRunId}/reprocess" },

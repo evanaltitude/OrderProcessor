@@ -102,6 +102,7 @@ class InfraContractTests(unittest.TestCase):
             "/console/output-profiles",
             "/console/users",
             "/console/customers/{customerId}/users",
+            "/console/exceptions/resolve-batch",
             "/console/exceptions/{id}/resolve",
             "/console/monitor/active/{id}/clear",
             "/console/orders/{orderRunId}/reprocess",
